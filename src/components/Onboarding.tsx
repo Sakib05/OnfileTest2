@@ -2,30 +2,49 @@
 import React, { useState } from "react";
 import { cn } from "@/lib/utils";
 
-const SLIDES = [
+interface TitleFragment {
+  text: string;
+  highlight?: boolean;
+}
+
+interface Slide {
+  image: string;
+  imageAlt: string;
+  title: TitleFragment[];
+  description: string;
+}
+
+// NOTE: Onboarding always renders on a light, warm cream background with
+// hard-coded colors (not the `--color-bg` / `.dark` theme variables used by
+// the rest of the app). This is intentional: Telegram's client can launch
+// Mini Apps with a dark color scheme preference, which flips the app's
+// global `.dark` class and would otherwise turn this screen black. The
+// onboarding experience must always look the same regardless of theme, so
+// it intentionally does not read from ThemeContext / CSS theme variables.
+const SLIDES: Slide[] = [
   {
-    emoji: "📁",
-    title: "Share Files Seamlessly",
-    description: "Connect your Telegram channel or paste message links to instantly publish and monetize your files with smart links.",
-    bg: "from-orange-500/20 to-amber-500/10",
+    image: "/images/onboarding/onboarding-share.png",
+    imageAlt: "Share Telegram files with a simple link",
+    title: [
+      { text: "Share Files Seamlessly & " },
+      { text: "Earn from Every Download", highlight: true },
+    ],
+    description:
+      "Share your Telegram files with a simple link. No need to upload them to another platform. And get rewarded when people download your files.",
   },
   {
-    emoji: "💰",
-    title: "Earn from Every Download",
-    description: "Set Telegram Stars prices, add password protection, or let users watch ads. You earn every time someone accesses your content.",
-    bg: "from-purple-500/10 to-pink-500/10",
+    image: "/images/onboarding/onboarding-monetize.png",
+    imageAlt: "Monetize your files from day one",
+    title: [{ text: "Monetize " }, { text: "from Day One", highlight: true }],
+    description:
+      "Start sharing your files and unlock monetization opportunities from the beginning, subject to our monetization policies.",
   },
   {
-    emoji: "🔗",
-    title: "Smart Links & Playlists",
-    description: "Organize content into beautiful playlists, create smart links, and track real-time analytics on every file.",
-    bg: "from-blue-500/10 to-cyan-500/10",
-  },
-  {
-    emoji: "🚀",
-    title: "Referral & Ad Revenue",
-    description: "Invite creators and earn 5% commission lifetime. Monetize further with integrated Adsgram, Adsonar, and Monitag ad units.",
-    bg: "from-green-500/10 to-emerald-500/10",
+    image: "/images/onboarding/onboarding-channel.png",
+    imageAlt: "Connect your private Telegram channel",
+    title: [{ text: "Your Channel, " }, { text: "Your Control", highlight: true }],
+    description:
+      "Connect your private Telegram channel to manage file delivery and track your performance.",
   },
 ];
 
@@ -36,6 +55,7 @@ interface OnboardingProps {
 export default function Onboarding({ onComplete }: OnboardingProps) {
   const [current, setCurrent] = useState(0);
   const isLast = current === SLIDES.length - 1;
+  const slide = SLIDES[current];
 
   const next = () => {
     if (isLast) {
@@ -47,76 +67,121 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
 
   const skip = () => onComplete();
 
-  const slide = SLIDES[current];
-
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-app px-6 py-10">
-      {/* Background decoration */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-20 left-10 w-32 h-32 rounded-full bg-brand/5 blur-3xl" />
-        <div className="absolute bottom-20 right-10 w-32 h-32 rounded-full bg-brand/5 blur-3xl" />
+    <div
+      className="relative flex min-h-[100dvh] w-full flex-col overflow-hidden"
+      style={{ backgroundColor: "#FFFCF4" }}
+    >
+      {/* Subtle warm decorative accents */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div
+          className="absolute -top-16 -right-10 h-56 w-56 rounded-full blur-3xl"
+          style={{ backgroundColor: "rgba(255, 97, 21, 0.10)" }}
+        />
+        <div
+          className="absolute bottom-24 -left-16 h-64 w-64 rounded-full blur-3xl"
+          style={{ backgroundColor: "rgba(255, 97, 21, 0.08)" }}
+        />
       </div>
 
-      {/* Logo */}
-      <div className="mb-10 flex flex-col items-center gap-2">
-        <div className="w-14 h-14 rounded-2xl gradient-brand flex items-center justify-center text-white text-2xl font-black shadow-lg"
-          style={{ boxShadow: "0 8px 30px rgba(255,97,21,0.4)" }}>
-          O
-        </div>
-        <h1 className="text-lg font-black text-primary tracking-tight">Onfile</h1>
-      </div>
-
-      {/* Card */}
+      {/* Header: logo only (no duplicate wordmark) + Skip */}
       <div
-        className={cn(
-          "w-full max-w-sm bg-card rounded-3xl border border-app shadow-app-lg p-8 flex flex-col items-center text-center gap-5 relative overflow-hidden animate-scale-in"
-        )}
-        key={current}
+        className="relative z-10 flex shrink-0 items-center justify-between px-5"
+        style={{ paddingTop: "calc(env(safe-area-inset-top) + 18px)" }}
       >
-        {/* BG gradient */}
-        <div className={cn("absolute inset-0 bg-gradient-to-br opacity-50 pointer-events-none", slide.bg)} />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/images/onfile-logo.png"
+          alt="Onfile"
+          className="h-8 w-auto object-contain"
+          draggable={false}
+        />
+        <button
+          type="button"
+          onClick={skip}
+          className="text-sm font-medium transition-colors"
+          style={{ color: "#8a8372" }}
+        >
+          Skip
+        </button>
+      </div>
 
-        {/* Emoji Art */}
-        <div className="relative z-10 w-28 h-28 rounded-3xl bg-gradient-to-br from-brand/20 to-brand/5 border border-brand/20 flex items-center justify-center text-6xl">
-          {slide.emoji}
-        </div>
+      {/* Illustration — large, prominent, upper-middle area */}
+      <div className="relative z-10 flex min-h-0 w-full flex-1 items-center justify-center px-8 py-3">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          key={slide.image}
+          src={slide.image}
+          alt={slide.imageAlt}
+          className="h-full w-full max-w-sm object-contain animate-fade-in"
+          draggable={false}
+        />
+      </div>
 
-        <div className="relative z-10">
-          <h2 className="text-xl font-black text-primary mb-2 leading-snug">{slide.title}</h2>
-          <p className="text-sm text-secondary leading-relaxed">{slide.description}</p>
-        </div>
+      {/* Title, description, pagination dots */}
+      <div className="relative z-10 shrink-0 px-6 pt-2" key={`content-${current}`}>
+        <h1
+          className="text-left text-[28px] font-extrabold leading-[1.2] tracking-tight"
+          style={{ color: "#17130f" }}
+        >
+          {slide.title.map((fragment, i) => (
+            <span key={i} style={{ color: fragment.highlight ? "#FF6115" : "#17130f" }}>
+              {fragment.text}
+            </span>
+          ))}
+        </h1>
+        <p
+          className="mt-3 text-left text-[15px] leading-relaxed"
+          style={{ color: "#75705f" }}
+        >
+          {slide.description}
+        </p>
 
-        {/* Dots */}
-        <div className="flex items-center gap-2 relative z-10">
+        {/* Pagination dots — exactly three, clickable, never numeric text */}
+        <div className="mt-5 flex items-center gap-2">
           {SLIDES.map((_, i) => (
             <button
               key={i}
+              type="button"
+              aria-label={`Go to slide ${i + 1}`}
+              aria-current={i === current}
               onClick={() => setCurrent(i)}
-              className={cn(
-                "rounded-full transition-all",
-                i === current
-                  ? "w-6 h-2 bg-brand"
-                  : "w-2 h-2 bg-border-app hover:bg-brand/40"
-              )}
-              style={{ backgroundColor: i === current ? "#FF6115" : "var(--color-border)" }}
+              className="h-2 rounded-full transition-all duration-300"
+              style={{
+                width: i === current ? 24 : 8,
+                backgroundColor: i === current ? "#FF6115" : "#e8e1d2",
+              }}
             />
           ))}
         </div>
       </div>
 
-      {/* Navigation */}
-      <div className="flex items-center justify-between w-full max-w-sm mt-6">
+      {/* Bottom navigation: Skip (left) + Next / Get Started (right) */}
+      <div
+        className="relative z-10 mt-6 flex shrink-0 items-center justify-between px-6"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)" }}
+      >
         <button
+          type="button"
           onClick={skip}
-          className="px-5 py-2.5 text-sm font-medium text-secondary hover:text-primary transition-colors"
+          className="text-sm font-semibold transition-colors"
+          style={{ color: "#8a8372" }}
         >
-          SKIP
+          Skip
         </button>
         <button
+          type="button"
           onClick={next}
-          className="btn-primary px-8 py-3 text-sm"
+          className={cn(
+            "flex items-center gap-2 rounded-full px-7 py-3.5 text-sm font-semibold text-white transition-transform active:scale-[0.97]"
+          )}
+          style={{
+            background: "linear-gradient(135deg, #FF6115 0%, #ff8c4a 100%)",
+            boxShadow: "0 10px 24px rgba(255, 97, 21, 0.35)",
+          }}
         >
-          {isLast ? "GET STARTED" : "NEXT"}
+          {isLast ? "Get Started" : "Next"}
+          <span aria-hidden="true">→</span>
         </button>
       </div>
     </div>

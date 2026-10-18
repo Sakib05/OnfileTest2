@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import { Bell, TrendingUp, Download, Eye, DollarSign, Users, ChevronRight, Sparkles, Files } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
-import { getGreeting, formatNumber, formatCurrency } from "@/lib/utils";
+import { formatNumber, formatCurrency } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 
 interface ChartData {
@@ -67,12 +67,13 @@ export default function HomeTab({ onTabChange }: { onTabChange?: (tab: string) =
     <div className="flex flex-col gap-5 pb-2">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-secondary font-medium">{getGreeting()} 👋</p>
-          <h1 className="text-xl font-bold text-primary mt-0.5">
-            {user?.firstName || "Creator"}
-          </h1>
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/images/onfile-logo.png"
+          alt="Onfile"
+          className="h-7 w-auto object-contain"
+          draggable={false}
+        />
         <button className="relative w-10 h-10 rounded-full bg-secondary flex items-center justify-center border border-app">
           <Bell size={18} style={{ color: "var(--color-text-secondary)" }} />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-brand" />
