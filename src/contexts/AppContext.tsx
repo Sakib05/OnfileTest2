@@ -83,6 +83,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // One-time session check on mount; must run client-side against the
+    // HttpOnly session cookie, which cannot be read during render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     refreshUser();
   }, [refreshUser]);
 

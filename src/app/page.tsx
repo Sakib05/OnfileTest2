@@ -17,7 +17,10 @@ export default function HomePage() {
 
   useEffect(() => {
     const done = localStorage.getItem("onfile_onboarding_done");
+    // One-time mount check reading a browser-only API (localStorage);
+    // cannot be computed during render/SSR.
     if (!done) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setShowOnboarding(true);
     }
     setOnboardingChecked(true);
