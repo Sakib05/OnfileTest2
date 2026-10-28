@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import Onboarding from "@/components/Onboarding";
+import CreatorSetup from "@/components/CreatorSetup";
 import BottomNav from "@/components/layout/BottomNav";
 import HomeTab from "@/components/tabs/HomeTab";
 import FilesTab from "@/components/tabs/FilesTab";
@@ -10,7 +11,7 @@ import ProfileTab from "@/components/tabs/ProfileTab";
 import { useApp } from "@/contexts/AppContext";
 
 export default function HomePage() {
-  const { activeTab, setActiveTab } = useApp();
+  const { activeTab, setActiveTab, authStatus } = useApp();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingChecked, setOnboardingChecked] = useState(false);
 
@@ -27,10 +28,16 @@ export default function HomePage() {
     setShowOnboarding(false);
   };
 
-  if (!onboardingChecked) return null;
+  if (!onboardingChecked || authStatus === "loading") return null;
 
   if (showOnboarding) {
     return <Onboarding onComplete={completeOnboarding} />;
+  }
+
+  // Visitors never get a dashboard (and never get a persistent creator
+  // account) until Telegram sign-in + channel verification succeed.
+  if (authStatus !== "authenticated") {
+    return <CreatorSetup />;
   }
 
   return (

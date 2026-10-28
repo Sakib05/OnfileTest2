@@ -63,6 +63,16 @@ export const campaignStatusEnum = pgEnum("campaign_status", [
   "rejected",
 ]);
 
+// Status of a channel's connection to Onfile's bot. "pending" is used only
+// transiently while a verification call is in flight; persisted rows are
+// always "verified", "failed" or "disconnected".
+export const channelStatusEnum = pgEnum("channel_status", [
+  "pending",
+  "verified",
+  "failed",
+  "disconnected",
+]);
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 export const users = pgTable(
   "users",
@@ -89,16 +99,65 @@ export const users = pgTable(
   (t) => [uniqueIndex("users_telegram_id_idx").on(t.telegramId)]
 );
 
+export type User = typeof users.$inferSelect;
+
+// ─── Secure Sessions ────────────────────────────────────────────────────────
+// Opaque, server-issued session tokens. Only a SHA-256 hash of the token is
+// ever stored — the raw token exists solely in the user's HTTP-only cookie.
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+    createdAt: timestamp("created_at").defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    lastUsedAt: timestamp("last_used_at").defaultNow(),
+    userAgent: text("user_agent"),
+  },
+  (t) => [
+    uniqueIndex("sessions_token_hash_idx").on(t.tokenHash),
+    index("sessions_user_id_idx").on(t.userId),
+  ]
+);
+
 // ─── Channels ─────────────────────────────────────────────────────────────────
-export const channels = pgTable("channels", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id").notNull(),
-  telegramChannelId: varchar("telegram_channel_id", { length: 64 }),
-  channelName: varchar("channel_name", { length: 256 }),
-  channelUsername: varchar("channel_username", { length: 128 }),
-  isVerified: boolean("is_verified").default(false),
-  createdAt: timestamp("created_at").defaultNow(),
-});
+// A channel row is only ever created once Telegram channel ownership AND bot
+// admin permissions have been verified server-side (see src/lib/telegramBot.ts
+// and src/app/api/channels/route.ts). Nothing here is ever trusted verbatim
+// from the client.
+export const channels = pgTable(
+  "channels",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    telegramChannelId: varchar("telegram_channel_id", { length: 64 }),
+    channelName: varchar("channel_name", { length: 256 }),
+    channelUsername: varchar("channel_username", { length: 128 }),
+    status: channelStatusEnum("status").default("pending"),
+    // Kept for backward compatibility with any existing reads; always kept
+    // in sync with `status === 'verified'`.
+    isVerified: boolean("is_verified").default(false),
+    botIsAdmin: boolean("bot_is_admin").default(false),
+    verifiedAt: timestamp("verified_at"),
+    lastCheckedAt: timestamp("last_checked_at"),
+    disconnectedAt: timestamp("disconnected_at"),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (t) => [
+    // A given Telegram channel can only be actively connected to one
+    // creator account at a time. NULLs (not-yet-resolved rows) are exempt
+    // from Postgres uniqueness, which is fine because we only persist a
+    // channel row after resolving its Telegram id.
+    uniqueIndex("channels_telegram_channel_id_idx").on(t.telegramChannelId),
+    index("channels_user_id_idx").on(t.userId),
+  ]
+);
 
 // ─── Playlists ────────────────────────────────────────────────────────────────
 export const playlists = pgTable("playlists", {
