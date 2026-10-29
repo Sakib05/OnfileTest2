@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyChannelOwnershipAndBotAccess } from "@/lib/telegramBot";
 import { finalizeVerifiedChannelConnection } from "@/lib/channelConnection";
-import { getPendingByTelegramRequest, updatePendingChannelRequest } from "@/lib/pendingChannelRequests";
+import { getPendingByTelegramRequest, updatePendingChannelRequestById } from "@/lib/pendingChannelRequests";
 
 interface TelegramChatShared {
   request_id: number;
@@ -33,6 +33,12 @@ interface TelegramUpdate {
  * duplicate/replayed updates for an already-resolved request are ignored —
  * and always responds 200 so Telegram does not endlessly retry delivery.
  *
+ * The pending-request lookup/update now goes through a durable Postgres
+ * table (src/lib/pendingChannelRequests.ts) instead of a process-local Map,
+ * so this works correctly even if the webhook lands on a different
+ * serverless instance than the one that started the request, or after a
+ * cold start/redeploy.
+ *
  * Requires `TELEGRAM_WEBHOOK_SECRET` to be configured and the webhook to be
  * registered with Telegram (via `setWebhook`, including the matching
  * `secret_token`) outside of this code — that one-time setup is a deployment
@@ -63,7 +69,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    const pending = getPendingByTelegramRequest(telegramUserId, chatShared.request_id);
+    const pending = await getPendingByTelegramRequest(telegramUserId, chatShared.request_id);
     if (!pending) {
       // Unknown or already-expired request — ignore rather than guess.
       return NextResponse.json({ ok: true });
@@ -75,26 +81,33 @@ export async function POST(req: NextRequest) {
 
     const verification = await verifyChannelOwnershipAndBotAccess(String(chatShared.chat_id), telegramUserId);
     if (!verification.ok) {
-      updatePendingChannelRequest(pending.correlationToken, {
+      await updatePendingChannelRequestById(pending.id, {
         status: "failed",
         failureReason: verification.reason,
       });
       return NextResponse.json({ ok: true });
     }
 
-    const finalized = await finalizeVerifiedChannelConnection(verification, pending.identity, req.headers.get("user-agent"));
+    // Session creation for brand-new accounts is deferred to
+    // /api/channels/connect-status, which is the only place that can
+    // actually deliver the resulting cookie to the browser — see
+    // FinalizeOptions in src/lib/channelConnection.ts for why.
+    const finalized = await finalizeVerifiedChannelConnection(verification, pending.identity, req.headers.get("user-agent"), {
+      createSessionForNewAccount: false,
+    });
     if (!finalized.ok) {
-      updatePendingChannelRequest(pending.correlationToken, {
+      await updatePendingChannelRequestById(pending.id, {
         status: "failed",
         failureReason: "telegram_api_error",
       });
       return NextResponse.json({ ok: true });
     }
 
-    updatePendingChannelRequest(pending.correlationToken, {
+    await updatePendingChannelRequestById(pending.id, {
       status: "verified",
-      channel: finalized.result.channel,
-      newSession: finalized.result.newSession ?? undefined,
+      resolvedChannelId: finalized.result.channel.id,
+      resolvedUserId: finalized.result.userId,
+      isNewAccount: finalized.result.isNewAccount,
     });
 
     return NextResponse.json({ ok: true });

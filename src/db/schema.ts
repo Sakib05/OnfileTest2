@@ -73,6 +73,16 @@ export const channelStatusEnum = pgEnum("channel_status", [
   "disconnected",
 ]);
 
+// Status of a short-lived, durable channel-connection correlation request
+// (see src/lib/pendingChannelRequests.ts). Replaces the previous in-memory
+// Map so the native Telegram "select chat" flow survives serverless
+// restarts and works across multiple Vercel instances.
+export const pendingChannelRequestStatusEnum = pgEnum("pending_channel_request_status", [
+  "pending",
+  "verified",
+  "failed",
+]);
+
 // ─── Users ────────────────────────────────────────────────────────────────────
 export const users = pgTable(
   "users",
@@ -156,6 +166,57 @@ export const channels = pgTable(
     // channel row after resolving its Telegram id.
     uniqueIndex("channels_telegram_channel_id_idx").on(t.telegramChannelId),
     index("channels_user_id_idx").on(t.userId),
+  ]
+);
+
+// ─── Pending Channel Connection Requests ───────────────────────────────────────
+// Durable correlation state for the native Telegram "select a chat, then add
+// the bot as admin" connection flow (request_chat / chat_shared). This used
+// to live in a process-local Map, which breaks on Vercel because separate
+// serverless instances don't share memory and instances can restart at any
+// time between a user tapping "select channel" and Telegram's webhook
+// delivering the result. Persisting it here means:
+//   - the webhook (which may land on a different instance than the one that
+//     created the request) can always find it,
+//   - the browser can keep polling /api/channels/connect-status after a
+//     redeploy or cold start,
+//   - nothing here is ever trusted as proof of anything by itself — the
+//     channel row is only written after live Telegram Bot API verification
+//     (see src/lib/channelConnection.ts); this table only stores routing
+//     state plus the *result* of that verification.
+// `tokenHash` (not the raw correlation token) is stored, mirroring the
+// `sessions` table pattern, so a database read alone can't be replayed as a
+// valid bearer token.
+export const pendingChannelRequests = pgTable(
+  "pending_channel_requests",
+  {
+    id: serial("id").primaryKey(),
+    tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+    telegramRequestId: integer("telegram_request_id").notNull(),
+    telegramUserId: varchar("telegram_user_id", { length: 64 }).notNull(),
+    // Non-null only for a returning, already-authenticated creator
+    // connecting an additional/replacement channel.
+    sessionUserId: integer("session_user_id"),
+    // JSON-encoded TelegramInitDataUser snapshot, used only to finalize a
+    // brand-new account once the channel is verified. Never trusted as
+    // proof of anything beyond "what to pre-fill the new account with".
+    telegramProfile: text("telegram_profile"),
+    status: pendingChannelRequestStatusEnum("status").default("pending").notNull(),
+    failureReason: varchar("failure_reason", { length: 64 }),
+    // Populated only after independent Telegram Bot API verification and
+    // successful persistence of the channel (and, for new creators, the
+    // user) row.
+    resolvedUserId: integer("resolved_user_id"),
+    resolvedChannelId: integer("resolved_channel_id"),
+    isNewAccount: boolean("is_new_account").default(false).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("pending_channel_requests_token_hash_idx").on(t.tokenHash),
+    index("pending_channel_requests_telegram_lookup_idx").on(t.telegramUserId, t.telegramRequestId),
+    index("pending_channel_requests_expires_at_idx").on(t.expiresAt),
   ]
 );
 

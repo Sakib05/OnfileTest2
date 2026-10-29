@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: REQUEST_FAILURE_MESSAGES.bot_not_resolved }, { status: 503 });
   }
 
-  const pending = createPendingChannelRequest(identity);
+  const pending = await createPendingChannelRequest(identity);
 
   const sendResult = await sendChatSelectionPrompt(botToken, identity.telegramUserId, pending.telegramRequestId);
   if (!sendResult.ok) {

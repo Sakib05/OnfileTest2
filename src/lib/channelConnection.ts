@@ -94,12 +94,34 @@ export async function resolveConnectingIdentity(req: NextRequest): Promise<Resol
 
 export interface FinalizedChannelConnection {
   channel: typeof channels.$inferSelect;
+  userId: number;
+  isNewAccount: boolean;
   newSession: { token: string; expiresAt: Date } | null;
 }
 
 export type FinalizeResult =
   | { ok: true; result: FinalizedChannelConnection }
   | { ok: false; error: string; status: number };
+
+export interface FinalizeOptions {
+  /**
+   * Whether to mint a real session immediately for a brand-new account.
+   * Defaults to true, which is correct for synchronous HTTP flows (the
+   * legacy manual-identifier endpoint) that can set the session cookie
+   * directly on their own response.
+   *
+   * The asynchronous webhook-driven flow (see
+   * src/app/api/telegram/webhook/route.ts) passes `false` here: it has no
+   * HTTP response to the *browser* to attach a cookie to, so minting a
+   * session there would mean persisting a raw, usable session token in the
+   * pending-request table until the browser polls for it. Instead that flow
+   * defers session creation to the polling endpoint
+   * (/api/channels/connect-status), which creates the session at the moment
+   * it can actually deliver the cookie — nothing sensitive sits in the
+   * database in the meantime.
+   */
+  createSessionForNewAccount?: boolean;
+}
 
 /**
  * Persists a Telegram-verified channel for the resolved identity. This is
@@ -112,8 +134,10 @@ export type FinalizeResult =
 export async function finalizeVerifiedChannelConnection(
   verification: Extract<ChannelVerificationResult, { ok: true }>,
   identity: ResolvedConnectingIdentity,
-  userAgent?: string | null
+  userAgent?: string | null,
+  options?: FinalizeOptions
 ): Promise<FinalizeResult> {
+  const createSessionForNewAccount = options?.createSessionForNewAccount ?? true;
   // Reject if this exact Telegram channel is already actively connected to a
   // DIFFERENT creator account (prevents one channel backing two payouts).
   const [existingChannel] = await db
@@ -127,6 +151,7 @@ export async function finalizeVerifiedChannelConnection(
 
   try {
     let userId: number;
+    let isNewAccount = false;
     let justCreatedSession: { token: string; expiresAt: Date } | null = null;
 
     if (identity.sessionUserId) {
@@ -150,7 +175,10 @@ export async function finalizeVerifiedChannelConnection(
         })
         .returning();
       userId = created.id;
-      justCreatedSession = await createSession(userId, userAgent ?? null);
+      isNewAccount = true;
+      if (createSessionForNewAccount) {
+        justCreatedSession = await createSession(userId, userAgent ?? null);
+      }
     }
 
     if (existingChannel && existingChannel.userId === userId) {
@@ -170,7 +198,7 @@ export async function finalizeVerifiedChannelConnection(
         .where(eq(channels.id, existingChannel.id))
         .returning();
 
-      return { ok: true, result: { channel: updated, newSession: justCreatedSession } };
+      return { ok: true, result: { channel: updated, userId, isNewAccount, newSession: justCreatedSession } };
     }
 
     const [channel] = await db
@@ -188,7 +216,7 @@ export async function finalizeVerifiedChannelConnection(
       })
       .returning();
 
-    return { ok: true, result: { channel, newSession: justCreatedSession } };
+    return { ok: true, result: { channel, userId, isNewAccount, newSession: justCreatedSession } };
   } catch (err) {
     console.error("channel_connect_failed", err instanceof Error ? err.message : "unknown_error");
     return { ok: false, error: "Internal server error", status: 500 };

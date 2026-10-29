@@ -1,93 +1,191 @@
 import crypto from "crypto";
-import type { channels } from "@/db/schema";
+import { and, eq, gt, lt } from "drizzle-orm";
+import { db } from "@/db";
+import { channels, pendingChannelRequests } from "@/db/schema";
 import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
 
 /**
- * Short-lived, in-memory correlation state for the native Telegram
+ * Durable, database-backed correlation state for the native Telegram
  * "select a chat, then add the bot as admin" connection flow.
  *
- * Why in-memory and not a DB table? The data here is purely transient
- * routing information — "which browser session is waiting for which
- * Telegram `request_chat` reply" — never a durable business record. Nothing
- * here is trusted as proof of anything; the actual channel row is only ever
- * written after independent Bot API verification (see
- * src/lib/channelConnection.ts). This mirrors the existing pattern in
- * src/lib/rateLimit.ts.
+ * Why a database table and not in-memory (as a previous version of this
+ * file did)? On Vercel, the serverless instance that receives the Telegram
+ * webhook call is not guaranteed to be the same process that handled the
+ * browser's original "start connecting" request, and any instance can be
+ * recycled at any time. An in-memory Map is therefore unsafe: webhook
+ * deliveries could silently find nothing to resolve, and the browser's
+ * polling could error out after a cold start. Persisting this state in
+ * Postgres (via the existing Drizzle setup) fixes both problems without
+ * introducing new infrastructure.
  *
- * Limitation (documented for the deployment/security review, same as
- * rateLimit.ts): this state is per server process. On a horizontally
- * scaled / multi-instance deployment, the instance that receives the
- * Telegram webhook call must be the same one the browser is polling, or a
- * shared store (Redis, etc.) is required. Single-instance deployments
- * (including this environment) are unaffected.
+ * Nothing stored here is ever trusted as proof of anything on its own — the
+ * actual `channels` row is only ever written after an independent, live
+ * Telegram Bot API check (see src/lib/channelConnection.ts and
+ * src/lib/telegramBot.ts). This table only stores short-lived routing state
+ * and the outcome of that verification.
+ *
+ * Security properties:
+ *   - The correlation token handed to the browser is never itself stored;
+ *     only its SHA-256 hash is persisted (same pattern as `sessions`), so a
+ *     database read alone cannot be replayed as a valid bearer token.
+ *   - Each row is scoped to exactly one Telegram user + one Telegram-issued
+ *     `request_id`, so a webhook delivery can only ever resolve the single
+ *     matching pending request — never another user's.
+ *   - Rows carry an explicit `expiresAt`; every read filters on it, so an
+ *     expired request behaves exactly like a missing one.
+ *   - The webhook is idempotent: once a row's status leaves "pending", a
+ *     duplicate/retried Telegram update for the same `request_id` is a
+ *     documented no-op (see src/app/api/telegram/webhook/route.ts).
  */
 
 export type PendingChannelStatus = "pending" | "verified" | "failed";
 
-export interface PendingChannelRequest {
-  /** Opaque token handed to the browser; never guessable, never exposed to Telegram. */
-  correlationToken: string;
-  /** The signed 32-bit id Telegram echoes back inside the `chat_shared` service message. */
+export interface PendingChannelRequestRecord {
+  id: number;
   telegramRequestId: number;
   identity: ResolvedConnectingIdentity;
   status: PendingChannelStatus;
-  failureReason?: string;
+  failureReason?: string | null;
   channel?: typeof channels.$inferSelect;
-  newSession?: { token: string; expiresAt: Date };
-  createdAt: number;
+  resolvedUserId: number | null;
+  isNewAccount: boolean;
 }
 
 const TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Keep resolved/expired rows around briefly for debugging/idempotency checks,
+// then let opportunistic cleanup remove them instead of growing forever.
+const RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-const byToken = new Map<string, PendingChannelRequest>();
-// Keyed by `${telegramUserId}:${telegramRequestId}` so the webhook (which only
-// knows the Telegram user id + the request id Telegram echoes back) can find
-// the matching browser-side request without trusting any client input.
-const byTelegramRequest = new Map<string, string>();
+function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
 
+/** Best-effort deletion of long-expired rows. Never blocks the caller. */
 function cleanupExpired() {
-  const now = Date.now();
-  for (const [token, entry] of byToken) {
-    if (now - entry.createdAt > TTL_MS) {
-      byToken.delete(token);
-      byTelegramRequest.delete(`${entry.identity.telegramUserId}:${entry.telegramRequestId}`);
+  const cutoff = new Date(Date.now() - RETENTION_MS);
+  db.delete(pendingChannelRequests)
+    .where(lt(pendingChannelRequests.expiresAt, cutoff))
+    .catch((err) => {
+      console.error("pending_channel_requests_cleanup_failed", err instanceof Error ? err.message : "unknown_error");
+    });
+}
+
+function rowToIdentity(row: typeof pendingChannelRequests.$inferSelect): ResolvedConnectingIdentity {
+  let telegramProfile: ResolvedConnectingIdentity["telegramProfile"] = null;
+  if (row.telegramProfile) {
+    try {
+      telegramProfile = JSON.parse(row.telegramProfile);
+    } catch {
+      telegramProfile = null;
     }
   }
+  return {
+    telegramUserId: Number(row.telegramUserId),
+    sessionUserId: row.sessionUserId ?? null,
+    telegramProfile,
+  };
 }
 
-setInterval(cleanupExpired, 60_000).unref?.();
+function rowToRecord(row: typeof pendingChannelRequests.$inferSelect): PendingChannelRequestRecord {
+  return {
+    id: row.id,
+    telegramRequestId: row.telegramRequestId,
+    identity: rowToIdentity(row),
+    status: row.status,
+    failureReason: row.failureReason,
+    resolvedUserId: row.resolvedUserId,
+    isNewAccount: row.isNewAccount,
+  };
+}
 
-export function createPendingChannelRequest(identity: ResolvedConnectingIdentity): PendingChannelRequest {
+/**
+ * Creates a new pending channel connection request. Returns the raw
+ * correlation token (only ever handed to the browser — never persisted) and
+ * the Telegram-facing `request_id` used to build the `request_chat`
+ * keyboard button.
+ */
+export async function createPendingChannelRequest(
+  identity: ResolvedConnectingIdentity
+): Promise<{ correlationToken: string; telegramRequestId: number }> {
   cleanupExpired();
+
   const correlationToken = crypto.randomBytes(24).toString("base64url");
+  const tokenHash = hashToken(correlationToken);
   // Signed 32-bit integer range, as required by KeyboardButtonRequestChat.request_id.
   const telegramRequestId = crypto.randomInt(1, 2_147_483_647);
+  const expiresAt = new Date(Date.now() + TTL_MS);
 
-  const entry: PendingChannelRequest = {
-    correlationToken,
+  await db.insert(pendingChannelRequests).values({
+    tokenHash,
     telegramRequestId,
-    identity,
+    telegramUserId: String(identity.telegramUserId),
+    sessionUserId: identity.sessionUserId,
+    telegramProfile: identity.telegramProfile ? JSON.stringify(identity.telegramProfile) : null,
     status: "pending",
-    createdAt: Date.now(),
-  };
+    expiresAt,
+  });
 
-  byToken.set(correlationToken, entry);
-  byTelegramRequest.set(`${identity.telegramUserId}:${telegramRequestId}`, correlationToken);
-  return entry;
+  return { correlationToken, telegramRequestId };
 }
 
-export function getPendingByToken(token: string): PendingChannelRequest | undefined {
-  return byToken.get(token);
+/** Looks up a pending request by the browser's opaque bearer token. */
+export async function getPendingByToken(token: string): Promise<PendingChannelRequestRecord | undefined> {
+  const tokenHash = hashToken(token);
+  const [row] = await db
+    .select()
+    .from(pendingChannelRequests)
+    .where(and(eq(pendingChannelRequests.tokenHash, tokenHash), gt(pendingChannelRequests.expiresAt, new Date())))
+    .limit(1);
+  if (!row) return undefined;
+
+  const record = rowToRecord(row);
+  if (row.resolvedChannelId) {
+    const [channel] = await db.select().from(channels).where(eq(channels.id, row.resolvedChannelId)).limit(1);
+    record.channel = channel;
+  }
+  return record;
 }
 
-export function getPendingByTelegramRequest(telegramUserId: number, telegramRequestId: number): PendingChannelRequest | undefined {
-  const token = byTelegramRequest.get(`${telegramUserId}:${telegramRequestId}`);
-  if (!token) return undefined;
-  return byToken.get(token);
+/**
+ * Looks up a pending request by the (Telegram user id, Telegram request id)
+ * pair the webhook payload supplies. This pair is Telegram-issued and
+ * unguessable by a third party in practice, but even so nothing is ever
+ * persisted based on this lookup alone — see verifyChannelOwnershipAndBotAccess.
+ * Expired requests are intentionally excluded so a late/duplicate webhook
+ * for a long-gone request is treated as "unknown" rather than resurrected.
+ */
+export async function getPendingByTelegramRequest(
+  telegramUserId: number,
+  telegramRequestId: number
+): Promise<PendingChannelRequestRecord | undefined> {
+  const [row] = await db
+    .select()
+    .from(pendingChannelRequests)
+    .where(
+      and(
+        eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+        eq(pendingChannelRequests.telegramRequestId, telegramRequestId),
+        gt(pendingChannelRequests.expiresAt, new Date())
+      )
+    )
+    .orderBy(pendingChannelRequests.createdAt)
+    .limit(1);
+  if (!row) return undefined;
+  return rowToRecord(row);
 }
 
-export function updatePendingChannelRequest(token: string, patch: Partial<PendingChannelRequest>) {
-  const entry = byToken.get(token);
-  if (!entry) return;
-  Object.assign(entry, patch);
+export interface PendingChannelRequestPatch {
+  status?: PendingChannelStatus;
+  failureReason?: string | null;
+  resolvedUserId?: number | null;
+  resolvedChannelId?: number | null;
+  isNewAccount?: boolean;
+}
+
+/** Updates a pending request by its database id (never the raw token). */
+export async function updatePendingChannelRequestById(id: number, patch: PendingChannelRequestPatch): Promise<void> {
+  await db
+    .update(pendingChannelRequests)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(pendingChannelRequests.id, id));
 }
