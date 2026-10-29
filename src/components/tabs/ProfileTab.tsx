@@ -3,13 +3,15 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   User, Users, Download, DollarSign, ChevronRight, Moon, Sun, Globe, Megaphone,
   HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle, Settings,
-  Shield, LogOut, ArrowLeft, CheckCircle2, Building2, Zap, BarChart2, Plus
+  Shield, LogOut, ArrowLeft, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
 import { cn, formatNumber, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useApp } from "@/contexts/AppContext";
 import { useToast } from "@/components/ui/Toast";
 import Modal from "@/components/ui/Modal";
+import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
+import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 
 type SubPage = null | "referrals" | "advertise" | "channel" | "settings";
 
@@ -29,12 +31,18 @@ interface ReferralData {
 
 export default function ProfileTab() {
   const { dark, toggle } = useTheme();
-  const { user, refreshUser, logout } = useApp();
+  const { user, refreshUser, refreshChannels, logout } = useApp();
   const { toast } = useToast();
   const [loggingOut, setLoggingOut] = useState(false);
   const [subPage, setSubPage] = useState<SubPage>(null);
   const [referralData, setReferralData] = useState<ReferralData | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
+  const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
+  const [channelsError, setChannelsError] = useState<string | null>(null);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [showConnectNew, setShowConnectNew] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState<ConnectedChannel | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [editForm, setEditForm] = useState({ firstName: user?.firstName || "", username: user?.username || "" });
   const [saving, setSaving] = useState(false);
   const [adForm, setAdForm] = useState({
@@ -57,6 +65,57 @@ export default function ProfileTab() {
   useEffect(() => {
     if (subPage === "referrals") fetchReferrals();
   }, [subPage, fetchReferrals]);
+
+  const fetchChannels = useCallback(async () => {
+    setChannelsLoading(true);
+    setChannelsError(null);
+    try {
+      const res = await fetch("/api/channels");
+      if (!res.ok) throw new Error("request_failed");
+      const data = await res.json();
+      setChannels(Array.isArray(data.channels) ? data.channels : []);
+    } catch {
+      setChannelsError("Couldn't load your channels. Please try again.");
+    } finally {
+      setChannelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (subPage === "channel") {
+      setShowConnectNew(false);
+      fetchChannels();
+    }
+  }, [subPage, fetchChannels]);
+
+  const handleChannelConnected = () => {
+    setShowConnectNew(false);
+    fetchChannels();
+    refreshUser();
+    refreshChannels();
+    toast("Channel connected! ✅");
+  };
+
+  const handleDisconnectConfirm = async () => {
+    if (!disconnectTarget) return;
+    setDisconnecting(true);
+    try {
+      const res = await fetch(`/api/channels?id=${disconnectTarget.id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast(data.error || "Failed to disconnect channel", "error");
+        return;
+      }
+      setChannels((prev) => (prev ? prev.map((c) => (c.id === disconnectTarget.id ? data.channel : c)) : prev));
+      toast(data.botRemoved ? "Channel disconnected and bot removed" : "Channel disconnected");
+      refreshChannels();
+    } catch {
+      toast("Network error. Please try again.", "error");
+    } finally {
+      setDisconnecting(false);
+      setDisconnectTarget(null);
+    }
+  };
 
   const referralLink = `https://onfile.app/ref/${user?.referralCode || "CODE"}`;
 
@@ -335,6 +394,7 @@ export default function ProfileTab() {
   }
 
   if (subPage === "channel") {
+    const activeChannels = (channels ?? []).filter((c) => c.status !== "disconnected");
     return (
       <div className="flex flex-col gap-5 animate-fade-in">
         <div className="flex items-center gap-3">
@@ -343,33 +403,83 @@ export default function ProfileTab() {
           </button>
           <h1 className="text-lg font-bold text-primary">Channel Management</h1>
         </div>
-        <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-4">
-          <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary">
-            <div className="w-10 h-10 rounded-xl gradient-brand flex items-center justify-center">
-              <MessageCircle size={18} color="white" />
+
+        {/* Connected channels list */}
+        <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-primary">Connected Channels</h3>
+
+          {channelsLoading && (
+            <div className="animate-pulse-brand h-16 rounded-xl bg-secondary" />
+          )}
+
+          {!channelsLoading && channelsError && (
+            <div className="flex flex-col items-center gap-2 text-center py-4">
+              <p className="text-xs text-red-500">{channelsError}</p>
+              <button onClick={fetchChannels} className="btn-secondary px-4 py-2 text-xs">Retry</button>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-primary">No channel connected</p>
-              <p className="text-xs text-secondary">Connect your Telegram channel</p>
-            </div>
-          </div>
-          <h3 className="text-sm font-semibold text-primary">How to connect your channel:</h3>
-          {[
-            "Add @OnfileBot as an administrator to your Telegram channel",
-            "Grant the bot permission to read messages and post content",
-            "Paste your channel link below to verify the connection",
-            "Once verified, import posts directly from your channel",
-          ].map((step, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <div className="w-6 h-6 rounded-full gradient-brand text-white text-xs font-bold flex items-center justify-center flex-shrink-0">
-                {i + 1}
+          )}
+
+          {!channelsLoading && !channelsError && activeChannels.length === 0 && (
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary">
+              <div className="w-10 h-10 rounded-xl gradient-brand flex items-center justify-center">
+                <MessageCircle size={18} color="white" />
               </div>
-              <p className="text-sm text-secondary">{step}</p>
+              <div>
+                <p className="text-sm font-semibold text-primary">No channel connected</p>
+                <p className="text-xs text-secondary">Connect your Telegram channel below</p>
+              </div>
+            </div>
+          )}
+
+          {!channelsLoading && !channelsError && activeChannels.map((channel) => (
+            <div key={channel.id} className="flex items-center gap-3 p-3 rounded-xl bg-secondary">
+              <div className="w-10 h-10 rounded-xl gradient-brand flex items-center justify-center flex-shrink-0">
+                <MessageCircle size={18} color="white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-primary truncate">
+                  {channel.channelName || channel.channelUsername || `Channel #${channel.id}`}
+                </p>
+                <ChannelStatusBadge status={channel.status} />
+              </div>
+              {channel.status === "verified" && (
+                <button
+                  onClick={() => setDisconnectTarget(channel)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-red-500 bg-red-50 dark:bg-red-900/20 flex-shrink-0"
+                >
+                  Disconnect
+                </button>
+              )}
             </div>
           ))}
-          <input className="input-app text-sm" placeholder="https://t.me/your_channel" />
-          <button className="btn-primary py-3 text-sm">Connect Channel</button>
         </div>
+
+        {/* Connect new channel */}
+        <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">
+          {showConnectNew ? (
+            <>
+              <h3 className="text-sm font-semibold text-primary">Connect New Channel</h3>
+              <ChannelConnectFlow onConnected={handleChannelConnected} />
+            </>
+          ) : (
+            <button
+              onClick={() => setShowConnectNew(true)}
+              className="btn-primary py-3 text-sm flex items-center justify-center gap-2"
+            >
+              <Plus size={16} />
+              Connect New Channel
+            </button>
+          )}
+        </div>
+
+        <DeleteConfirmModal
+          open={!!disconnectTarget}
+          onClose={() => setDisconnectTarget(null)}
+          onConfirm={handleDisconnectConfirm}
+          loading={disconnecting}
+          title="Disconnect Channel"
+          description={`Are you sure you want to disconnect ${disconnectTarget?.channelName || disconnectTarget?.channelUsername || "this channel"}? Onfile will no longer be able to deliver files through it.`}
+        />
       </div>
     );
   }
@@ -562,6 +672,22 @@ export default function ProfileTab() {
         <p className="text-xs text-muted">Onfile v1.0.0 · Made with ❤️</p>
       </div>
     </div>
+  );
+}
+
+function ChannelStatusBadge({ status }: { status: ConnectedChannel["status"] }) {
+  const config: Record<ConnectedChannel["status"], { label: string; className: string; icon: React.ReactNode }> = {
+    verified: { label: "Connected", className: "text-green-600 dark:text-green-400", icon: <CheckCircle2 size={11} /> },
+    pending: { label: "Verifying...", className: "text-yellow-600 dark:text-yellow-400", icon: <Clock size={11} /> },
+    failed: { label: "Verification failed", className: "text-red-500", icon: <XCircle size={11} /> },
+    disconnected: { label: "Disconnected", className: "text-secondary", icon: <XCircle size={11} /> },
+  };
+  const { label, className, icon } = config[status];
+  return (
+    <span className={cn("text-xs flex items-center gap-1", className)}>
+      {icon}
+      {label}
+    </span>
   );
 }
 

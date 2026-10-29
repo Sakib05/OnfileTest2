@@ -1,57 +1,45 @@
 "use client";
-import React, { useState } from "react";
-import { MessageCircle, Loader2, ShieldCheck, AlertCircle } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Loader2, ShieldCheck, AlertCircle } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
+import ChannelConnectFlow from "@/components/ChannelConnectFlow";
 
 /**
- * Shown after onboarding when there is no authenticated creator session.
- * Handles both halves of account setup:
- *   1. Telegram sign-in (initData -> session or setup cookie)
- *   2. Channel connection + verification (which is what actually finalizes
- *      a brand-new creator account — see /api/channels)
+ * The dedicated Channel Connect screen, shown right after onboarding (and
+ * whenever a returning creator has no verified channel yet). It silently
+ * establishes the Telegram session (no separate "Continue with Telegram"
+ * popup to tap through — Telegram's `initData` is already available the
+ * moment the Mini App launches, so sign-in happens automatically) and then
+ * renders the native two-step Telegram channel connection flow.
  */
 export default function CreatorSetup() {
-  const { authStatus, setupProfile, startTelegramLogin, refreshUser } = useApp();
-  const [loggingIn, setLoggingIn] = useState(false);
+  const { authStatus, startTelegramLogin, refreshUser } = useApp();
   const [loginError, setLoginError] = useState<string | null>(null);
+  const attemptedLogin = useRef(false);
 
-  const [channelInput, setChannelInput] = useState("");
-  const [connecting, setConnecting] = useState(false);
-  const [connectError, setConnectError] = useState<string | null>(null);
-
-  const handleTelegramLogin = async () => {
-    setLoggingIn(true);
-    setLoginError(null);
-    const result = await startTelegramLogin();
-    if (!result.ok) {
-      setLoginError(result.error ?? "Could not sign in with Telegram.");
-    }
-    setLoggingIn(false);
-  };
-
-  const handleConnectChannel = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!channelInput.trim()) return;
-    setConnecting(true);
-    setConnectError(null);
-    try {
-      const res = await fetch("/api/channels", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelIdentifier: channelInput.trim() }),
+  useEffect(() => {
+    // One-time, automatic Telegram sign-in attempt when the Mini App first
+    // launches signed-out inside Telegram — this replaces the old "Continue
+    // with Telegram" tap-through screen with a silent background call,
+    // since `initData` is already available the moment Telegram launches
+    // the Mini App. Reading an external system (startTelegramLogin) and
+    // only calling setState from its async callback (not synchronously in
+    // the effect body) avoids cascading renders.
+    if (authStatus === "guest" && isRunningInsideTelegram() && !attemptedLogin.current) {
+      attemptedLogin.current = true;
+      startTelegramLogin().then((result) => {
+        if (!result.ok) {
+          setLoginError(result.error ?? "Could not sign in with Telegram.");
+          attemptedLogin.current = false;
+        }
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setConnectError(data.error || "Channel verification failed.");
-        setConnecting(false);
-        return;
-      }
-      await refreshUser();
-    } catch {
-      setConnectError("Network error. Please try again.");
     }
-    setConnecting(false);
+  }, [authStatus, startTelegramLogin]);
+
+  const retryLogin = () => {
+    attemptedLogin.current = false;
+    setLoginError(null);
   };
 
   return (
@@ -60,56 +48,40 @@ export default function CreatorSetup() {
         <ShieldCheck size={26} color="white" />
       </div>
 
-      {authStatus !== "setup_required" ? (
+      {!isRunningInsideTelegram() ? (
         <div className="flex flex-col items-center gap-4 text-center max-w-sm">
           <h1 className="text-xl font-bold text-primary">Become an Onfile creator</h1>
-          <p className="text-sm text-secondary">
-            Sign in with your Telegram account to start sharing and monetizing files from your own channel.
-          </p>
-          {!isRunningInsideTelegram() && (
-            <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
-              <AlertCircle size={14} className="mt-0.5 flex-shrink-0 text-brand" />
-              <span>Open Onfile from inside Telegram to sign in securely. This screen cannot verify your identity in a regular browser tab.</span>
+          <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
+            <AlertCircle size={14} className="mt-0.5 flex-shrink-0 text-brand" />
+            <span>Open Onfile from inside Telegram to sign in and connect your channel. This screen cannot verify your identity in a regular browser tab.</span>
+          </div>
+        </div>
+      ) : authStatus === "guest" ? (
+        <div className="flex flex-col items-center gap-4 text-center max-w-sm">
+          <h1 className="text-xl font-bold text-primary">Setting up your account</h1>
+          {loginError ? (
+            <>
+              <p className="text-xs text-red-500">{loginError}</p>
+              <button onClick={retryLogin} className="btn-primary w-full py-3 text-sm">
+                Try Again
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-secondary">
+              <Loader2 size={16} className="animate-spin" />
+              Signing in with Telegram...
             </div>
           )}
-          <button
-            onClick={handleTelegramLogin}
-            disabled={loggingIn}
-            className="btn-primary w-full py-3 text-sm flex items-center justify-center gap-2"
-          >
-            {loggingIn ? <Loader2 size={16} className="animate-spin" /> : <MessageCircle size={16} />}
-            {loggingIn ? "Signing in..." : "Continue with Telegram"}
-          </button>
-          {loginError && <p className="text-xs text-red-500">{loginError}</p>}
         </div>
       ) : (
         <div className="flex flex-col gap-4 w-full max-w-sm">
           <div className="text-center">
-            <h1 className="text-xl font-bold text-primary">
-              {setupProfile?.firstName ? `Hi ${setupProfile.firstName}, almost there` : "Almost there"}
-            </h1>
+            <h1 className="text-xl font-bold text-primary">Connect your channel</h1>
             <p className="text-sm text-secondary mt-1">
-              Connect the Telegram channel you want to share files from. Our bot must be an administrator of that channel.
+              Select the Telegram channel you want to share files from, then add Onfile as an administrator so it can post on your behalf.
             </p>
           </div>
-          <ol className="flex flex-col gap-2 text-xs text-secondary list-decimal list-inside bg-secondary rounded-xl p-3">
-            <li>Add our Onfile bot as an administrator of your channel.</li>
-            <li>Make sure it can post messages.</li>
-            <li>Enter your channel username or link below.</li>
-          </ol>
-          <form onSubmit={handleConnectChannel} className="flex flex-col gap-3">
-            <input
-              className="input-app text-sm"
-              placeholder="@your_channel or https://t.me/your_channel"
-              value={channelInput}
-              onChange={(e) => setChannelInput(e.target.value)}
-            />
-            <button type="submit" disabled={connecting} className="btn-primary py-3 text-sm flex items-center justify-center gap-2">
-              {connecting ? <Loader2 size={16} className="animate-spin" /> : null}
-              {connecting ? "Verifying..." : "Connect & Verify Channel"}
-            </button>
-          </form>
-          {connectError && <p className="text-xs text-red-500 text-center">{connectError}</p>}
+          <ChannelConnectFlow onConnected={() => refreshUser()} />
         </div>
       )}
     </div>

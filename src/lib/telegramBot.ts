@@ -90,13 +90,123 @@ async function callTelegramApi<T>(
 }
 
 let cachedBotId: number | null = null;
+let cachedBotUsername: string | null = null;
 
 async function getBotId(botToken: string): Promise<number | null> {
   if (cachedBotId !== null) return cachedBotId;
-  const me = await callTelegramApi<{ id: number }>(botToken, "getMe", {});
+  const me = await callTelegramApi<{ id: number; username?: string }>(botToken, "getMe", {});
   if (!me.ok) return null;
   cachedBotId = me.result.id;
+  if (me.result.username) cachedBotUsername = me.result.username;
   return cachedBotId;
+}
+
+/** Returns the bot's @username (needed to build t.me deep links), cached after the first lookup. */
+export async function getBotUsername(botToken: string): Promise<string | null> {
+  if (cachedBotUsername) return cachedBotUsername;
+  const me = await callTelegramApi<{ id: number; username?: string }>(botToken, "getMe", {});
+  if (!me.ok || !me.result.username) return null;
+  cachedBotId = me.result.id;
+  cachedBotUsername = me.result.username;
+  return cachedBotUsername;
+}
+
+/**
+ * The exact set of administrator rights Onfile's bot needs in a connected
+ * channel: permission to post messages (used to deliver/forward files).
+ * Every other right is explicitly set to `false` so Telegram's native "Add
+ * bot as administrator" screen never asks for — and the bot is never
+ * granted — permissions Onfile doesn't use (e.g. changing channel info,
+ * inviting users, or promoting other admins).
+ */
+export const REQUIRED_BOT_ADMIN_RIGHTS = {
+  is_anonymous: false,
+  can_manage_chat: false,
+  can_delete_messages: false,
+  can_manage_video_chats: false,
+  can_restrict_members: false,
+  can_promote_members: false,
+  can_change_info: false,
+  can_invite_users: false,
+  can_post_stories: false,
+  can_edit_stories: false,
+  can_delete_stories: false,
+  can_post_messages: true,
+} as const;
+
+export type SendChatSelectionResult =
+  | { ok: true }
+  | { ok: false; reason: "missing_bot_token" | "bot_not_resolved" | "cannot_message_user" | "telegram_api_error"; detail?: string };
+
+/**
+ * Sends the Telegram user a message (in their private chat with the bot)
+ * containing a native `request_chat` keyboard button. Tapping it opens
+ * Telegram's own "Select a chat" screen (filtered to channels the user
+ * administers), followed by Telegram's own "Add bot as administrator"
+ * screen if the bot isn't already an admin there with the rights below —
+ * this is Telegram's documented `KeyboardButtonRequestChat` mechanism
+ * (Bot API 6.5+), not a custom/simulated UI.
+ *
+ * Telegram bots can only message users who have already started a
+ * conversation with them (a platform-wide limitation, not something this
+ * code can bypass) — that failure is surfaced as `cannot_message_user` so
+ * the UI can show an actionable instruction instead of a generic error.
+ */
+export async function sendChatSelectionPrompt(
+  botToken: string,
+  telegramUserId: number,
+  requestId: number
+): Promise<SendChatSelectionResult> {
+  if (!botToken) return { ok: false, reason: "missing_bot_token" };
+
+  const botId = await getBotId(botToken);
+  if (!botId) return { ok: false, reason: "bot_not_resolved" };
+
+  const res = await callTelegramApi<{ message_id: number }>(botToken, "sendMessage", {
+    chat_id: telegramUserId,
+    text: "Tap the button below to select the Telegram channel you want to connect to Onfile.",
+    reply_markup: {
+      keyboard: [
+        [
+          {
+            text: "📢 Select channel to connect",
+            request_chat: {
+              request_id: requestId,
+              chat_is_channel: true,
+              bot_administrator_rights: REQUIRED_BOT_ADMIN_RIGHTS,
+              request_title: true,
+              request_username: true,
+            },
+          },
+        ],
+      ],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
+  });
+
+  if (!res.ok) {
+    const description = res.description.toLowerCase();
+    if (description.includes("bot can't initiate conversation") || description.includes("chat not found")) {
+      return { ok: false, reason: "cannot_message_user", detail: res.description };
+    }
+    return { ok: false, reason: "telegram_api_error", detail: res.description };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Best-effort removal of the bot from a channel it no longer administers on
+ * Onfile's behalf. Uses Telegram's documented `leaveChat` method. Callers
+ * must only report the bot as removed when this genuinely succeeds — a
+ * failure here (already removed, insufficient permission, etc.) never
+ * blocks disconnecting the channel on Onfile's side, but must be reported
+ * accurately rather than assumed.
+ */
+export async function leaveChannel(botToken: string, telegramChannelId: string): Promise<boolean> {
+  const res = await callTelegramApi<boolean>(botToken, "leaveChat", { chat_id: telegramChannelId });
+  return res.ok === true;
 }
 
 /** Normalizes a creator-supplied channel identifier (never trusted as-is). */
