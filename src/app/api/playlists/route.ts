@@ -4,6 +4,7 @@ import { playlists } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
+import { userHasVerifiedChannel } from "@/lib/channelConnection";
 
 export async function GET(req: NextRequest) {
   try {
@@ -31,6 +32,15 @@ export async function POST(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) return unauthorized();
+
+    // Creating a playlist is a channel-dependent creator feature — see
+    // src/app/api/files/route.ts for why this is re-checked server-side.
+    if (!(await userHasVerifiedChannel(user.id))) {
+      return NextResponse.json(
+        { error: "Connect and verify a private Telegram channel before creating a playlist.", reason: "channel_required" },
+        { status: 403 }
+      );
+    }
 
     const body = await req.json();
 

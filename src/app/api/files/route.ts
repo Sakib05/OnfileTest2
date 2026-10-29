@@ -5,6 +5,7 @@ import { eq, desc, and } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
+import { userHasVerifiedChannel } from "@/lib/channelConnection";
 
 export async function GET(req: NextRequest) {
   try {
@@ -45,6 +46,17 @@ export async function POST(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) return unauthorized();
+
+    // Publishing a file is a channel-dependent creator feature: it must be
+    // independently re-checked here (not just gated by the frontend route),
+    // since a previously verified channel can later be disconnected or lose
+    // bot access.
+    if (!(await userHasVerifiedChannel(user.id))) {
+      return NextResponse.json(
+        { error: "Connect and verify a private Telegram channel before publishing files.", reason: "channel_required" },
+        { status: 403 }
+      );
+    }
 
     const body = await req.json();
     const slug = nanoid(10);

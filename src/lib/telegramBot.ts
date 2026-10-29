@@ -30,6 +30,7 @@ export type ChannelVerificationFailureReason =
   | "missing_bot_token"
   | "invalid_channel"
   | "not_a_channel"
+  | "channel_is_public"
   | "bot_not_in_channel"
   | "bot_not_admin"
   | "bot_missing_permissions"
@@ -247,6 +248,19 @@ export async function verifyChannelOwnershipAndBotAccess(
   const chat = chatRes.result;
   if (chat.type !== "channel") {
     return { ok: false, reason: "not_a_channel" };
+  }
+
+  // Onfile's product requirement is that only PRIVATE channels can be
+  // connected (see master prompt / FAQ: private-channel requirement). The
+  // Bot API's `getChat` only returns a `username` for channels that have a
+  // public @handle (i.e. anyone can join via t.me/<username> without an
+  // invite link); channels without a public username are private. This is
+  // the only reliable signal the Bot API exposes for "public vs private",
+  // so it is checked independently of how the identifier was supplied
+  // (manual link/username OR Telegram's native chat-selection flow) —
+  // neither path can bypass this check.
+  if (chat.username) {
+    return { ok: false, reason: "channel_is_public" };
   }
 
   const botId = await getBotId(botToken);

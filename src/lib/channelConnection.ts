@@ -7,10 +7,29 @@ import { createSession, getSessionUser } from "@/lib/auth";
 import { verifySetupToken, SETUP_COOKIE_NAME } from "@/lib/setupToken";
 import type { ChannelVerificationResult } from "@/lib/telegramBot";
 
+/**
+ * Backend enforcement for the product rule "a creator must have a verified
+ * private channel before using channel-dependent features" (publishing
+ * files, creating playlists/smart links, etc). This is intentionally the
+ * ONLY source of truth consulted by those routes — it re-reads the live
+ * `channels` table rather than trusting anything cached on the client
+ * (localStorage, React state, etc), so a disconnected/revoked channel
+ * immediately blocks those actions again.
+ */
+export async function userHasVerifiedChannel(userId: number): Promise<boolean> {
+  const [row] = await db
+    .select({ id: channels.id })
+    .from(channels)
+    .where(and(eq(channels.userId, userId), eq(channels.status, "verified")))
+    .limit(1);
+  return !!row;
+}
+
 export const CHANNEL_FAILURE_MESSAGES: Record<string, string> = {
   missing_bot_token: "Channel verification is temporarily unavailable. Please try again later.",
   invalid_channel: "We couldn't find that channel. Please try selecting it again.",
   not_a_channel: "That selection isn't a Telegram channel. Groups and users aren't supported.",
+  channel_is_public: "Onfile only supports private channels. Please select or create a private channel and try again.",
   bot_not_in_channel: "Add our bot to your channel as an administrator, then try again.",
   bot_not_admin: "Our bot is in the channel but needs to be an administrator.",
   bot_missing_permissions: "Our bot needs permission to post messages in your channel.",

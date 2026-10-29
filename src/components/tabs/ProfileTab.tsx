@@ -12,8 +12,9 @@ import { useToast } from "@/components/ui/Toast";
 import Modal from "@/components/ui/Modal";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
+import Faq from "@/components/Faq";
 
-type SubPage = null | "referrals" | "advertise" | "channel" | "settings";
+type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq";
 
 interface ReferralData {
   referrals: Array<{
@@ -406,7 +407,12 @@ export default function ProfileTab() {
 
         {/* Connected channels list */}
         <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">
-          <h3 className="text-sm font-semibold text-primary">Connected Channels</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-primary">Connected Channels</h3>
+            <button onClick={() => setSubPage("faq")} className="text-xs font-semibold text-brand">
+              Why private channel?
+            </button>
+          </div>
 
           {channelsLoading && (
             <div className="animate-pulse-brand h-16 rounded-xl bg-secondary" />
@@ -482,6 +488,10 @@ export default function ProfileTab() {
         />
       </div>
     );
+  }
+
+  if (subPage === "faq") {
+    return <Faq onBack={() => setSubPage(null)} backLabel="Back to your profile" />;
   }
 
   if (subPage === "settings") {
@@ -657,7 +667,7 @@ export default function ProfileTab() {
           iconBg="bg-yellow-50 dark:bg-yellow-900/20"
           iconColor="text-yellow-500"
           label="FAQ & Help"
-          onClick={() => {}}
+          onClick={() => setSubPage("faq")}
         />
         <ProfileRow
           icon={MessageCircle}

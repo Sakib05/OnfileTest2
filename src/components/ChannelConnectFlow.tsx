@@ -1,26 +1,10 @@
 "use client";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React from "react";
 import { CheckCircle2, Loader2, MessageCircle, Radio, ShieldCheck, XCircle } from "lucide-react";
-import { isRunningInsideTelegram, openBotChat } from "@/lib/telegramWebApp";
+import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
+import { useChannelConnect, type ConnectedChannel } from "@/lib/useChannelConnect";
 
-export interface ConnectedChannel {
-  id: number;
-  channelName: string | null;
-  channelUsername: string | null;
-  status: "pending" | "verified" | "failed" | "disconnected";
-  telegramChannelId: string | null;
-}
-
-type FlowState =
-  | { phase: "idle" }
-  | { phase: "starting" }
-  | { phase: "waiting"; botUsername: string; token: string }
-  | { phase: "needs_bot_chat"; botUsername: string }
-  | { phase: "verified"; channel: ConnectedChannel }
-  | { phase: "failed"; message: string };
-
-const POLL_INTERVAL_MS = 2500;
-const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+export type { ConnectedChannel } from "@/lib/useChannelConnect";
 
 /**
  * The two-step native Telegram channel connection experience:
@@ -30,97 +14,17 @@ const POLL_TIMEOUT_MS = 5 * 60 * 1000;
  *      automatically by Telegram when the bot isn't already an admin with
  *      the requested rights.
  * Neither screen is rendered by Onfile; this component only kicks the flow
- * off and polls for the backend's independently verified result.
+ * off and polls for the backend's independently verified result. Used by
+ * Channel Management ("connect another channel"); the first-time onboarding
+ * flow uses the same underlying `useChannelConnect` engine via
+ * `BotConnectInstructions`.
  */
 export default function ChannelConnectFlow({
   onConnected,
 }: {
   onConnected?: (channel: ConnectedChannel) => void;
 }) {
-  const [state, setState] = useState<FlowState>({ phase: "idle" });
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pollDeadline = useRef<number>(0);
-
-  const stopPolling = useCallback(() => {
-    if (pollTimer.current) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
-    }
-  }, []);
-
-  useEffect(() => stopPolling, [stopPolling]);
-
-  const pollOnce = useCallback(
-    async (token: string) => {
-      try {
-        const res = await fetch(`/api/channels/connect-status?token=${encodeURIComponent(token)}`);
-        const data = await res.json().catch(() => ({}));
-        if (data.status === "verified") {
-          stopPolling();
-          setState({ phase: "verified", channel: data.channel });
-          onConnected?.(data.channel);
-        } else if (data.status === "failed") {
-          stopPolling();
-          setState({ phase: "failed", message: data.error || "Channel verification failed." });
-        } else if (data.status === "expired") {
-          stopPolling();
-          setState({ phase: "failed", message: "This connection request expired. Please try again." });
-        } else if (Date.now() > pollDeadline.current) {
-          stopPolling();
-          setState({ phase: "failed", message: "We didn't detect a channel selection in time. Please try again." });
-        }
-      } catch {
-        // Transient network errors during polling are not fatal; keep trying
-        // until the deadline.
-        if (Date.now() > pollDeadline.current) {
-          stopPolling();
-          setState({ phase: "failed", message: "Network error while checking connection status." });
-        }
-      }
-    },
-    [onConnected, stopPolling]
-  );
-
-  const startPolling = useCallback(
-    (token: string) => {
-      pollDeadline.current = Date.now() + POLL_TIMEOUT_MS;
-      stopPolling();
-      pollTimer.current = setInterval(() => pollOnce(token), POLL_INTERVAL_MS);
-      // Also re-check immediately whenever the Mini App regains focus
-      // (the user just came back from Telegram's native screens).
-      const onVisible = () => {
-        if (document.visibilityState === "visible") pollOnce(token);
-      };
-      document.addEventListener("visibilitychange", onVisible);
-      return () => document.removeEventListener("visibilitychange", onVisible);
-    },
-    [pollOnce, stopPolling]
-  );
-
-  const handleConnect = async () => {
-    setState({ phase: "starting" });
-    try {
-      const res = await fetch("/api/channels/connect-request", { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (data.reason === "cannot_message_user" && data.botUsername) {
-          setState({ phase: "needs_bot_chat", botUsername: data.botUsername });
-          return;
-        }
-        setState({ phase: "failed", message: data.error || "Could not start the connection flow." });
-        return;
-      }
-      setState({ phase: "waiting", botUsername: data.botUsername, token: data.token });
-      startPolling(data.token);
-      openBotChat(data.botUsername);
-    } catch {
-      setState({ phase: "failed", message: "Network error. Please try again." });
-    }
-  };
-
-  const handleOpenBotChat = (botUsername: string) => {
-    openBotChat(botUsername);
-  };
+  const { state, start, reopenBotChat, reset } = useChannelConnect(onConnected);
 
   if (!isRunningInsideTelegram()) {
     return (
@@ -141,7 +45,7 @@ export default function ChannelConnectFlow({
       </div>
 
       {state.phase === "idle" && (
-        <button onClick={handleConnect} className="btn-primary w-full py-3 text-sm flex items-center justify-center gap-2">
+        <button onClick={start} className="btn-primary w-full py-3 text-sm flex items-center justify-center gap-2">
           <MessageCircle size={16} />
           Connect Telegram Channel
         </button>
@@ -159,11 +63,11 @@ export default function ChannelConnectFlow({
           <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
             <Loader2 size={14} className="mt-0.5 flex-shrink-0 animate-spin text-brand" />
             <span>
-              We opened your chat with the Onfile bot. Tap <strong>&ldquo;Select channel to connect&rdquo;</strong>, choose your channel, and
+              We opened your chat with the Onfile bot. Tap <strong>&ldquo;Select channel to connect&rdquo;</strong>, choose your private channel, and
               confirm adding the bot as an administrator if asked. This screen updates automatically once Telegram confirms it.
             </span>
           </div>
-          <button onClick={() => handleOpenBotChat(state.botUsername)} className="btn-secondary w-full py-2.5 text-sm">
+          <button onClick={() => reopenBotChat(state.botUsername)} className="btn-secondary w-full py-2.5 text-sm">
             Reopen Onfile Bot Chat
           </button>
         </div>
@@ -175,10 +79,10 @@ export default function ChannelConnectFlow({
             <XCircle size={14} className="mt-0.5 flex-shrink-0 text-brand" />
             <span>Telegram bots can only message you after you&apos;ve started a chat with them. Open the Onfile bot chat, tap Start, then try again.</span>
           </div>
-          <button onClick={() => handleOpenBotChat(state.botUsername)} className="btn-primary w-full py-3 text-sm">
+          <button onClick={() => reopenBotChat(state.botUsername)} className="btn-primary w-full py-3 text-sm">
             Open Onfile Bot Chat
           </button>
-          <button onClick={() => setState({ phase: "idle" })} className="btn-secondary w-full py-2.5 text-sm">
+          <button onClick={reset} className="btn-secondary w-full py-2.5 text-sm">
             Try Again
           </button>
         </div>
@@ -197,7 +101,7 @@ export default function ChannelConnectFlow({
       {state.phase === "failed" && (
         <div className="flex flex-col gap-3">
           <p className="text-xs text-red-500 text-center">{state.message}</p>
-          <button onClick={() => setState({ phase: "idle" })} className="btn-primary w-full py-3 text-sm">
+          <button onClick={reset} className="btn-primary w-full py-3 text-sm">
             Try Again
           </button>
         </div>
@@ -205,7 +109,7 @@ export default function ChannelConnectFlow({
 
       <div className="flex items-start gap-2 text-left text-[11px] text-muted">
         <ShieldCheck size={13} className="mt-0.5 flex-shrink-0" />
-        <span>Onfile only requests permission for the bot to post messages in your channel — nothing more.</span>
+        <span>Onfile only requests permission for the bot to post messages in your private channel — nothing more.</span>
       </div>
     </div>
   );
