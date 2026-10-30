@@ -68,7 +68,7 @@ async function callTelegramApi<T>(
   botToken: string,
   method: string,
   params: Record<string, unknown>
-): Promise<{ ok: true; result: T } | { ok: false; description: string }> {
+): Promise<{ ok: true; result: T } | { ok: false; description: string; httpStatus?: number; errorCode?: number }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -78,13 +78,40 @@ async function callTelegramApi<T>(
       body: JSON.stringify(params),
       signal: controller.signal,
     });
-    const data = (await res.json()) as TelegramApiResponse<T>;
+    let data: TelegramApiResponse<T>;
+    try {
+      data = (await res.json()) as TelegramApiResponse<T>;
+    } catch {
+      // Telegram (or a proxy in front of it) returned a non-JSON body —
+      // never a bot-token leak since we never log the request body/URL.
+      console.error("telegram_api_non_json_response", { method, httpStatus: res.status });
+      return { ok: false, description: "non_json_response", httpStatus: res.status };
+    }
     if (!data.ok || data.result === undefined) {
-      return { ok: false, description: data.description || "Unknown Telegram API error" };
+      const description = data.description || "Unknown Telegram API error";
+      // Safe to log: Telegram's `description`/`error_code` never contain the
+      // bot token, chat content, or any Onfile secret — only Telegram's own
+      // human-readable API error text (e.g. "Forbidden: bot was blocked by
+      // the user"). This is what lets the *next* production request reveal
+      // the real failure instead of a bare 502 with empty logs.
+      console.error("telegram_api_error", {
+        method,
+        httpStatus: res.status,
+        errorCode: data.error_code,
+        description,
+      });
+      return { ok: false, description, httpStatus: res.status, errorCode: data.error_code };
     }
     return { ok: true, result: data.result };
   } catch (err) {
-    return { ok: false, description: err instanceof Error ? err.message : "network_error" };
+    const description = err instanceof Error ? err.message : "network_error";
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    console.error("telegram_api_network_error", {
+      method,
+      timedOut: isAbort,
+      message: description,
+    });
+    return { ok: false, description: isAbort ? "request_timed_out" : description };
   } finally {
     clearTimeout(timeout);
   }
@@ -188,9 +215,32 @@ export async function sendChatSelectionPrompt(
 
   if (!res.ok) {
     const description = res.description.toLowerCase();
-    if (description.includes("bot can't initiate conversation") || description.includes("chat not found")) {
+    // All of these mean the same thing from the user's perspective: Telegram
+    // refused to deliver our message to *this specific user*, not that
+    // Onfile/Telegram's API is broken. Surfacing them as `cannot_message_user`
+    // (actionable: "open the bot chat and tap Start") instead of the generic
+    // `telegram_api_error` (shown as "we couldn't reach Telegram") is both
+    // more accurate and more useful to the user.
+    const isUserUnreachable =
+      description.includes("bot can't initiate conversation") ||
+      description.includes("chat not found") ||
+      description.includes("bot was blocked by the user") ||
+      description.includes("user is deactivated");
+    if (isUserUnreachable) {
       return { ok: false, reason: "cannot_message_user", detail: res.description };
     }
+    // Anything else (rate limiting, a malformed request, a genuine Telegram
+    // outage, our fetch timing out, etc.) is logged above in
+    // callTelegramApi with the safe method name + Telegram's own
+    // description/error code — check Vercel's function logs for
+    // "telegram_api_error" / "telegram_api_network_error" to see exactly
+    // why this particular request failed.
+    console.error("send_chat_selection_prompt_failed", {
+      reason: "telegram_api_error",
+      httpStatus: res.httpStatus,
+      errorCode: res.errorCode,
+      detail: res.description,
+    });
     return { ok: false, reason: "telegram_api_error", detail: res.description };
   }
 
