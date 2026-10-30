@@ -162,6 +162,30 @@ export const REQUIRED_BOT_ADMIN_RIGHTS = {
   can_post_messages: true,
 } as const;
 
+/**
+ * The administrator rights the *Telegram user* picking a channel must hold
+ * in that channel for Telegram to treat it as a valid selection.
+ *
+ * Per Telegram's `KeyboardButtonRequestChat` spec: "`bot_administrator_rights`
+ * ... must be a subset of `user_administrator_rights`" (and, symmetrically,
+ * "`user_administrator_rights` ... must be a superset of
+ * `bot_administrator_rights`"). Telegram validates this relationship on the
+ * `sendMessage` call itself — if `bot_administrator_rights` requests any
+ * right (here, `can_post_messages`) while `user_administrator_rights` is
+ * left unset, Telegram has no evidence the requesting user is even capable
+ * of granting that right, and the request to send the keyboard is rejected
+ * with `400 Bad Request: USER_RIGHTS_MISSING` before the user ever sees the
+ * chat-selection screen.
+ *
+ * Using the same rights object as `REQUIRED_BOT_ADMIN_RIGHTS` is the
+ * smallest valid superset (it's trivially a superset of itself) and matches
+ * Onfile's product requirement: only channels where the user already has
+ * posting/admin authority should be selectable, which also mirrors the
+ * independent `getChatMember`-based check in
+ * `verifyChannelOwnershipAndBotAccess` below.
+ */
+export const REQUIRED_USER_ADMIN_RIGHTS = REQUIRED_BOT_ADMIN_RIGHTS;
+
 export type SendChatSelectionResult =
   | { ok: true }
   | { ok: false; reason: "missing_bot_token" | "bot_not_resolved" | "cannot_message_user" | "telegram_api_error"; detail?: string };
@@ -202,6 +226,11 @@ export async function sendChatSelectionPrompt(
               request_id: requestId,
               chat_is_channel: true,
               bot_administrator_rights: REQUIRED_BOT_ADMIN_RIGHTS,
+              // Required alongside `bot_administrator_rights`: Telegram
+              // rejects the request with `USER_RIGHTS_MISSING` unless
+              // `user_administrator_rights` is also specified as (at least)
+              // a superset of it. See REQUIRED_USER_ADMIN_RIGHTS above.
+              user_administrator_rights: REQUIRED_USER_ADMIN_RIGHTS,
               request_title: true,
               request_username: true,
             },
