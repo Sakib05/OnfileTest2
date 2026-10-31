@@ -16,13 +16,11 @@ function looksLikeChannelLink(value: string): boolean {
 export default function ChannelConnectScreen({
   onConnectViaBot,
   onManualConnected,
-  onWhyConnect,
-  onHowToConnect,
+  onOpenGuide,
 }: {
   onConnectViaBot: () => void;
   onManualConnected: (channel: ConnectedChannel) => void;
-  onWhyConnect: () => void;
-  onHowToConnect: () => void;
+  onOpenGuide: (currentLink: string) => void;
 }) {
   const [link, setLink] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -62,11 +60,7 @@ export default function ChannelConnectScreen({
   return (
     <div className="flex flex-col gap-5 w-full max-w-sm">
       <div className="text-center">
-        <h1 className="text-xl font-bold text-primary">Connect your channel</h1>
-        <p className="text-sm text-secondary mt-2 leading-relaxed">
-          Connecting a private Telegram channel is required to publish files, create smart links, and unlock other
-          channel-dependent creator features.
-        </p>
+        <h1 className="text-xl font-bold text-primary">Connect Your Telegram Channel</h1>
       </div>
 
       <button
@@ -122,14 +116,12 @@ export default function ChannelConnectScreen({
         </button>
       </form>
 
-      <div className="flex items-center justify-center gap-6 pt-1">
-        <button type="button" onClick={onWhyConnect} className="text-xs font-semibold text-brand">
-          Why connect?
+      <p className="text-xs text-secondary text-center pt-1">
+        Need help?{" "}
+        <button type="button" onClick={() => onOpenGuide(link)} className="underline font-semibold text-brand">
+          View step-by-step guide
         </button>
-        <button type="button" onClick={onHowToConnect} className="text-xs font-semibold text-brand">
-          How to connect?
-        </button>
-      </div>
+      </p>
     </div>
   );
 }

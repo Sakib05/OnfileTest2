@@ -189,3 +189,30 @@ export async function updatePendingChannelRequestById(id: number, patch: Pending
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(pendingChannelRequests.id, id));
 }
+
+/**
+ * Marks a still-pending request as cancelled, keyed by the browser's own
+ * bearer token (never a Telegram id supplied by the client). Called when
+ * `Telegram.WebApp.requestChat`'s callback reports the selection was not
+ * sent (user dismissed the native picker, or Telegram could not deliver the
+ * `chat_shared` service message) — this keeps the browser's poll from
+ * waiting the full TTL for a request that will never resolve, without ever
+ * trusting the client's report of *why* it failed for anything beyond this
+ * cosmetic status. A request that already resolved (verified/failed via the
+ * webhook) is left untouched — this is a no-op in that case, not an error.
+ */
+export async function cancelPendingByToken(token: string): Promise<boolean> {
+  const tokenHash = hashToken(token);
+  const result = await db
+    .update(pendingChannelRequests)
+    .set({ status: "failed", failureReason: "cancelled", updatedAt: new Date() })
+    .where(
+      and(
+        eq(pendingChannelRequests.tokenHash, tokenHash),
+        eq(pendingChannelRequests.status, "pending"),
+        gt(pendingChannelRequests.expiresAt, new Date())
+      )
+    )
+    .returning({ id: pendingChannelRequests.id });
+  return result.length > 0;
+}

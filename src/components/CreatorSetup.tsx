@@ -7,11 +7,10 @@ import type { ConnectedChannel } from "@/lib/useChannelConnect";
 import TelegramUserInfoScreen from "@/components/setup/TelegramUserInfoScreen";
 import ChannelConnectScreen from "@/components/setup/ChannelConnectScreen";
 import BotConnectInstructions from "@/components/setup/BotConnectInstructions";
-import HowToConnectGuide from "@/components/setup/HowToConnectGuide";
+import ManualConnectGuide from "@/components/setup/ManualConnectGuide";
 import ChannelConnectSuccessScreen from "@/components/setup/ChannelConnectSuccessScreen";
-import Faq from "@/components/Faq";
 
-type SetupStep = "telegram_info" | "channel_connect" | "bot_instructions" | "how_to" | "faq" | "success";
+type SetupStep = "telegram_info" | "channel_connect" | "bot_instructions" | "manual_guide" | "success";
 
 /**
  * Orchestrates the required onboarding journey once Telegram sign-in has
@@ -33,6 +32,7 @@ export default function CreatorSetup() {
 
   const [step, setStep] = useState<SetupStep>("channel_connect");
   const [connectedChannel, setConnectedChannel] = useState<ConnectedChannel | null>(null);
+  const [guideInitialLink, setGuideInitialLink] = useState("");
   const initializedStep = useRef(false);
 
   useEffect(() => {
@@ -146,8 +146,10 @@ export default function CreatorSetup() {
         <ChannelConnectScreen
           onConnectViaBot={() => setStep("bot_instructions")}
           onManualConnected={handleManualOrBotConnected}
-          onWhyConnect={() => setStep("faq")}
-          onHowToConnect={() => setStep("how_to")}
+          onOpenGuide={(currentLink) => {
+            setGuideInitialLink(currentLink);
+            setStep("manual_guide");
+          }}
         />
       )}
 
@@ -155,16 +157,12 @@ export default function CreatorSetup() {
         <BotConnectInstructions onBack={() => setStep("channel_connect")} onSuccess={handleManualOrBotConnected} />
       )}
 
-      {step === "how_to" && <HowToConnectGuide onBack={() => setStep("channel_connect")} />}
-
-      {step === "faq" && (
-        <div className="w-full max-w-sm">
-          <Faq
-            onBack={() => setStep("channel_connect")}
-            highlightSection="connect"
-            backLabel="Back to Channel Connect"
-          />
-        </div>
+      {step === "manual_guide" && (
+        <ManualConnectGuide
+          onBack={() => setStep("channel_connect")}
+          onConnected={handleManualOrBotConnected}
+          initialLink={guideInitialLink}
+        />
       )}
 
       {step === "success" && connectedChannel && (

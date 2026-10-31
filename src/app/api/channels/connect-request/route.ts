@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isSameOriginRequest } from "@/lib/auth";
 import { resolveConnectingIdentity } from "@/lib/channelConnection";
-import { getBotUsername, sendChatSelectionPrompt } from "@/lib/telegramBot";
+import { createPreparedChatRequestButton } from "@/lib/telegramBot";
 import { createPendingChannelRequest } from "@/lib/pendingChannelRequests";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 
@@ -12,12 +12,13 @@ const REQUEST_FAILURE_MESSAGES: Record<string, string> = {
 };
 
 /**
- * Step 1 of the native Telegram channel connection flow: sends the signed-in
- * Telegram user a message (in their private chat with the bot) containing a
- * `request_chat` keyboard button. Tapping it opens Telegram's own "Select a
- * chat" screen, which will also prompt to add the bot as an administrator
- * with the exact rights Onfile needs if it isn't one already — both native
- * Telegram screens, not anything rendered by Onfile.
+ * Step 1 of the native Telegram direct-picker channel connection flow:
+ * stores a `request_chat` keyboard button scoped to the signed-in Telegram
+ * user via the Bot API method `savePreparedKeyboardButton`, and returns its
+ * `id` to the browser. The Mini App then calls
+ * `Telegram.WebApp.requestChat(id)` directly from the user's tap — opening
+ * Telegram's native "Select a chat" screen immediately, with no bot chat to
+ * open first. See src/lib/telegramBot.ts for the full flow explanation.
  */
 export async function POST(req: NextRequest) {
   if (!isSameOriginRequest(req)) {
@@ -53,12 +54,6 @@ export async function POST(req: NextRequest) {
     }
     const identity = identityResult.identity;
 
-    const botUsername = await getBotUsername(botToken);
-    if (!botUsername) {
-      console.error("connect_request_failed", { stage: "bot_not_resolved" });
-      return NextResponse.json({ error: REQUEST_FAILURE_MESSAGES.bot_not_resolved }, { status: 503 });
-    }
-
     let pending: Awaited<ReturnType<typeof createPendingChannelRequest>>;
     try {
       pending = await createPendingChannelRequest(identity);
@@ -73,30 +68,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const sendResult = await sendChatSelectionPrompt(botToken, identity.telegramUserId, pending.telegramRequestId);
-    if (!sendResult.ok) {
-      if (sendResult.reason === "cannot_message_user") {
-        return NextResponse.json(
-          {
-            error: "Open your chat with the Onfile bot and tap Start, then try again.",
-            reason: "cannot_message_user",
-            botUsername,
-          },
-          { status: 409 }
-        );
-      }
+    const prepared = await createPreparedChatRequestButton(botToken, identity.telegramUserId, pending.telegramRequestId);
+    if (!prepared.ok) {
       // The underlying Telegram description/error code was already logged
-      // inside sendChatSelectionPrompt/callTelegramApi (safe: no bot token,
-      // no DB credentials). Stage logged here so the two log lines can be
-      // correlated to this specific request.
-      console.error("connect_request_failed", { stage: "send_chat_selection_prompt", reason: sendResult.reason });
+      // inside createPreparedChatRequestButton/callTelegramApi (safe: no
+      // bot token, no DB credentials). Stage logged here so the two log
+      // lines can be correlated to this specific request.
+      console.error("connect_request_failed", { stage: "save_prepared_keyboard_button", reason: prepared.reason });
       return NextResponse.json(
-        { error: REQUEST_FAILURE_MESSAGES[sendResult.reason] ?? "Could not start the connection flow.", reason: sendResult.reason },
+        { error: REQUEST_FAILURE_MESSAGES[prepared.reason] ?? "Could not start the connection flow.", reason: prepared.reason },
         { status: 502 }
       );
     }
 
-    return NextResponse.json({ token: pending.correlationToken, botUsername });
+    return NextResponse.json({ token: pending.correlationToken, preparedButtonId: prepared.preparedButtonId });
   } catch (err) {
     console.error("connect_request_failed", {
       stage: "unexpected",

@@ -29,14 +29,19 @@ export const CHANNEL_FAILURE_MESSAGES: Record<string, string> = {
   missing_bot_token: "Channel verification is temporarily unavailable. Please try again later.",
   invalid_channel: "We couldn't find that channel. Please try selecting it again.",
   not_a_channel: "That selection isn't a Telegram channel. Groups and users aren't supported.",
-  channel_is_public: "Onfile only supports private channels. Please select or create a private channel and try again.",
+  channel_is_public:
+    "Onfile only supports private Telegram channels. Please remove the Onfile Bot from this public channel and select a private channel instead.",
   bot_not_in_channel: "Add our bot to your channel as an administrator, then try again.",
   bot_not_admin: "Our bot is in the channel but needs to be an administrator.",
   bot_missing_permissions: "Our bot needs permission to post messages in your channel.",
   user_not_admin: "You must be an administrator (or the owner) of this channel to connect it.",
   telegram_api_error: "We couldn't reach Telegram right now. Please try again shortly.",
   channel_already_connected: "This channel is already connected to another Onfile account.",
+  cancelled: "Channel selection was cancelled. Please try again.",
 };
+
+/** Human-facing title shown alongside `CHANNEL_FAILURE_MESSAGES.channel_is_public`. */
+export const PUBLIC_CHANNEL_ERROR_TITLE = "Public Channel Not Supported";
 
 export interface ResolvedConnectingIdentity {
   telegramUserId: number;

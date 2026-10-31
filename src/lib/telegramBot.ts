@@ -186,86 +186,80 @@ export const REQUIRED_BOT_ADMIN_RIGHTS = {
  */
 export const REQUIRED_USER_ADMIN_RIGHTS = REQUIRED_BOT_ADMIN_RIGHTS;
 
-export type SendChatSelectionResult =
-  | { ok: true }
-  | { ok: false; reason: "missing_bot_token" | "bot_not_resolved" | "cannot_message_user" | "telegram_api_error"; detail?: string };
+export type PreparedChatRequestResult =
+  | { ok: true; preparedButtonId: string }
+  | { ok: false; reason: "missing_bot_token" | "bot_not_resolved" | "telegram_api_error"; detail?: string };
+
+interface TelegramPreparedKeyboardButton {
+  id: string;
+}
 
 /**
- * Sends the Telegram user a message (in their private chat with the bot)
- * containing a native `request_chat` keyboard button. Tapping it opens
- * Telegram's own "Select a chat" screen (filtered to channels the user
- * administers), followed by Telegram's own "Add bot as administrator"
- * screen if the bot isn't already an admin there with the rights below —
- * this is Telegram's documented `KeyboardButtonRequestChat` mechanism
- * (Bot API 6.5+), not a custom/simulated UI.
+ * Direct-picker channel connection flow (Bot API 9.6+ / Telegram Mini Apps
+ * `requestChat`): instead of sending the user a message in their private
+ * chat with the bot containing a `request_chat` reply-keyboard button (the
+ * previous flow, which required the user to first open/start a chat with
+ * the bot before anything could be sent to them), Onfile now:
  *
- * Telegram bots can only message users who have already started a
- * conversation with them (a platform-wide limitation, not something this
- * code can bypass) — that failure is surfaced as `cannot_message_user` so
- * the UI can show an actionable instruction instead of a generic error.
+ *   1. Calls the Bot API method `savePreparedKeyboardButton` with the exact
+ *      same `KeyboardButtonRequestChat` criteria as before, scoped to the
+ *      authenticated Telegram user via `user_id`. Telegram stores the
+ *      button server-side and returns a `PreparedKeyboardButton.id`.
+ *   2. The Mini App calls `Telegram.WebApp.requestChat(id)` directly from
+ *      the user's tap on "Connect Channel" — this opens Telegram's native
+ *      chat-selection screen immediately, with no bot chat and no second
+ *      "Select channel to connect" tap required.
+ *   3. When the user picks a chat (and, if needed, confirms adding the bot
+ *      as administrator with the requested rights), Telegram delivers the
+ *      exact same `chat_shared` service message to the bot's webhook as
+ *      the previous flow did — so the webhook handler
+ *      (src/app/api/telegram/webhook/route.ts) and the independent
+ *      Telegram Bot API re-verification (verifyChannelOwnershipAndBotAccess
+ *      below) are unchanged and unaffected by this change.
+ *
+ * `savePreparedKeyboardButton` does not message the user, so it cannot fail
+ * with "bot can't initiate conversation" — the whole class of "open the bot
+ * chat first" failures this previously needed to handle no longer applies.
  */
-export async function sendChatSelectionPrompt(
+export async function createPreparedChatRequestButton(
   botToken: string,
   telegramUserId: number,
   requestId: number
-): Promise<SendChatSelectionResult> {
+): Promise<PreparedChatRequestResult> {
   if (!botToken) return { ok: false, reason: "missing_bot_token" };
 
   const botId = await getBotId(botToken);
   if (!botId) return { ok: false, reason: "bot_not_resolved" };
 
-  const res = await callTelegramApi<{ message_id: number }>(botToken, "sendMessage", {
-    chat_id: telegramUserId,
-    text: "Tap the button below to select the Telegram channel you want to connect to Onfile.",
-    reply_markup: {
-      keyboard: [
-        [
-          {
-            text: "📢 Select channel to connect",
-            request_chat: {
-              request_id: requestId,
-              chat_is_channel: true,
-              bot_administrator_rights: REQUIRED_BOT_ADMIN_RIGHTS,
-              // Required alongside `bot_administrator_rights`: Telegram
-              // rejects the request with `USER_RIGHTS_MISSING` unless
-              // `user_administrator_rights` is also specified as (at least)
-              // a superset of it. See REQUIRED_USER_ADMIN_RIGHTS above.
-              user_administrator_rights: REQUIRED_USER_ADMIN_RIGHTS,
-              request_title: true,
-              request_username: true,
-            },
-          },
-        ],
-      ],
-      resize_keyboard: true,
-      one_time_keyboard: true,
+  const res = await callTelegramApi<TelegramPreparedKeyboardButton>(botToken, "savePreparedKeyboardButton", {
+    user_id: telegramUserId,
+    button: {
+      text: "Select channel to connect",
+      request_chat: {
+        request_id: requestId,
+        chat_is_channel: true,
+        // Private-channel filter at the picker level (Part A.5): channels
+        // with a public @username are excluded from Telegram's own "Select
+        // a chat" screen whenever the client supports this field. This is
+        // only a UX convenience — the backend independently re-verifies
+        // "no public username" via `getChat` in
+        // verifyChannelOwnershipAndBotAccess below regardless of what the
+        // picker filtered, since a client-side filter is never trusted as
+        // the security boundary.
+        chat_has_username: false,
+        bot_administrator_rights: REQUIRED_BOT_ADMIN_RIGHTS,
+        // Required alongside `bot_administrator_rights`: Telegram rejects
+        // the request with `USER_RIGHTS_MISSING` unless
+        // `user_administrator_rights` is also specified as (at least) a
+        // superset of it. See REQUIRED_USER_ADMIN_RIGHTS above.
+        user_administrator_rights: REQUIRED_USER_ADMIN_RIGHTS,
+        request_title: true,
+      },
     },
   });
 
   if (!res.ok) {
-    const description = res.description.toLowerCase();
-    // All of these mean the same thing from the user's perspective: Telegram
-    // refused to deliver our message to *this specific user*, not that
-    // Onfile/Telegram's API is broken. Surfacing them as `cannot_message_user`
-    // (actionable: "open the bot chat and tap Start") instead of the generic
-    // `telegram_api_error` (shown as "we couldn't reach Telegram") is both
-    // more accurate and more useful to the user.
-    const isUserUnreachable =
-      description.includes("bot can't initiate conversation") ||
-      description.includes("chat not found") ||
-      description.includes("bot was blocked by the user") ||
-      description.includes("user is deactivated");
-    if (isUserUnreachable) {
-      return { ok: false, reason: "cannot_message_user", detail: res.description };
-    }
-    // Anything else (rate limiting, a malformed request, a genuine Telegram
-    // outage, our fetch timing out, etc.) is logged above in
-    // callTelegramApi with the safe method name + Telegram's own
-    // description/error code — check Vercel's function logs for
-    // "telegram_api_error" / "telegram_api_network_error" to see exactly
-    // why this particular request failed.
-    console.error("send_chat_selection_prompt_failed", {
-      reason: "telegram_api_error",
+    console.error("save_prepared_keyboard_button_failed", {
       httpStatus: res.httpStatus,
       errorCode: res.errorCode,
       detail: res.description,
@@ -273,7 +267,7 @@ export async function sendChatSelectionPrompt(
     return { ok: false, reason: "telegram_api_error", detail: res.description };
   }
 
-  return { ok: true };
+  return { ok: true, preparedButtonId: res.result.id };
 }
 
 /**

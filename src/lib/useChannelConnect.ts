@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { openBotChat } from "@/lib/telegramWebApp";
+import { isRequestChatSupported, requestChatSelection } from "@/lib/telegramWebApp";
 
 export interface ConnectedChannel {
   id: number;
@@ -13,10 +13,10 @@ export interface ConnectedChannel {
 export type BotConnectState =
   | { phase: "idle" }
   | { phase: "starting" }
-  | { phase: "waiting"; botUsername: string; token: string }
-  | { phase: "needs_bot_chat"; botUsername: string }
+  | { phase: "waiting"; token: string }
+  | { phase: "unsupported" }
   | { phase: "verified"; channel: ConnectedChannel }
-  | { phase: "failed"; message: string };
+  | { phase: "failed"; message: string; reason?: string };
 
 const POLL_INTERVAL_MS = 2500;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -32,7 +32,6 @@ const STORAGE_KEY = "onfile_pending_channel_connect";
 
 interface PersistedRequest {
   token: string;
-  botUsername: string;
   deadline: number;
 }
 
@@ -62,12 +61,32 @@ function persist(req: PersistedRequest | null) {
   window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(req));
 }
 
+/** Fire-and-forget: tells the backend to stop waiting on a token the client
+ * already knows will never resolve (picker cancelled / selection not sent).
+ * Never blocks the UI on the outcome of this call. */
+function notifyCancelled(token: string) {
+  fetch("/api/channels/connect-cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
 /**
- * Shared engine for the native Telegram "select chat, then add bot as
- * admin" channel connection flow. Used both by the dedicated Channel
- * Connect onboarding screens and by Channel Management ("connect another
- * channel") so the business logic (and its reliability characteristics)
- * is defined exactly once.
+ * Shared engine for the native Telegram direct channel-picker connection
+ * flow:
+ *   1. Ask our backend to prepare a `request_chat` keyboard button scoped to
+ *      the signed-in Telegram user (`savePreparedKeyboardButton`).
+ *   2. Call `Telegram.WebApp.requestChat(id)` directly — Telegram's own
+ *      "Select a chat" screen opens immediately, filtered to private
+ *      channels, followed by its own "Add bot as administrator" screen if
+ *      needed. Neither screen is rendered by Onfile.
+ *   3. Poll the backend for the independently verified result once
+ *      Telegram's webhook delivers the resulting `chat_shared` update.
+ * Used both by the dedicated Channel Connect onboarding screens and by
+ * Channel Management ("connect another channel") so this logic (and its
+ * reliability characteristics) is defined exactly once.
  */
 export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => void) {
   const [state, setState] = useState<BotConnectState>({ phase: "idle" });
@@ -98,11 +117,11 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
         } else if (data.status === "failed") {
           stopPolling();
           persist(null);
-          setState({ phase: "failed", message: data.error || "Channel verification failed." });
+          setState({ phase: "failed", message: data.error || "Channel verification failed.", reason: data.reason });
         } else if (data.status === "expired") {
           stopPolling();
           persist(null);
-          setState({ phase: "failed", message: "This connection request expired. Please try again." });
+          setState({ phase: "failed", message: "This connection request expired. Please try again.", reason: "expired" });
         } else if (Date.now() > pollDeadline.current) {
           stopPolling();
           persist(null);
@@ -139,7 +158,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
   useEffect(() => {
     const pending = readPersisted();
     if (!pending) return;
-    setState({ phase: "waiting", botUsername: pending.botUsername, token: pending.token });
+    setState({ phase: "waiting", token: pending.token });
     const cleanup = startPolling(pending.token, pending.deadline);
     return cleanup;
     // Only ever run once on mount — subsequent starts are driven by `start()`.
@@ -147,31 +166,44 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
   }, []);
 
   const start = useCallback(async () => {
+    // Checked up front, before any network call: an unsupported Telegram
+    // client never falls back to the old bot-chat flow — it is shown an
+    // explicit "please update Telegram" state instead (Part A.6).
+    if (!isRequestChatSupported()) {
+      setState({ phase: "unsupported" });
+      return;
+    }
+
     setState({ phase: "starting" });
     try {
       const res = await fetch("/api/channels/connect-request", { method: "POST" });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (data.reason === "cannot_message_user" && data.botUsername) {
-          setState({ phase: "needs_bot_chat", botUsername: data.botUsername });
-          return;
-        }
-        setState({ phase: "failed", message: data.error || "Could not start the connection flow." });
+      if (!res.ok || !data.token || !data.preparedButtonId) {
+        setState({ phase: "failed", message: data.error || "Could not start the connection flow.", reason: data.reason });
         return;
       }
+
       const deadline = Date.now() + POLL_TIMEOUT_MS;
-      persist({ token: data.token, botUsername: data.botUsername, deadline });
-      setState({ phase: "waiting", botUsername: data.botUsername, token: data.token });
+      persist({ token: data.token, deadline });
+      setState({ phase: "waiting", token: data.token });
       startPolling(data.token, deadline);
-      openBotChat(data.botUsername);
+
+      // Opens Telegram's native chat-selection dialog directly — no bot
+      // chat, no intermediate screen. `sent` reflects whether Telegram
+      // delivered the resulting chat_shared update to the bot at all; the
+      // actual private/admin verification happens independently once the
+      // webhook (and this poll) observes the outcome.
+      const sent = await requestChatSelection(data.preparedButtonId);
+      if (!sent) {
+        stopPolling();
+        persist(null);
+        notifyCancelled(data.token);
+        setState({ phase: "failed", message: "Channel selection was cancelled. Please try again.", reason: "cancelled" });
+      }
     } catch {
       setState({ phase: "failed", message: "Network error. Please try again." });
     }
-  }, [startPolling]);
-
-  const reopenBotChat = useCallback((botUsername: string) => {
-    openBotChat(botUsername);
-  }, []);
+  }, [startPolling, stopPolling]);
 
   const reset = useCallback(() => {
     stopPolling();
@@ -179,5 +211,5 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
     setState({ phase: "idle" });
   }, [stopPolling]);
 
-  return { state, start, reopenBotChat, reset };
+  return { state, start, reset };
 }

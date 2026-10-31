@@ -14,55 +14,99 @@ interface FaqItem {
 
 /**
  * Single source of truth for Onfile's FAQ content. Reused by both the "Me"
- * section (Support > FAQ & Help) and the "Why connect?" entry point on the
- * Channel Connect screen — the content is never duplicated between the two
- * entry points, only the navigation context differs.
+ * section (Support > FAQ & Help) and anywhere else in the app that links
+ * into it — the content is never duplicated between entry points, only the
+ * navigation context differs.
+ *
+ * The "connect" section below is the explanation of why/how channel
+ * connection works, previously split between a "Why connect?" button on the
+ * Channel Connect screen and this page. That button has been removed from
+ * the Channel Connect screen (see src/components/setup/ChannelConnectScreen.tsx);
+ * this FAQ is now the only place that explanation lives. Every answer
+ * describes what the current implementation actually does — see
+ * src/lib/telegramBot.ts and src/lib/channelConnection.ts for the
+ * corresponding code.
  */
 const FAQ_ITEMS: FaqItem[] = [
   {
-    id: "q1",
+    id: "connect-why",
     section: "connect",
-    question: "Why do I need to connect a Telegram channel?",
+    question: "Why do I need to connect my Telegram channel?",
     answer:
       "Onfile needs a verified connection to your Telegram channel so it can confirm you're the creator behind the content, deliver eligible files to the people you share links with, and unlock channel-dependent creator features like publishing and smart links. Without a verified channel, Onfile has no reliable way to associate a file with its rightful creator.",
   },
   {
-    id: "q2",
+    id: "connect-admin",
     section: "connect",
-    question: "Why is a private channel mandatory?",
+    question: "Why does Onfile require administrator access?",
     answer:
-      "Onfile is built around private channels so that access to your content stays under your control: Onfile's bot and the verification process are designed around that controlled-sharing model. That said, a private channel does not guarantee complete protection against copying, redistribution, or copyright infringement once a file is shared — please use Onfile's access controls (passwords, pricing, etc.) thoughtfully.",
+      "Telegram only lets a bot post messages in a channel if it has been added as an administrator with that specific right. Onfile's bot requests administrator status purely so it can post/deliver files on your behalf — the exact same permission (\"Post Messages\") is requested whether you use Connect Channel via Bot or Manual Connect, and nothing beyond it.",
   },
   {
-    id: "q3",
-    section: "general",
-    question: "Will Onfile upload or permanently store my files on its own servers?",
-    answer:
-      "Onfile is designed to use the files already hosted on Telegram's servers instead of downloading and re-uploading them to its own storage. Smart links reference the original Telegram message/file rather than duplicating it. If you ever notice behavior that doesn't match this, please report it — this is the intended architecture and any discrepancy would be a bug, not a feature.",
-  },
-  {
-    id: "q4",
+    id: "connect-private-only",
     section: "connect",
-    question: "Will I lose ownership of my channel?",
+    question: "Why are only private channels supported?",
     answer:
-      "No. You remain the owner/administrator of your channel at all times. Onfile's bot is only ever granted administrator rights within your channel — specifically the ability to post messages so it can deliver files on your behalf. It is never given rights to change your channel's info, invite or remove members, promote other admins, or delete your content.",
+      "Onfile is built around private channels so that access to your content stays under your control. The backend checks every connection attempt — regardless of which method you use — and rejects any channel that has a public @username, even if the bot already has administrator rights there. This check cannot be bypassed from the picker or the manual link form.",
   },
   {
-    id: "q5",
+    id: "connect-storage",
+    section: "connect",
+    question: "Is my channel content stored on Onfile servers?",
+    answer:
+      "No. Onfile is designed to use the files already hosted on Telegram's servers instead of downloading and re-uploading them to its own storage. Smart links reference the original Telegram message/file rather than duplicating it. Onfile's database only stores the channel's Telegram ID, name, and connection/verification status — not your files.",
+  },
+  {
+    id: "connect-permissions",
+    section: "connect",
+    question: "What permissions does the Onfile Bot need?",
+    answer:
+      "Only the ability to post messages in your channel. Every other administrator right (changing channel info, deleting messages, inviting or removing members, promoting other admins, managing video chats, posting stories, etc.) is explicitly left disabled in the permissions Onfile requests from Telegram.",
+  },
+  {
+    id: "connect-disconnect",
+    section: "connect",
+    question: "Can I disconnect my channel later?",
+    answer:
+      "Yes. You can disconnect a connected channel any time from Channel Management in the Me tab. Onfile makes a best-effort attempt to remove the bot from the channel when you do; the bot is never automatically removed or demoted outside of an action you take.",
+  },
+  {
+    id: "connect-public-rejected",
+    section: "connect",
+    question: "What happens if I select a public channel?",
+    answer:
+      "The connection is rejected with a \"Public Channel Not Supported\" message, and no active connection is created. Onfile does not automatically demote or remove the bot from that channel — if you added it there, you'll need to remove it yourself from Telegram. Then select or link a private channel instead.",
+  },
+  {
+    id: "connect-bot-vs-manual",
+    section: "connect",
+    question: "What is the difference between Connect Channel via Bot and Manual Connect?",
+    answer:
+      "Connect Channel via Bot uses Telegram's own native chat-selection screen, opened directly from Onfile — you pick your channel and approve the bot's admin access entirely inside Telegram's own UI. Manual Connect instead asks you to add the bot as an administrator yourself from your channel's settings, then paste the channel's private invite link into Onfile. Both methods end with the exact same backend verification before a connection is activated.",
+  },
+  {
+    id: "connect-unsupported-client",
+    section: "connect",
+    question: "What should I do if Telegram does not support direct channel selection?",
+    answer:
+      "Connect Channel via Bot requires a recent Telegram app version (Bot API 9.6 or newer). If you see a \"Telegram Update Required\" message, update Telegram from your device's app store and try again, or use Manual Connect instead — it works on any Telegram version.",
+  },
+  {
+    id: "connect-fix-failed",
+    section: "connect",
+    question: "How can I fix a failed channel connection?",
+    answer:
+      "Check the specific error shown: it will tell you whether the channel needs to be private, whether the bot still needs to be added or made an administrator, or whether the bot needs the \"Post Messages\" permission enabled. Fix that in Telegram, then tap \"Try Again\" (Connect Channel via Bot) or resubmit the link (Manual Connect) — Onfile re-verifies against live Telegram data every time.",
+  },
+  {
+    id: "general-no-channel",
     section: "general",
     question: "Can I use Onfile without connecting a private channel?",
     answer:
       "Yes, you can view Onfile's introduction and onboarding screens without connecting a channel. However, creator features that depend on a connected channel — publishing files, creating playlists/smart links, and monetization — require a verified private channel first.",
   },
   {
-    id: "q6",
-    section: "connect",
-    question: "Can I disconnect my channel later?",
-    answer:
-      "Yes. You can disconnect a connected channel any time from Channel Management in the Me tab. Keep in mind that disconnecting will affect file delivery and any other feature that depends on that channel — links tied to it may stop working for new deliveries until you reconnect a verified channel.",
-  },
-  {
-    id: "q7",
+    id: "general-earnings",
     section: "general",
     question: "Can I earn money through Onfile?",
     answer:
@@ -130,7 +174,7 @@ export default function Faq({
             {SECTION_LABEL[section]}
           </h2>
           <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
-            {FAQ_ITEMS.filter((item) => item.section === section).map((item, idx, arr) => {
+            {FAQ_ITEMS.filter((item) => item.section === section).map((item, idx) => {
               const isOpen = openIds.has(item.id);
               const isHighlighted = highlightSection === section;
               return (
