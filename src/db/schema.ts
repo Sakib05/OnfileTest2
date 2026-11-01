@@ -209,6 +209,15 @@ export const pendingChannelRequests = pgTable(
     resolvedUserId: integer("resolved_user_id"),
     resolvedChannelId: integer("resolved_channel_id"),
     isNewAccount: boolean("is_new_account").default(false).notNull(),
+    // Atomic "claim" marker used to make webhook processing idempotent under
+    // concurrent/duplicate Telegram deliveries (e.g. a `chat_shared` message
+    // AND a `my_chat_member` update both resolving the same request — see
+    // src/app/api/telegram/webhook/route.ts). A single `UPDATE ... WHERE
+    // status = 'pending' AND claimed_at IS NULL` is atomic at the Postgres
+    // row level, so only one concurrent webhook delivery can ever "win" the
+    // right to verify + persist a given pending request, even across
+    // separate serverless instances.
+    claimedAt: timestamp("claimed_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
     expiresAt: timestamp("expires_at").notNull(),
@@ -217,6 +226,58 @@ export const pendingChannelRequests = pgTable(
     uniqueIndex("pending_channel_requests_token_hash_idx").on(t.tokenHash),
     index("pending_channel_requests_telegram_lookup_idx").on(t.telegramUserId, t.telegramRequestId),
     index("pending_channel_requests_expires_at_idx").on(t.expiresAt),
+  ]
+);
+
+// ─── Telegram Update Idempotency Log ────────────────────────────────────────
+// Records every Telegram `update_id` the webhook has already processed.
+// Telegram explicitly documents that it may redeliver the same update (e.g.
+// if our webhook response is slow/times out), so a duplicate delivery must
+// never be processed twice. `updateId` is globally unique per bot, so a
+// simple unique-constraint insert-or-ignore is sufficient and requires no
+// extra correlation state.
+export const telegramUpdateLog = pgTable("telegram_update_log", {
+  id: serial("id").primaryKey(),
+  updateId: bigint("update_id", { mode: "number" }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [uniqueIndex("telegram_update_log_update_id_idx").on(t.updateId)]);
+
+// ─── Bot Channel Admin Events ───────────────────────────────────────────────
+// Durable record of the most recent Telegram `my_chat_member` update for
+// each channel the bot has ever been added to/removed from, keyed by the
+// Telegram user who performed that action. This is the authoritative signal
+// Onfile uses to discover "which channel did this authenticated Telegram
+// user just add our bot to as administrator" — the only reliable way to
+// correlate Manual Connect's pasted private invite link (which the Bot API
+// cannot resolve to a chat on its own; see src/lib/telegramBot.ts) with a
+// real, bot-verified channel. Also used as a resilience fallback for the
+// native chat-picker ("Connect Channel via Bot") flow in case the
+// `chat_shared` service message is delayed or never delivered.
+// One row per Telegram channel (`telegramChatId` is unique) always reflects
+// the *latest known* membership state — never trusted as proof by itself;
+// every connection is independently re-verified live against the Telegram
+// Bot API (getChatMember) before anything is persisted to `channels`.
+export const botChannelAdminEvents = pgTable(
+  "bot_channel_admin_events",
+  {
+    id: serial("id").primaryKey(),
+    telegramChatId: varchar("telegram_chat_id", { length: 64 }).notNull(),
+    // The Telegram user who performed the membership-changing action
+    // (`my_chat_member.from.id`) — i.e. the admin who added/removed the bot.
+    telegramUserId: varchar("telegram_user_id", { length: 64 }).notNull(),
+    chatTitle: varchar("chat_title", { length: 256 }),
+    chatUsername: varchar("chat_username", { length: 128 }),
+    isChannel: boolean("is_channel").default(false).notNull(),
+    // Bot's new membership status from Telegram: "administrator", "member",
+    // "left", "kicked", "restricted", etc.
+    botStatus: varchar("bot_status", { length: 32 }).notNull(),
+    canPostMessages: boolean("can_post_messages"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("bot_channel_admin_events_chat_id_idx").on(t.telegramChatId),
+    index("bot_channel_admin_events_user_id_idx").on(t.telegramUserId),
   ]
 );
 

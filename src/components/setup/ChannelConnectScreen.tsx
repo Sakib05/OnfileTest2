@@ -2,16 +2,7 @@
 import React, { useState } from "react";
 import { Bot, Link2, Loader2, ShieldAlert } from "lucide-react";
 import type { ConnectedChannel } from "@/lib/useChannelConnect";
-
-/** Loose client-side format check only — never treated as proof of anything.
- * The backend independently verifies the channel is private, resolves it on
- * Telegram, and confirms the bot's admin access before anything is
- * persisted (see src/lib/telegramBot.ts). */
-function looksLikeChannelLink(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  return /^(?:https?:\/\/)?t\.me\/[a-zA-Z0-9_]{5,32}\/?$/i.test(trimmed) || /^@?[a-zA-Z0-9_]{5,32}$/.test(trimmed);
-}
+import { INVITE_LINK_FAILURE_MESSAGES, validatePrivateInviteLink } from "@/lib/inviteLink";
 
 export default function ChannelConnectScreen({
   onConnectViaBot,
@@ -31,18 +22,19 @@ export default function ChannelConnectScreen({
     if (submitting) return; // guard against duplicate submissions
 
     const trimmed = link.trim();
-    if (!looksLikeChannelLink(trimmed)) {
-      setError("Enter a valid private channel link, e.g. https://t.me/your_channel");
+    const validation = validatePrivateInviteLink(trimmed);
+    if (!validation.ok) {
+      setError(INVITE_LINK_FAILURE_MESSAGES[validation.reason]);
       return;
     }
 
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/channels", {
+      const res = await fetch("/api/channels/connect-manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelIdentifier: trimmed }),
+        body: JSON.stringify({ inviteLink: trimmed }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -86,7 +78,7 @@ export default function ChannelConnectScreen({
           </label>
           <input
             className="input-app text-sm"
-            placeholder="https://t.me/your_channel"
+            placeholder="https://t.me/+AbCdEfGhIjKlMnOp"
             value={link}
             onChange={(e) => {
               setLink(e.target.value);

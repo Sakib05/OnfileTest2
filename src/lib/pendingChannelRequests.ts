@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { channels, pendingChannelRequests } from "@/db/schema";
 import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
@@ -188,6 +188,61 @@ export async function updatePendingChannelRequestById(id: number, patch: Pending
     .update(pendingChannelRequests)
     .set({ ...patch, updatedAt: new Date() })
     .where(eq(pendingChannelRequests.id, id));
+}
+
+/**
+ * Looks up the most recent still-pending request for a Telegram user,
+ * without requiring Telegram's `request_id` (used by the `my_chat_member`
+ * webhook fallback path — see src/app/api/telegram/webhook/route.ts — which
+ * has no `request_id` to correlate with, only the acting user's Telegram
+ * id). Expired rows are excluded, same as every other lookup here.
+ */
+export async function getLatestPendingByTelegramUser(
+  telegramUserId: number
+): Promise<PendingChannelRequestRecord | undefined> {
+  const [row] = await db
+    .select()
+    .from(pendingChannelRequests)
+    .where(
+      and(
+        eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+        eq(pendingChannelRequests.status, "pending"),
+        gt(pendingChannelRequests.expiresAt, new Date())
+      )
+    )
+    .orderBy(desc(pendingChannelRequests.createdAt))
+    .limit(1);
+  if (!row) return undefined;
+  return rowToRecord(row);
+}
+
+/**
+ * Atomically "claims" a pending request for verification/finalization.
+ * Returns `true` only for the single caller that wins the race — every
+ * other concurrent/duplicate attempt (e.g. a `chat_shared` message AND a
+ * `my_chat_member` update both arriving for the same request, or Telegram
+ * redelivering the same update) gets `false` and must not proceed. This is
+ * what actually prevents a duplicate Telegram update from creating a
+ * duplicate connection, on top of the final `status` check.
+ *
+ * Safe under concurrency: a single `UPDATE ... WHERE status = 'pending' AND
+ * claimed_at IS NULL` is evaluated and applied atomically per row by
+ * Postgres, so two simultaneous callers can never both see zero rows
+ * affected as a false negative, nor both succeed.
+ */
+export async function claimPendingRequestForProcessing(id: number): Promise<boolean> {
+  const result = await db
+    .update(pendingChannelRequests)
+    .set({ claimedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(pendingChannelRequests.id, id),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt)
+      )
+    )
+    .returning({ id: pendingChannelRequests.id });
+  return result.length > 0;
 }
 
 /**

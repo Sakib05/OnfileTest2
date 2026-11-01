@@ -129,6 +129,16 @@ async function getBotId(botToken: string): Promise<number | null> {
   return cachedBotId;
 }
 
+/**
+ * Resolves and caches Onfile's own bot id. Exported so the webhook handler
+ * can confirm a `my_chat_member` update is genuinely about *our* bot (rather
+ * than, in principle, some other bot in the same chat) before treating it as
+ * evidence of anything — see src/app/api/telegram/webhook/route.ts.
+ */
+export async function getOwnBotId(botToken: string): Promise<number | null> {
+  return getBotId(botToken);
+}
+
 /** Returns the bot's @username (needed to build t.me deep links), cached after the first lookup. */
 export async function getBotUsername(botToken: string): Promise<string | null> {
   if (cachedBotUsername) return cachedBotUsername;

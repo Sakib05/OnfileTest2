@@ -16,16 +16,7 @@ import {
   Users,
 } from "lucide-react";
 import type { ConnectedChannel } from "@/lib/useChannelConnect";
-
-/** Loose client-side format check only — never treated as proof of anything.
- * The backend independently verifies the channel is private, resolves it on
- * Telegram, and confirms the bot's admin access before anything is
- * persisted (see src/lib/telegramBot.ts). */
-function looksLikeChannelLink(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  return /^(?:https?:\/\/)?t\.me\/[a-zA-Z0-9_]{5,32}\/?$/i.test(trimmed) || /^@?[a-zA-Z0-9_]{5,32}$/.test(trimmed);
-}
+import { INVITE_LINK_FAILURE_MESSAGES, validatePrivateInviteLink } from "@/lib/inviteLink";
 
 interface GuideStep {
   icon: React.FC<{ size: number; className?: string }>;
@@ -72,7 +63,8 @@ const BASE_STEPS: GuideStep[] = [
   {
     icon: Link2,
     title: "Copy Your Channel Link",
-    description: "Copy the private invite link of your Telegram channel.",
+    description:
+      "Open Channel Info > Invite Links and copy the PRIVATE invite link (looks like t.me/+AbCdEfGh... or t.me/joinchat/AbCdEfGh...) — not a public @username link.",
     mockupLabel: "Invite Link — Copy",
   },
 ];
@@ -143,10 +135,10 @@ export default function ManualConnectGuide({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const res = await fetch("/api/channels", {
+      const res = await fetch("/api/channels/connect-manual", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelIdentifier: link.trim() }),
+        body: JSON.stringify({ inviteLink: link.trim() }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -164,8 +156,9 @@ export default function ManualConnectGuide({
   const goNext = () => {
     if (submitting) return;
     if (isPasteStep) {
-      if (!looksLikeChannelLink(link)) {
-        setLinkError("Enter a valid private channel link, e.g. https://t.me/your_channel");
+      const validation = validatePrivateInviteLink(link);
+      if (!validation.ok) {
+        setLinkError(INVITE_LINK_FAILURE_MESSAGES[validation.reason]);
         return;
       }
       setLinkError(null);
@@ -232,7 +225,7 @@ export default function ManualConnectGuide({
             <div className="flex flex-col gap-2">
               <input
                 className="input-app text-sm"
-                placeholder="https://t.me/your_channel"
+                placeholder="https://t.me/+AbCdEfGhIjKlMnOp"
                 value={link}
                 onChange={(e) => {
                   setLink(e.target.value);
