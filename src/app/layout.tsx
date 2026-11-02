@@ -26,6 +26,19 @@ export const viewport: Viewport = {
   themeColor: "#FF6115",
 };
 
+/**
+ * The floating round "menu" control some visitors see on Onfile pages is the
+ * Vercel Toolbar. It is NOT part of this codebase (no @vercel/toolbar, no
+ * toolbar script/component here): Vercel's edge injects a
+ * <vercel-live-feedback> custom element into HTML responses for signed-in
+ * Vercel team members on environments where the toolbar is enabled.
+ * The authoritative switch is the Vercel dashboard (Project -> Settings ->
+ * General -> Vercel Toolbar -> Production: Off). As defence in depth we also
+ * hide that element on PRODUCTION builds only, so Preview deployments and
+ * local development keep the toolbar / Next.js dev tools for developers.
+ */
+const hideVercelToolbar = process.env.VERCEL_ENV === "production";
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
@@ -38,6 +51,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="Onfile" />
         <link rel="icon" href="/favicon.ico" />
+        {hideVercelToolbar && <style>{"vercel-live-feedback{display:none!important}"}</style>}
       </head>
       <body className="bg-app text-primary antialiased" suppressHydrationWarning>
         <ThemeProvider>

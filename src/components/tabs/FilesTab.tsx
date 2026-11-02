@@ -9,6 +9,10 @@ import { cn, formatBytes, formatNumber, getFileTypeBadgeColor, getFileTypeIcon, 
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
+import { useRouter } from "next/navigation";
+import { buildShareFileLink } from "@/lib/miniAppLink";
+import { useMiniAppLinkConfig } from "@/lib/useMiniAppLinkConfig";
+import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
 
 interface FileItem {
   id: number;
@@ -43,6 +47,7 @@ interface PlaylistItem {
 const FILTERS = ["All", "Video", "Document", "Audio", "Image", "Archive", "Playlist"];
 
 export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void }) {
+  const router = useRouter();
   const { toast } = useToast();
   const [activeFilter, setActiveFilter] = useState("All");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
@@ -122,7 +127,18 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const isPlaylist = (item: FileItem | (PlaylistItem & { _type?: string })): item is PlaylistItem & { _type: string } =>
     "_type" in item && (item as { _type?: string })._type === "playlist";
 
-  const smartLink = (slug: string) => `${window.location.origin}/f/${slug}`;
+  // Shared links open as a Telegram Mini App (no browser domain header) when
+  // the bot's Mini App short name is configured; otherwise this is the same
+  // plain https /f/<slug> URL as before.
+  const miniAppConfig = useMiniAppLinkConfig();
+  const smartLink = (slug: string) => buildShareFileLink(window.location.origin, miniAppConfig, slug);
+
+  // Inside the Telegram Mini App, stay in the same WebView; window.open would
+  // hand the page to Telegram's regular in-app browser (with its domain header).
+  const openFilePage = (slug: string) => {
+    if (isRunningInsideTelegram()) router.push(`/f/${slug}`);
+    else window.open(`/f/${slug}`, "_blank");
+  };
 
   const handleShare = (slug?: string) => {
     if (!slug) return;
@@ -299,7 +315,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     onDelete={() => { setDeleteTarget({ id: fi.id, type: "file" }); setMenuOpen(null); }}
                     onShare={() => handleShare(fi.smartLinkSlug)}
                     onDetail={() => { setDetailFile(fi); setMenuOpen(null); }}
-                    onOpen={() => { if (fi.smartLinkSlug) window.open(`/f/${fi.smartLinkSlug}`, "_blank"); setMenuOpen(null); }}
+                    onOpen={() => { if (fi.smartLinkSlug) openFilePage(fi.smartLinkSlug); setMenuOpen(null); }}
                   />
                 )}
               </div>
@@ -347,7 +363,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
             {detailFile.smartLinkSlug && (
               <div className="bg-secondary rounded-xl p-3">
                 <p className="text-xs text-secondary mb-1 font-medium">Smart Link</p>
-                <p className="text-xs text-brand break-all">{`${typeof window !== "undefined" ? window.location.origin : ""}/f/${detailFile.smartLinkSlug}`}</p>
+                <p className="text-xs text-brand break-all">{typeof window !== "undefined" ? smartLink(detailFile.smartLinkSlug) : ""}</p>
               </div>
             )}
             <button
