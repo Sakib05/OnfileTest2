@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { formatBytes, getFileTypeIcon, cn } from "@/lib/utils";
 import Modal from "@/components/ui/Modal";
+import TelegramAvatar from "@/components/ui/TelegramAvatar";
 
 interface FileInfo {
   id: number;
@@ -21,6 +22,36 @@ interface FileInfo {
   slug: string;
 }
 
+interface CreatorInfo {
+  firstName: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+}
+
+/** Creator identity row: Telegram avatar + name + @username (truncates safely on narrow screens). */
+function CreatorRow({ creator, className }: { creator: CreatorInfo | null; className?: string }) {
+  if (!creator || (!creator.firstName && !creator.username)) return null;
+  return (
+    <div className={cn("flex items-center gap-2.5 min-w-0 w-full", className)}>
+      <TelegramAvatar
+        photoUrl={creator.avatarUrl}
+        firstName={creator.firstName}
+        username={creator.username}
+        size="sm"
+      />
+      <div className="min-w-0 flex-1 text-left">
+        <p className="text-[11px] text-muted leading-tight">Shared by</p>
+        <p className="text-sm font-semibold text-primary leading-tight truncate break-all">
+          {creator.firstName || `@${creator.username}`}
+        </p>
+        {creator.firstName && creator.username && (
+          <p className="text-xs text-secondary leading-tight truncate">@{creator.username}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const REPORT_REASONS = [
   { value: "copyright", label: "Copyright Infringement" },
   { value: "nsfw", label: "Adult / NSFW Content" },
@@ -33,6 +64,7 @@ const REPORT_REASONS = [
 export default function SmartLinkPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
   const [file, setFile] = useState<FileInfo | null>(null);
+  const [creator, setCreator] = useState<CreatorInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
@@ -63,6 +95,7 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
       if (res.ok) {
         const data = await res.json();
         setFile(data.file);
+        setCreator(data.creator ?? null);
         if (!data.file.hasPassword && !data.file.starsPrice) {
           // Default to ad unlock
           setUnlockTab("ad");
@@ -195,6 +228,7 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
                 The file will be sent to you via Telegram bot shortly.
               </div>
             )}
+            <CreatorRow creator={creator} className="pt-3 border-t border-app" />
             <button
               onClick={() => setShowReport(true)}
               className="flex items-center gap-1.5 text-xs text-muted hover:text-red-500 transition-colors"
@@ -244,7 +278,9 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
             </div>
           </div>
 
-          <div className="flex items-center gap-4 pt-3 border-t border-app">
+          <CreatorRow creator={creator} className="pt-3 mb-3 border-t border-app" />
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-3 border-t border-app">
             <div className="flex items-center gap-1.5 text-xs text-secondary">
               <Eye size={12} />
               {file.views ?? 0} views

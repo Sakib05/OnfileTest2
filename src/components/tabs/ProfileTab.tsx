@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   User, Users, Download, DollarSign, ChevronRight, Moon, Sun, Globe, Megaphone,
   HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle, Settings,
-  Shield, LogOut, ArrowLeft, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
+  Shield, ArrowLeft, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
 import { cn, formatNumber, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -13,6 +13,7 @@ import Modal from "@/components/ui/Modal";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 import Faq from "@/components/Faq";
+import TelegramAvatar from "@/components/ui/TelegramAvatar";
 
 type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq";
 
@@ -32,9 +33,8 @@ interface ReferralData {
 
 export default function ProfileTab() {
   const { dark, toggle } = useTheme();
-  const { user, refreshUser, refreshChannels, logout } = useApp();
+  const { user, refreshUser, refreshChannels } = useApp();
   const { toast } = useToast();
-  const [loggingOut, setLoggingOut] = useState(false);
   const [subPage, setSubPage] = useState<SubPage>(null);
   const [referralData, setReferralData] = useState<ReferralData | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
@@ -141,15 +141,6 @@ export default function ProfileTab() {
       }
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    setLoggingOut(true);
-    try {
-      await logout();
-    } finally {
-      setLoggingOut(false);
     }
   };
 
@@ -525,14 +516,6 @@ export default function ProfileTab() {
             {saving ? "Saving..." : "Save Changes"}
           </button>
         </div>
-        <button
-          onClick={handleLogout}
-          disabled={loggingOut}
-          className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex items-center justify-center gap-2 text-sm font-semibold text-red-500 disabled:opacity-50"
-        >
-          <LogOut size={15} />
-          {loggingOut ? "Logging out..." : "Log Out"}
-        </button>
       </div>
     );
   }
@@ -543,17 +526,20 @@ export default function ProfileTab() {
       {/* Profile Header */}
       <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl gradient-brand flex items-center justify-center text-white text-2xl font-bold flex-shrink-0">
-            {(user?.firstName || user?.username || "C")[0]?.toUpperCase()}
-          </div>
+          <TelegramAvatar
+            photoUrl={user?.avatarUrl}
+            firstName={user?.firstName}
+            username={user?.username}
+            size="lg"
+          />
           <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-bold text-primary">{user?.firstName || "Creator"}</h2>
-            <p className="text-sm text-secondary">@{user?.username || "creator"}</p>
+            <h2 className="text-lg font-bold text-primary truncate">{user?.firstName || "Creator"}</h2>
+            <p className="text-sm text-secondary truncate">@{user?.username || "creator"}</p>
             <div className="flex items-center gap-2 mt-1.5">
               <span className="chip bg-brand-10 text-brand text-xs">Creator</span>
             </div>
           </div>
-          <button onClick={() => setSubPage("settings")} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
+          <button onClick={() => setSubPage("settings")} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
             <Settings size={16} style={{ color: "var(--color-text-secondary)" }} />
           </button>
         </div>

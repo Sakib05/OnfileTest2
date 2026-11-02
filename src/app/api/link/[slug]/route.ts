@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { files } from "@/db/schema";
+import { files, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { sanitizeAvatarUrl } from "@/lib/avatar";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 
@@ -20,8 +21,26 @@ export async function GET(
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
+    // Public creator display info only (name, @username, Telegram photo).
+    // Never expose the internal user id, Telegram id, balances, or email.
+    const [creator] = await db
+      .select({
+        firstName: users.firstName,
+        username: users.username,
+        avatarUrl: users.avatarUrl,
+      })
+      .from(users)
+      .where(eq(users.id, file.userId));
+
     // Return safe public info (no password hash)
     return NextResponse.json({
+      creator: creator
+        ? {
+            firstName: creator.firstName ?? null,
+            username: creator.username ?? null,
+            avatarUrl: sanitizeAvatarUrl(creator.avatarUrl),
+          }
+        : null,
       file: {
         id: file.id,
         title: file.title,
