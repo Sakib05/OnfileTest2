@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   MoreHorizontal, Edit2, FolderPlus, ExternalLink, Share2, BarChart2, Trash2,
   Plus, Play, FileText, Music, Image, Archive, Film, Grid, List, Search,
-  Lock, Star, Eye, Download
+  Lock, Star, Eye, Download, ImagePlus
 } from "lucide-react";
 import { cn, formatBytes, formatNumber, getFileTypeBadgeColor, getFileTypeIcon, timeAgo } from "@/lib/utils";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
@@ -13,6 +13,8 @@ import { useRouter } from "next/navigation";
 import { buildShareFileLink } from "@/lib/miniAppLink";
 import { useMiniAppLinkConfig } from "@/lib/useMiniAppLinkConfig";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
+import FileThumb from "@/components/ui/FileThumb";
+import ThumbnailEditor from "@/components/ThumbnailEditor";
 
 interface FileItem {
   id: number;
@@ -21,7 +23,9 @@ interface FileItem {
   fileType: string;
   fileSize?: number;
   starsPrice?: number;
-  password?: string;
+  hasPassword?: boolean;
+  hasThumbnail?: boolean;
+  thumbnailUpdatedAt?: string | null;
   isPublished: boolean;
   views?: number;
   downloads?: number;
@@ -39,7 +43,7 @@ interface PlaylistItem {
   totalViews?: number;
   totalDownloads?: number;
   starsPrice?: number;
-  password?: string;
+  hasPassword?: boolean;
   isPublished: boolean;
   createdAt: string;
 }
@@ -60,6 +64,10 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; type: "file" | "playlist" } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [detailFile, setDetailFile] = useState<FileItem | null>(null);
+  const [thumbFile, setThumbFile] = useState<FileItem | null>(null);
+
+  const thumbSrc = (fi: FileItem) =>
+    fi.hasThumbnail ? `/api/files/${fi.id}/thumbnail?v=${encodeURIComponent(fi.thumbnailUpdatedAt ?? "1")}` : null;
 
   const fetchAll = useCallback(async () => {
     try {
@@ -241,7 +249,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-primary text-sm line-clamp-1">{pl.title}</p>
-                        {pl.password && <Lock size={11} className="text-brand flex-shrink-0" />}
+                        {pl.hasPassword && <Lock size={11} className="text-brand flex-shrink-0" />}
                         {(pl.starsPrice ?? 0) > 0 && <Star size={11} className="text-yellow-500 flex-shrink-0" />}
                       </div>
                       <div className="flex items-center gap-3 mt-1">
@@ -272,16 +280,16 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
               <div key={`f-${fi.id}`} className={cn("bg-card border border-app rounded-2xl shadow-app-sm relative", viewMode === "grid" ? "p-3" : "p-4")}>
                 <div className={cn("flex gap-3", viewMode === "grid" ? "flex-col" : "flex-row items-center")}>
                   <div className={cn(
-                    "rounded-xl flex items-center justify-center flex-shrink-0 text-xl",
+                    "rounded-xl flex items-center justify-center flex-shrink-0 text-xl overflow-hidden",
                     viewMode === "grid" ? "w-full h-20" : "w-12 h-12",
                     "bg-secondary"
                   )}>
-                    {getFileTypeIcon(fi.fileType)}
+                    <FileThumb src={thumbSrc(fi)} fileType={fi.fileType} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <p className="font-semibold text-primary text-sm line-clamp-1">{fi.title}</p>
-                      {fi.password && <Lock size={11} className="text-brand flex-shrink-0" />}
+                      {fi.hasPassword && <Lock size={11} className="text-brand flex-shrink-0" />}
                       {(fi.starsPrice ?? 0) > 0 && (
                         <span className="chip bg-yellow-50 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400">
                           ⭐ {fi.starsPrice}
@@ -314,6 +322,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     onClose={() => setMenuOpen(null)}
                     onDelete={() => { setDeleteTarget({ id: fi.id, type: "file" }); setMenuOpen(null); }}
                     onShare={() => handleShare(fi.smartLinkSlug)}
+                    onThumbnail={() => { setThumbFile(fi); setMenuOpen(null); }}
                     onDetail={() => { setDetailFile(fi); setMenuOpen(null); }}
                     onOpen={() => { if (fi.smartLinkSlug) openFilePage(fi.smartLinkSlug); setMenuOpen(null); }}
                   />
@@ -334,13 +343,28 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         description={`Are you sure you want to delete this ${deleteTarget?.type === "file" ? "file" : "playlist"}? This action cannot be undone.`}
       />
 
+      {/* Thumbnail Modal */}
+      <Modal open={!!thumbFile} onClose={() => setThumbFile(null)} title={thumbFile?.hasThumbnail ? "Edit Thumbnail" : "Add Thumbnail"} size="md">
+        {thumbFile && (
+          <ThumbnailEditor
+            key={thumbFile.id}
+            fileId={thumbFile.id}
+            fileType={thumbFile.fileType}
+            hasThumbnail={!!thumbFile.hasThumbnail}
+            version={thumbFile.thumbnailUpdatedAt}
+            onChanged={fetchAll}
+            onClose={() => setThumbFile(null)}
+          />
+        )}
+      </Modal>
+
       {/* Detail Modal */}
       <Modal open={!!detailFile} onClose={() => setDetailFile(null)} title="File Details" size="md">
         {detailFile && (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-14 h-14 rounded-2xl bg-secondary text-3xl flex items-center justify-center">
-                {getFileTypeIcon(detailFile.fileType)}
+              <div className="w-14 h-14 rounded-2xl bg-secondary text-3xl flex items-center justify-center overflow-hidden">
+                <FileThumb src={thumbSrc(detailFile)} fileType={detailFile.fileType} />
               </div>
               <div>
                 <p className="font-bold text-primary">{detailFile.title}</p>
@@ -386,6 +410,7 @@ function ActionMenu({
   onDetail,
   onOpen,
   onEdit,
+  onThumbnail,
 }: {
   onClose: () => void;
   onDelete: () => void;
@@ -393,10 +418,12 @@ function ActionMenu({
   onDetail?: () => void;
   onOpen?: () => void;
   onEdit?: () => void;
+  onThumbnail?: () => void;
 }) {
   const actions = [
     onEdit && { icon: Edit2, label: "Edit", action: onEdit, color: "text-primary" },
     onOpen && { icon: ExternalLink, label: "Open Link", action: onOpen, color: "text-blue-500" },
+    onThumbnail && { icon: ImagePlus, label: "Thumbnail", action: onThumbnail, color: "text-purple-500" },
     onShare && { icon: Share2, label: "Share", action: onShare, color: "text-green-500" },
     onDetail && { icon: BarChart2, label: "Analytics", action: onDetail, color: "text-brand" },
     { icon: Trash2, label: "Delete", action: onDelete, color: "text-red-500" },

@@ -662,6 +662,15 @@ export default function ProfileTab() {
           label="Contact Support"
           onClick={() => {}}
         />
+        {user?.isAdmin && (
+          <ProfileRow
+            icon={HelpCircle}
+            iconBg="bg-purple-50 dark:bg-purple-900/20"
+            iconColor="text-purple-500"
+            label="Storage Admin"
+            onClick={() => window.location.assign("/admin/storage")}
+          />
+        )}
       </div>
 
       <div className="text-center">

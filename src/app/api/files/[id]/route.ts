@@ -4,6 +4,8 @@ import { files } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
+import { toOwnerFile } from "@/lib/fileDto";
+import { getThumbnailVersions, markThumbnailPendingDelete, purgeAssets } from "@/lib/storage/thumbnails";
 
 /**
  * Scoped to the authenticated owner. Public visitors use
@@ -24,7 +26,8 @@ export async function GET(
       .from(files)
       .where(and(eq(files.id, parseInt(id)), eq(files.userId, user.id)));
     if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    return NextResponse.json({ file });
+    const thumbs = await getThumbnailVersions([file.id]).catch(() => new Map());
+    return NextResponse.json({ file: toOwnerFile(file, thumbs.get(file.id)) });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -62,7 +65,8 @@ export async function PATCH(
       .returning();
 
     if (!updated) return NextResponse.json({ error: "Not found or unauthorized" }, { status: 404 });
-    return NextResponse.json({ file: updated });
+    const thumbs = await getThumbnailVersions([updated.id]).catch(() => new Map());
+    return NextResponse.json({ file: toOwnerFile(updated, thumbs.get(updated.id)) });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -82,12 +86,22 @@ export async function DELETE(
     if (!user) return unauthorized();
 
     const { id } = await params;
+    // Mark the file's thumbnail for remote deletion BEFORE the row disappears
+    // (thumbnail_assets.file_id is SET NULL on delete, so nothing is forgotten).
+    // Best-effort: a thumbnail problem must never block deleting a file.
+    let pendingThumbnailIds: number[] = [];
+    try {
+      pendingThumbnailIds = await markThumbnailPendingDelete(parseInt(id), user.id);
+    } catch {
+      /* not found / tables not migrated: fall through to the original behaviour */
+    }
     const [deleted] = await db
       .delete(files)
       .where(and(eq(files.id, parseInt(id)), eq(files.userId, user.id)))
       .returning();
 
     if (!deleted) return NextResponse.json({ error: "Not found or unauthorized" }, { status: 404 });
+    if (pendingThumbnailIds.length) await purgeAssets(pendingThumbnailIds).catch(() => {});
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error(err);

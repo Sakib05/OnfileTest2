@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { toOwnerPlaylist } from "@/lib/fileDto";
 import { db } from "@/db";
 import { playlists } from "@/db/schema";
 import { eq, desc } from "drizzle-orm";
@@ -17,7 +18,7 @@ export async function GET(req: NextRequest) {
       .where(eq(playlists.userId, user.id))
       .orderBy(desc(playlists.createdAt));
 
-    return NextResponse.json({ playlists: result });
+    return NextResponse.json({ playlists: result.map(toOwnerPlaylist) });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    return NextResponse.json({ playlist }, { status: 201 });
+    return NextResponse.json({ playlist: toOwnerPlaylist(playlist) }, { status: 201 });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
