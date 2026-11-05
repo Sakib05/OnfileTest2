@@ -1,6 +1,5 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Onboarding from "@/components/Onboarding";
 import CreatorSetup from "@/components/CreatorSetup";
 import BottomNav from "@/components/layout/BottomNav";
@@ -10,31 +9,11 @@ import CreateTab from "@/components/tabs/CreateTab";
 import WalletTab from "@/components/tabs/WalletTab";
 import ProfileTab from "@/components/tabs/ProfileTab";
 import { useApp } from "@/contexts/AppContext";
-import { getTelegramStartParam, initTelegramMiniApp } from "@/lib/telegramWebApp";
-import { parseFileStartParam } from "@/lib/miniAppLink";
 
 export default function HomePage() {
   const { activeTab, setActiveTab, authStatus, channelStatus } = useApp();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingChecked, setOnboardingChecked] = useState(false);
-  const router = useRouter();
-  // Set when this launch is a "open file" Mini App deep link
-  // (t.me/<bot>/<app>?startapp=f_<slug>); we render nothing while redirecting
-  // so the creator dashboard / onboarding never flashes for a file visitor.
-  const [fileLaunchSlug, setFileLaunchSlug] = useState<string | null>(null);
-
-  useEffect(() => {
-    // Mini App deep link -> File Access page, inside this same Telegram
-    // Mini App WebView. The start param is untrusted, so it is strictly
-    // validated; anything that is not `f_<slug>` is ignored and the normal
-    // entry flow runs unchanged. All access checks stay on /f/[slug].
-    const slug = parseFileStartParam(getTelegramStartParam());
-    if (!slug) return;
-    initTelegramMiniApp();
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time read of a browser-only launch parameter
-    setFileLaunchSlug(slug);
-    router.replace(`/f/${slug}`);
-  }, [router]);
 
   useEffect(() => {
     const done = localStorage.getItem("onfile_onboarding_done");
@@ -55,7 +34,6 @@ export default function HomePage() {
     setShowOnboarding(false);
   };
 
-  if (fileLaunchSlug) return null;
   if (!onboardingChecked || authStatus === "loading") return null;
 
   if (showOnboarding) {

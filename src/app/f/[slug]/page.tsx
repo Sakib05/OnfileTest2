@@ -1,18 +1,13 @@
 "use client";
 import React, { useState, useEffect, useCallback, use } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import {
   Download, Lock, Star, Eye, Shield, Flag, Clock, CheckCircle2, AlertCircle,
   Play, FileText, Music, Image as ImageIcon, Archive, Film, ArrowLeft, Share2
 } from "lucide-react";
 import { formatBytes, getFileTypeIcon, cn } from "@/lib/utils";
-import FileThumb from "@/components/ui/FileThumb";
 import Modal from "@/components/ui/Modal";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
-import { getTelegramStartParam, getTelegramWebApp, initTelegramMiniApp, isRunningInsideTelegram } from "@/lib/telegramWebApp";
-import { buildMiniAppFileLink, parseFileStartParam } from "@/lib/miniAppLink";
-import { useMiniAppLinkConfig } from "@/lib/useMiniAppLinkConfig";
 
 interface FileInfo {
   id: number;
@@ -22,8 +17,6 @@ interface FileInfo {
   fileSize?: number;
   starsPrice?: number;
   hasPassword?: boolean;
-  hasThumbnail?: boolean;
-  thumbnailVersion?: number | null;
   views?: number;
   downloads?: number;
   slug: string;
@@ -31,21 +24,30 @@ interface FileInfo {
 
 interface CreatorInfo {
   firstName: string | null;
+  username: string | null;
   avatarUrl: string | null;
 }
 
-/**
- * Creator identity row: circular Telegram profile picture + display name only.
- * (No "Shared by" label and no @username.) Without a profile picture — or if it
- * fails to load — TelegramAvatar shows a circle with the name's first letter.
- */
+/** Creator identity row: Telegram avatar + name + @username (truncates safely on narrow screens). */
 function CreatorRow({ creator, className }: { creator: CreatorInfo | null; className?: string }) {
-  const name = creator?.firstName?.trim();
-  if (!creator || !name) return null;
+  if (!creator || (!creator.firstName && !creator.username)) return null;
   return (
     <div className={cn("flex items-center gap-2.5 min-w-0 w-full", className)}>
-      <TelegramAvatar photoUrl={creator.avatarUrl} firstName={name} size="sm" />
-      <p className="min-w-0 flex-1 text-left text-sm font-semibold text-primary leading-tight truncate">{name}</p>
+      <TelegramAvatar
+        photoUrl={creator.avatarUrl}
+        firstName={creator.firstName}
+        username={creator.username}
+        size="sm"
+      />
+      <div className="min-w-0 flex-1 text-left">
+        <p className="text-[11px] text-muted leading-tight">Shared by</p>
+        <p className="text-sm font-semibold text-primary leading-tight truncate break-all">
+          {creator.firstName || `@${creator.username}`}
+        </p>
+        {creator.firstName && creator.username && (
+          <p className="text-xs text-secondary leading-tight truncate">@{creator.username}</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -61,12 +63,6 @@ const REPORT_REASONS = [
 
 export default function SmartLinkPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
-  const router = useRouter();
-  // null until we know whether we run inside the Telegram Mini App WebView.
-  const [inMiniApp, setInMiniApp] = useState<boolean | null>(null);
-  // Only needed (and only fetched) for visitors NOT already in the Mini App.
-  const miniAppConfig = useMiniAppLinkConfig(inMiniApp === false);
-  const miniAppLink = inMiniApp === false ? buildMiniAppFileLink(miniAppConfig, slug) : null;
   const [file, setFile] = useState<FileInfo | null>(null);
   const [creator, setCreator] = useState<CreatorInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -115,37 +111,6 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
   }, [slug]);
 
   useEffect(() => { fetchFile(); }, [fetchFile]);
-
-  // Telegram Mini App integration (no-op in a regular browser): tell Telegram
-  // the page is ready, and offer the native header back arrow when this page
-  // was opened from inside the Mini App (not when it IS the Mini App launch
-  // target, where the native Close button is the way out).
-  useEffect(() => {
-    const insideTelegram = isRunningInsideTelegram();
-    // One-time read of a browser-only API (Telegram bridge) after mount.
-    setInMiniApp(insideTelegram);
-    if (!insideTelegram) return;
-    initTelegramMiniApp();
-
-    const backButton = getTelegramWebApp()?.BackButton;
-    const launchedForThisFile = !!parseFileStartParam(getTelegramStartParam());
-    if (!backButton || launchedForThisFile || window.history.length <= 1) return;
-    const onBack = () => router.back();
-    try {
-      backButton.onClick(onBack);
-      backButton.show();
-    } catch {
-      return;
-    }
-    return () => {
-      try {
-        backButton.offClick(onBack);
-        backButton.hide();
-      } catch {
-        // ignore
-      }
-    };
-  }, [router]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval>;
@@ -237,11 +202,8 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
         <div className="w-full max-w-md">
           {/* Success */}
           <div className="bg-card rounded-3xl border border-app shadow-app-lg p-6 text-center flex flex-col items-center gap-4 animate-scale-in">
-            <div className="w-20 h-20 rounded-2xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center text-4xl overflow-hidden">
-              <FileThumb
-                src={file.hasThumbnail ? `/api/link/${encodeURIComponent(file.slug)}/thumbnail?v=${file.thumbnailVersion ?? 1}` : null}
-                fileType={file.fileType}
-              />
+            <div className="w-20 h-20 rounded-2xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center text-4xl">
+              {getFileTypeIcon(file.fileType)}
             </div>
             <div className="w-14 h-14 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center -mt-8 border-4 border-card">
               <CheckCircle2 size={28} className="text-green-500" />
@@ -298,23 +260,11 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
           </button>
         </div>
 
-        {miniAppLink && (
-          <a
-            href={miniAppLink}
-            className="self-start text-xs font-medium text-brand hover:underline"
-          >
-            Open in Telegram Mini App
-          </a>
-        )}
-
         {/* File Card */}
         <div className="bg-card rounded-3xl border border-app shadow-app-lg p-5">
           <div className="flex items-center gap-4 mb-4">
-            <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-3xl flex-shrink-0 overflow-hidden">
-              <FileThumb
-                src={file.hasThumbnail ? `/api/link/${encodeURIComponent(file.slug)}/thumbnail?v=${file.thumbnailVersion ?? 1}` : null}
-                fileType={file.fileType}
-              />
+            <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-3xl flex-shrink-0">
+              {getFileTypeIcon(file.fileType)}
             </div>
             <div className="flex-1 min-w-0">
               <h1 className="font-bold text-primary text-base leading-snug">{file.title}</h1>

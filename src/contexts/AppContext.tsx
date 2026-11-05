@@ -17,8 +17,6 @@ export interface UserProfile {
   referralCode?: string;
   darkMode?: boolean;
   language?: string;
-  /** Display hint only; admin endpoints re-check on the server. */
-  isAdmin?: boolean;
 }
 
 export interface SetupProfile {

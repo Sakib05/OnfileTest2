@@ -28,13 +28,6 @@ export interface TelegramWebApp {
    * `false` if the user cancelled / Telegram could not deliver it.
    */
   requestChat?: (reqId: string, callback?: (sent: boolean) => void) => void;
-  /** Bot API 6.1+. Native header back arrow, shown only inside the Mini App. */
-  BackButton?: {
-    show: () => void;
-    hide: () => void;
-    onClick: (cb: () => void) => void;
-    offClick: (cb: () => void) => void;
-  };
 }
 
 declare global {
@@ -108,43 +101,4 @@ export function requestChatSelection(preparedButtonId: string): Promise<boolean>
       resolve(false);
     }
   });
-}
-
-/**
- * The Mini App launch parameter (`?startapp=<value>` on a t.me Mini App
- * link), or null when the page was not launched with one / is not running in
- * Telegram. Reads the official `initDataUnsafe.start_param` first, then the
- * `tgWebAppStartParam` launch parameter Telegram also places in the URL.
- * The value is untrusted user input: always validate it (see
- * parseFileStartParam in src/lib/miniAppLink.ts) before acting on it.
- */
-export function getTelegramStartParam(): string | null {
-  const webApp = getTelegramWebApp();
-  const fromUnsafe = webApp?.initDataUnsafe?.start_param;
-  if (typeof fromUnsafe === "string" && fromUnsafe) return fromUnsafe;
-  if (typeof window === "undefined") return null;
-  try {
-    const fromSearch = new URLSearchParams(window.location.search).get("tgWebAppStartParam");
-    if (fromSearch) return fromSearch;
-    const fromHash = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("tgWebAppStartParam");
-    if (fromHash) return fromHash;
-  } catch {
-    // malformed URL parts: treat as "no start param"
-  }
-  return null;
-}
-
-/**
- * Tells Telegram the Mini App finished loading and asks for the full-height
- * view. Safe no-op outside Telegram (regular browser) and never throws.
- */
-export function initTelegramMiniApp(): void {
-  const webApp = getTelegramWebApp();
-  if (!webApp || !webApp.initData) return;
-  try {
-    webApp.ready();
-    webApp.expand();
-  } catch {
-    // Older clients: nothing to do, the page still works.
-  }
 }

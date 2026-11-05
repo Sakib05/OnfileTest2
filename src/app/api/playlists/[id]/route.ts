@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { toOwnerPlaylist } from "@/lib/fileDto";
 import { db } from "@/db";
 import { playlists } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -63,7 +62,7 @@ export async function PATCH(
       .returning();
 
     if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    return NextResponse.json({ playlist: toOwnerPlaylist(updated) });
+    return NextResponse.json({ playlist: updated });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

@@ -6,8 +6,6 @@ import { nanoid } from "nanoid";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
-import { toOwnerFile } from "@/lib/fileDto";
-import { getThumbnailVersions } from "@/lib/storage/thumbnails";
 
 export async function GET(req: NextRequest) {
   try {
@@ -33,10 +31,7 @@ export async function GET(req: NextRequest) {
       .orderBy(desc(files.createdAt))
       .limit(100);
 
-    // Thumbnail metadata is best-effort: files must still list if the
-    // thumbnail tables have not been migrated yet.
-    const thumbs = await getThumbnailVersions(result.map((f) => f.id)).catch(() => new Map());
-    return NextResponse.json({ files: result.map((f) => toOwnerFile(f, thumbs.get(f.id))) });
+    return NextResponse.json({ files: result });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -85,7 +80,7 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
-    return NextResponse.json({ file: toOwnerFile(file) }, { status: 201 });
+    return NextResponse.json({ file }, { status: 201 });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

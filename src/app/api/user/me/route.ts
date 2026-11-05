@@ -3,7 +3,6 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest } from "@/lib/auth";
-import { isAdminUser } from "@/lib/storage/admin";
 
 /**
  * Returns the profile of the currently authenticated creator, derived
@@ -36,8 +35,6 @@ export async function GET(req: NextRequest) {
         referralCode: user.referralCode ?? undefined,
         darkMode: user.darkMode ?? false,
         language: user.language ?? "en",
-        // Display hint only; every admin endpoint re-checks server-side.
-        isAdmin: isAdminUser(user),
       },
     });
   } catch (err) {

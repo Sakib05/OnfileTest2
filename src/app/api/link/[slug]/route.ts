@@ -5,7 +5,6 @@ import { eq } from "drizzle-orm";
 import { sanitizeAvatarUrl } from "@/lib/avatar";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
-import { getThumbnailVersions } from "@/lib/storage/thumbnails";
 
 export async function GET(
   req: NextRequest,
@@ -22,24 +21,23 @@ export async function GET(
       return NextResponse.json({ error: "File not found" }, { status: 404 });
     }
 
-    // Public creator display info only (first name + Telegram photo).
+    // Public creator display info only (name, @username, Telegram photo).
     // Never expose the internal user id, Telegram id, balances, or email.
     const [creator] = await db
       .select({
         firstName: users.firstName,
+        username: users.username,
         avatarUrl: users.avatarUrl,
       })
       .from(users)
       .where(eq(users.id, file.userId));
-
-    const thumbs = await getThumbnailVersions([file.id]).catch(() => new Map());
-    const thumb = thumbs.get(file.id);
 
     // Return safe public info (no password hash)
     return NextResponse.json({
       creator: creator
         ? {
             firstName: creator.firstName ?? null,
+            username: creator.username ?? null,
             avatarUrl: sanitizeAvatarUrl(creator.avatarUrl),
           }
         : null,
@@ -52,8 +50,6 @@ export async function GET(
         mimeType: file.mimeType,
         starsPrice: file.starsPrice,
         hasPassword: !!file.password,
-        hasThumbnail: !!thumb,
-        thumbnailVersion: thumb ? thumb.updatedAt.getTime() : null,
         views: file.views,
         downloads: file.downloads,
         slug: file.smartLinkSlug,
