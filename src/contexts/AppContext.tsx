@@ -17,6 +17,7 @@ export interface UserProfile {
   referralCode?: string;
   darkMode?: boolean;
   language?: string;
+  isAdmin?: boolean;
 }
 
 export interface SetupProfile {

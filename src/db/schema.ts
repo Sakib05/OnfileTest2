@@ -420,3 +420,92 @@ export const linkTokens = pgTable("link_tokens", {
   usedAt: timestamp("used_at"),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ─── Thumbnail Storage (DBByte) ─────────────────────────────────────────────
+// Only METADATA lives here. The optimized image bytes live in the DBByte
+// bucket; the original Telegram file never leaves the creator's private
+// Telegram channel. Delivery URLs are derived at runtime from `objectKey` +
+// server config (src/lib/thumbnails/config.ts) so nothing here depends on a
+// secret or on a particular CDN token.
+//
+// One active thumbnail per file (unique file_id). `objectKey` embeds a random
+// per-upload `version`, so every upload/replacement yields a brand-new,
+// immutable URL (safe for long-lived browser/CDN caching).
+export const fileThumbnails = pgTable(
+  "file_thumbnails",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    fileId: integer("file_id")
+      .notNull()
+      .references(() => files.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 16 }).default("dbbyte").notNull(),
+    objectKey: varchar("object_key", { length: 255 }).notNull(),
+    version: varchar("version", { length: 32 }).notNull(),
+    mimeType: varchar("mime_type", { length: 64 }).notNull(),
+    format: varchar("format", { length: 16 }).notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    status: varchar("status", { length: 16 }).default("ready").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("file_thumbnails_file_id_idx").on(t.fileId),
+    uniqueIndex("file_thumbnails_object_key_idx").on(t.provider, t.objectKey),
+    index("file_thumbnails_user_id_idx").on(t.userId),
+  ]
+);
+
+// Objects that exist in DBByte but are no longer referenced (failed delete
+// after replace/remove, or a DB write that failed after a successful upload).
+// Cleaned up by an admin-triggered retry; never auto-deleted blindly.
+export const thumbnailOrphans = pgTable(
+  "thumbnail_orphans",
+  {
+    id: serial("id").primaryKey(),
+    provider: varchar("provider", { length: 16 }).default("dbbyte").notNull(),
+    objectKey: varchar("object_key", { length: 255 }).notNull(),
+    reason: varchar("reason", { length: 48 }).notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    lastError: varchar("last_error", { length: 300 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    lastAttemptAt: timestamp("last_attempt_at"),
+  },
+  (t) => [uniqueIndex("thumbnail_orphans_object_key_idx").on(t.provider, t.objectKey)]
+);
+
+// Provider/DB-side upload failures only (not user validation errors), shown
+// to admins. Messages are short, never contain secrets.
+export const thumbnailFailures = pgTable(
+  "thumbnail_failures",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id"),
+    fileId: integer("file_id"),
+    code: varchar("code", { length: 48 }).notNull(),
+    httpStatus: integer("http_status"),
+    message: varchar("message", { length: 300 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("thumbnail_failures_created_at_idx").on(t.createdAt)]
+);
+
+// Admin-entered ("manual") DBByte usage figures. DBByte exposes no usage API,
+// so these are NEVER presented as official provider data. `metric` is one of
+// storage_bytes | bandwidth_bytes | requests.
+export const storageUsageManual = pgTable(
+  "storage_usage_manual",
+  {
+    id: serial("id").primaryKey(),
+    metric: varchar("metric", { length: 32 }).notNull(),
+    used: bigint("used", { mode: "number" }).notNull(),
+    limit: bigint("limit", { mode: "number" }).notNull(),
+    updatedBy: integer("updated_by"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("storage_usage_manual_metric_idx").on(t.metric)]
+);

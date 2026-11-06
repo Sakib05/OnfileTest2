@@ -5,6 +5,8 @@ import { eq } from "drizzle-orm";
 import { sanitizeAvatarUrl } from "@/lib/avatar";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
+import { buildThumbnailUrl } from "@/lib/thumbnails/config";
+import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
 
 export async function GET(
   req: NextRequest,
@@ -32,6 +34,9 @@ export async function GET(
       .from(users)
       .where(eq(users.id, file.userId));
 
+    // Same stored thumbnail the creator sees in My Library (no second copy).
+    const thumb = (await getThumbnailsForFiles([file.id])).get(file.id);
+
     // Return safe public info (no password hash)
     return NextResponse.json({
       creator: creator
@@ -53,6 +58,9 @@ export async function GET(
         views: file.views,
         downloads: file.downloads,
         slug: file.smartLinkSlug,
+        thumbnailUrl: thumb ? buildThumbnailUrl(thumb.objectKey) : null,
+        thumbnailWidth: thumb?.width ?? null,
+        thumbnailHeight: thumb?.height ?? null,
       },
     });
   } catch (err) {

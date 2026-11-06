@@ -9,6 +9,8 @@ import { cn, formatBytes, formatNumber, getFileTypeBadgeColor, getFileTypeIcon, 
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
+import FileThumb from "@/components/ui/FileThumb";
+import ThumbnailManager from "@/components/ThumbnailManager";
 
 interface FileItem {
   id: number;
@@ -25,6 +27,9 @@ interface FileItem {
   smartLinkSlug?: string;
   createdAt: string;
   category?: string;
+  thumbnailUrl?: string | null;
+  thumbnailWidth?: number | null;
+  thumbnailHeight?: number | null;
 }
 
 interface PlaylistItem {
@@ -55,6 +60,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; type: "file" | "playlist" } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [detailFile, setDetailFile] = useState<FileItem | null>(null);
+  const [thumbFile, setThumbFile] = useState<FileItem | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -258,9 +264,9 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                   <div className={cn(
                     "rounded-xl flex items-center justify-center flex-shrink-0 text-xl",
                     viewMode === "grid" ? "w-full h-20" : "w-12 h-12",
-                    "bg-secondary"
+                    "bg-secondary relative overflow-hidden"
                   )}>
-                    {getFileTypeIcon(fi.fileType)}
+                    <FileThumb url={fi.thumbnailUrl} fileType={fi.fileType} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -299,6 +305,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     onDelete={() => { setDeleteTarget({ id: fi.id, type: "file" }); setMenuOpen(null); }}
                     onShare={() => handleShare(fi.smartLinkSlug)}
                     onDetail={() => { setDetailFile(fi); setMenuOpen(null); }}
+                    onThumbnail={() => { setThumbFile(fi); setMenuOpen(null); }}
                     onOpen={() => { if (fi.smartLinkSlug) window.open(`/f/${fi.smartLinkSlug}`, "_blank"); setMenuOpen(null); }}
                   />
                 )}
@@ -318,13 +325,30 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         description={`Are you sure you want to delete this ${deleteTarget?.type === "file" ? "file" : "playlist"}? This action cannot be undone.`}
       />
 
+      {/* Thumbnail Modal */}
+      <Modal open={!!thumbFile} onClose={() => setThumbFile(null)} title="Thumbnail" size="md">
+        {thumbFile && (
+          <ThumbnailManager
+            fileId={thumbFile.id}
+            fileType={thumbFile.fileType}
+            currentUrl={thumbFile.thumbnailUrl}
+            onToast={toast}
+            onChanged={({ url, width, height }) => {
+              const patch = { thumbnailUrl: url, thumbnailWidth: width, thumbnailHeight: height };
+              setFiles((prev) => prev.map((f) => (f.id === thumbFile.id ? { ...f, ...patch } : f)));
+              setThumbFile((f) => (f ? { ...f, ...patch } : f));
+            }}
+          />
+        )}
+      </Modal>
+
       {/* Detail Modal */}
       <Modal open={!!detailFile} onClose={() => setDetailFile(null)} title="File Details" size="md">
         {detailFile && (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-14 h-14 rounded-2xl bg-secondary text-3xl flex items-center justify-center">
-                {getFileTypeIcon(detailFile.fileType)}
+              <div className="w-14 h-14 rounded-2xl bg-secondary text-3xl flex items-center justify-center relative overflow-hidden flex-shrink-0">
+                <FileThumb url={detailFile.thumbnailUrl} fileType={detailFile.fileType} />
               </div>
               <div>
                 <p className="font-bold text-primary">{detailFile.title}</p>
@@ -370,6 +394,7 @@ function ActionMenu({
   onDetail,
   onOpen,
   onEdit,
+  onThumbnail,
 }: {
   onClose: () => void;
   onDelete: () => void;
@@ -377,9 +402,11 @@ function ActionMenu({
   onDetail?: () => void;
   onOpen?: () => void;
   onEdit?: () => void;
+  onThumbnail?: () => void;
 }) {
   const actions = [
     onEdit && { icon: Edit2, label: "Edit", action: onEdit, color: "text-primary" },
+    onThumbnail && { icon: Image, label: "Thumbnail", action: onThumbnail, color: "text-primary" },
     onOpen && { icon: ExternalLink, label: "Open Link", action: onOpen, color: "text-blue-500" },
     onShare && { icon: Share2, label: "Share", action: onShare, color: "text-green-500" },
     onDetail && { icon: BarChart2, label: "Analytics", action: onDetail, color: "text-brand" },

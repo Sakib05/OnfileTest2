@@ -4,6 +4,7 @@ import { files } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
+import { cleanupThumbnailObject, findThumbnailKeyForCleanup } from "@/lib/thumbnails/cleanup";
 
 /**
  * Scoped to the authenticated owner. Public visitors use
@@ -82,12 +83,16 @@ export async function DELETE(
     if (!user) return unauthorized();
 
     const { id } = await params;
+    // Remember the thumbnail object (if any) before the cascade removes its row.
+    const thumbKey = await findThumbnailKeyForCleanup(user.id, parseInt(id));
     const [deleted] = await db
       .delete(files)
       .where(and(eq(files.id, parseInt(id)), eq(files.userId, user.id)))
       .returning();
 
     if (!deleted) return NextResponse.json({ error: "Not found or unauthorized" }, { status: 404 });
+    // Best-effort: failures are queued as orphans, never surfaced as a delete failure.
+    if (thumbKey) await cleanupThumbnailObject(thumbKey);
     return NextResponse.json({ success: true });
   } catch (err) {
     console.error(err);

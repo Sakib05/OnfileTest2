@@ -14,6 +14,7 @@ import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 import Faq from "@/components/Faq";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
+import Link from "next/link";
 
 type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq";
 
@@ -587,6 +588,21 @@ export default function ProfileTab() {
         </div>
         <ChevronRight size={16} className="text-secondary flex-shrink-0" />
       </button>
+
+      {/* Admin-only: thumbnail storage status (shown only when the server says this session is an admin) */}
+      {user?.isAdmin && (
+        <Link
+          href="/admin/storage"
+          className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex items-center gap-3 w-full text-left"
+        >
+          <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0 text-lg">🗄️</div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-primary">Thumbnail Storage</p>
+            <p className="text-xs text-secondary">DBByte usage &amp; status (admin)</p>
+          </div>
+          <ChevronRight size={16} className="text-secondary flex-shrink-0" />
+        </Link>
+      )}
 
       {/* Sections */}
       <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">

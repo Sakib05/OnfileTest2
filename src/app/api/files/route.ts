@@ -6,6 +6,8 @@ import { nanoid } from "nanoid";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
+import { buildThumbnailUrl } from "@/lib/thumbnails/config";
+import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
 
 export async function GET(req: NextRequest) {
   try {
@@ -31,7 +33,20 @@ export async function GET(req: NextRequest) {
       .orderBy(desc(files.createdAt))
       .limit(100);
 
-    return NextResponse.json({ files: result });
+    // Thumbnails are looked up separately (and never throw) so a thumbnail
+    // problem can never break the library listing itself.
+    const thumbs = await getThumbnailsForFiles(result.map((f) => f.id));
+    const withThumbs = result.map((f) => {
+      const t = thumbs.get(f.id);
+      return {
+        ...f,
+        thumbnailUrl: t ? buildThumbnailUrl(t.objectKey) : null,
+        thumbnailWidth: t?.width ?? null,
+        thumbnailHeight: t?.height ?? null,
+      };
+    });
+
+    return NextResponse.json({ files: withThumbs });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

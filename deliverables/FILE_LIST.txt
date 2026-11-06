@@ -1,0 +1,44 @@
+Onfile — DBByte thumbnail storage: files in this ZIP (paths relative to repo root)
+Branch: feature/dbbyte-thumbnail-storage   Base: main @ 0c20300
+
+NEW      .env.example
+NEW      docs/DBBYTE_THUMBNAILS.md
+NEW      migrations/thumbnails/down.sql
+NEW      migrations/thumbnails/up.sql
+MODIFIED next.config.ts
+NEW      package-lock.json
+MODIFIED package.json
+NEW      scripts/e2e-thumbnails.mjs
+NEW      src/app/admin/storage/page.tsx
+NEW      src/app/api/admin/storage/route.ts
+MODIFIED src/app/api/files/[id]/route.ts
+NEW      src/app/api/files/[id]/thumbnail/route.test.ts
+NEW      src/app/api/files/[id]/thumbnail/route.ts
+MODIFIED src/app/api/files/route.ts
+MODIFIED src/app/api/link/[slug]/route.ts
+MODIFIED src/app/api/user/me/route.ts
+MODIFIED src/app/f/[slug]/page.tsx
+NEW      src/components/ThumbnailManager.tsx
+MODIFIED src/components/tabs/FilesTab.tsx
+MODIFIED src/components/tabs/ProfileTab.tsx
+NEW      src/components/ui/FileThumb.tsx
+MODIFIED src/contexts/AppContext.tsx
+MODIFIED src/db/schema.ts
+NEW      src/lib/adminAuth.test.ts
+NEW      src/lib/adminAuth.ts
+NEW      src/lib/thumbnails/cleanup.ts
+NEW      src/lib/thumbnails/config.ts
+NEW      src/lib/thumbnails/dbbyte.test.ts
+NEW      src/lib/thumbnails/dbbyte.ts
+NEW      src/lib/thumbnails/imageProcessing.test.ts
+NEW      src/lib/thumbnails/imageProcessing.ts
+NEW      src/lib/thumbnails/integration.test.ts
+NEW      src/lib/thumbnails/notify.ts
+NEW      src/lib/thumbnails/provider.ts
+NEW      src/lib/thumbnails/repo.ts
+NEW      src/lib/thumbnails/service.test.ts
+NEW      src/lib/thumbnails/service.ts
+NEW      src/lib/thumbnails/usage.test.ts
+NEW      src/lib/thumbnails/usage.ts
+
+NOT included: node_modules, .next, .env, build output. Secrets: none.
