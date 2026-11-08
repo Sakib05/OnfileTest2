@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { files } from "@/db/schema";
 import { eq, desc, and } from "drizzle-orm";
-import { nanoid } from "nanoid";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
-import { hashAccessPassword } from "@/lib/password";
+import { publishPost } from "@/lib/publishing/publishPost";
+import { dbPublishDeps } from "@/lib/publishing/publishDeps";
+import { rateLimit } from "@/lib/rateLimit";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
@@ -73,29 +74,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const body = await req.json();
-    const slug = nanoid(10);
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid request body", reason: "validation_failed" }, { status: 400 });
+    }
 
-    const [file] = await db
-      .insert(files)
-      .values({
-        userId: user.id,
-        title: body.title || "Untitled",
-        description: body.description,
-        category: body.category,
-        fileType: body.fileType || "other",
-        fileSize: body.fileSize,
-        mimeType: body.mimeType,
-        telegramMessageLink: body.telegramMessageLink,
-        playlistId: body.playlistId ? parseInt(body.playlistId) : null,
-        password: body.password ? hashAccessPassword(String(body.password)) : null,
-        starsPrice: body.starsPrice ? parseInt(body.starsPrice) : 0,
-        smartLinkSlug: slug,
-        isPublished: true,
-      })
-      .returning();
-
-    return NextResponse.json({ file }, { status: 201 });
+    // All publishing rules (link→connected-channel verification, field
+    // validation, playlist ownership, paid-content gate, duplicate guard) live
+    // in one server-side service shared with the step-by-step Publish flow.
+    const { allowed } = rateLimit(`publish:${user.id}`, 30, 60_000);
+    if (!allowed) {
+      return NextResponse.json({ error: "Too many attempts. Please wait a moment.", reason: "rate_limited" }, { status: 429 });
+    }
+    const outcome = await publishPost(dbPublishDeps, user.id, body);
+    return NextResponse.json(outcome.body, { status: outcome.status });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

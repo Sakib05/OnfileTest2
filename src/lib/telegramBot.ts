@@ -386,3 +386,27 @@ export async function verifyChannelOwnershipAndBotAccess(
     },
   };
 }
+
+export type ResolvePublicChatIdResult =
+  | { ok: true; id: string; type: string }
+  | { ok: false; reason: "not_found" | "unavailable" };
+
+/**
+ * Resolves a PUBLIC @username to its numeric chat id via the Bot API `getChat`.
+ * Used by the Publish flow to verify a public-style post link by CHANNEL ID
+ * (never by comparing usernames). Returns `unavailable` — never a guess — when
+ * Telegram cannot be reached or the bot token is missing, so callers can refuse
+ * to proceed instead of silently accepting an unverified link.
+ */
+export async function resolvePublicChatId(username: string): Promise<ResolvePublicChatIdResult> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return { ok: false, reason: "unavailable" };
+  const res = await callTelegramApi<TelegramChat>(botToken, "getChat", { chat_id: `@${username}` });
+  if (!res.ok) {
+    // Telegram answers 400 "chat not found" for unknown usernames; anything
+    // else (timeouts, 5xx, non-JSON) is an availability problem, not a verdict.
+    const notFound = res.errorCode === 400 && /chat not found/i.test(res.description);
+    return { ok: false, reason: notFound ? "not_found" : "unavailable" };
+  }
+  return { ok: true, id: String(res.result.id), type: res.result.type };
+}

@@ -28,6 +28,8 @@ export interface TelegramWebApp {
    * `false` if the user cancelled / Telegram could not deliver it.
    */
   requestChat?: (reqId: string, callback?: (sent: boolean) => void) => void;
+  /** Bot API 6.4+. Reads the clipboard text (null if empty/denied). */
+  readTextFromClipboard?: (callback: (text: string | null) => void) => void;
 }
 
 declare global {
