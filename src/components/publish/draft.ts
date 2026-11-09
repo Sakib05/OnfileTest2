@@ -48,12 +48,14 @@ const KEY = "onfile_publish_draft_v1";
 interface Persisted {
   step: StepIndex;
   draft: Omit<PublishDraft, "password" | "thumbnail">;
+  /** Server-staged thumbnail (opaque ref + stable remote URL). Never a blob: URL. */
+  thumbnail?: StagedThumbnail | null;
 }
 
 /**
  * Drafts live only in this tab's sessionStorage so a refresh or an accidental
- * tab switch doesn't lose work. It holds form values only: no password, and
- * nothing in it is ever trusted — publishing re-verifies everything server-side.
+ * tab switch doesn't lose work. It holds form values and the staged-thumbnail
+ * reference only: no password, and nothing in it is ever trusted — publishing re-verifies everything server-side.
  */
 export function loadDraft(): { step: StepIndex; draft: PublishDraft } | null {
   if (typeof window === "undefined") return null;
@@ -62,7 +64,12 @@ export function loadDraft(): { step: StepIndex; draft: PublishDraft } | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Persisted;
     if (!parsed || typeof parsed !== "object" || !parsed.draft) return null;
-    const draft: PublishDraft = { ...EMPTY_DRAFT, ...parsed.draft, password: "", thumbnail: null };
+    const t = parsed.thumbnail;
+    const thumbnail =
+      t && typeof t.ref === "string" && /^[a-f0-9]{24}$/.test(t.ref) && typeof t.previewUrl === "string" && /^https?:\/\//.test(t.previewUrl)
+        ? { ref: t.ref, previewUrl: t.previewUrl }
+        : null;
+    const draft: PublishDraft = { ...EMPTY_DRAFT, ...parsed.draft, password: "", thumbnail };
     const step = ([0, 1, 2, 3] as number[]).includes(parsed.step) ? parsed.step : 0;
     // Steps beyond "Link" require a verified link.
     const safeStep = (draft.verified && draft.verified.forLink === draft.link.trim() ? step : 0) as StepIndex;
@@ -75,8 +82,9 @@ export function loadDraft(): { step: StepIndex; draft: PublishDraft } | null {
 export function saveDraft(step: StepIndex, draft: PublishDraft): void {
   if (typeof window === "undefined") return;
   try {
-    const { password, thumbnail, ...rest } = draft;
-    window.sessionStorage.setItem(KEY, JSON.stringify({ step, draft: rest } satisfies Persisted));
+    const { password: _password, thumbnail, ...rest } = draft;
+    void _password;
+    window.sessionStorage.setItem(KEY, JSON.stringify({ step, draft: rest, thumbnail } satisfies Persisted));
   } catch {
     /* storage may be unavailable (private mode); drafting is best-effort */
   }

@@ -1,11 +1,13 @@
 /**
- * Minimal storage seam for thumbnails. DBByte is the ONLY implementation
- * (see ./dbbyte.ts). The interface exists purely so the thumbnail service can
- * be unit-tested with a fake and so a future provider would not require
- * rewriting the service — there is intentionally no multi-provider logic.
+ * Provider-neutral storage seam for thumbnails. The thumbnail service, the
+ * staged-upload service and every API route talk ONLY to this interface; all
+ * provider-specific code lives in one adapter file (today: ./dbbyte.ts) and is
+ * selected in ./storage.ts. To add another provider implement this interface
+ * and register it there — no UI or route changes are needed.
  */
 export interface ThumbnailStorage {
-  readonly provider: "dbbyte";
+  /** Short provider id persisted next to every object key (e.g. "dbbyte"). */
+  readonly provider: string;
   /** Stores bytes under a NEW unique key. Resolves with the key actually stored. */
   put(key: string, body: Uint8Array, contentType: string): Promise<{ key: string }>;
   /** Deletes an object. A missing object (404) counts as success. */

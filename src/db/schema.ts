@@ -509,3 +509,40 @@ export const storageUsageManual = pgTable(
   },
   (t) => [uniqueIndex("storage_usage_manual_metric_idx").on(t.metric)]
 );
+
+// ─── Staged thumbnails (uploaded in the Publish wizard BEFORE the post exists) ──
+// ADDITIVE table. A creator uploads a thumbnail while filling in the post
+// details; the post (files row) does not exist yet, so the image is "staged"
+// under an unguessable `ref` that is bound to the uploading user. When the post
+// is published the ref is claimed inside the publish transaction: a
+// `file_thumbnails` row is created for the new file and the staged row is marked
+// "attached". Staged rows that are never attached are expired + deleted after
+// 24h; attached rows are never touched by cleanup.
+//   status: staged | attached | discarded | expired
+export const thumbnailUploads = pgTable(
+  "thumbnail_uploads",
+  {
+    id: serial("id").primaryKey(),
+    ref: varchar("ref", { length: 32 }).notNull(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 16 }).notNull(),
+    objectKey: varchar("object_key", { length: 255 }).notNull(),
+    version: varchar("version", { length: 32 }).notNull(),
+    mimeType: varchar("mime_type", { length: 64 }).notNull(),
+    format: varchar("format", { length: 16 }).notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    width: integer("width").notNull(),
+    height: integer("height").notNull(),
+    status: varchar("status", { length: 16 }).default("staged").notNull(),
+    fileId: integer("file_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("thumbnail_uploads_ref_idx").on(t.ref),
+    uniqueIndex("thumbnail_uploads_object_key_idx").on(t.provider, t.objectKey),
+    index("thumbnail_uploads_user_status_idx").on(t.userId, t.status),
+  ]
+);

@@ -6,7 +6,12 @@
  * cold-start path (Next.js also externalizes `sharp` automatically).
  */
 
-export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB original upload
+// Largest body the server accepts. Vercel serverless functions reject request
+// bodies over 4.5 MB, so the server limit is 4 MB. The UI lets creators pick
+// images up to 5 MB (THUMBNAIL_MAX_BYTES) and shrinks them in the browser
+// (src/lib/publishing/imageCompress.ts) before sending.
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+export const MAX_UPLOAD_MB = MAX_UPLOAD_BYTES / (1024 * 1024);
 export const MAX_DIMENSION = 1280;
 const MAX_INPUT_PIXELS = 40_000_000; // decompression-bomb guard (~40 MP)
 
@@ -103,7 +108,7 @@ const JPEG_QUALITY = 85;
 export async function processThumbnail(input: Uint8Array): Promise<ProcessedThumbnail> {
   if (!input || input.byteLength === 0) throw new ImageValidationError("empty", "The file is empty.");
   if (input.byteLength > MAX_UPLOAD_BYTES) {
-    throw new ImageValidationError("too_large", "Image must be 2 MB or smaller.");
+    throw new ImageValidationError("too_large", `Image must be ${MAX_UPLOAD_MB} MB or smaller.`);
   }
 
   const detected = sniffImageType(input);

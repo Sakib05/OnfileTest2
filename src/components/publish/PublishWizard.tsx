@@ -22,7 +22,7 @@ interface PublishResponse {
   fieldErrors?: FieldErrors;
 }
 
-const DETAIL_FIELDS: (keyof FieldErrors)[] = ["title", "description", "category", "fileType", "password", "playlistId"];
+const DETAIL_FIELDS: (keyof FieldErrors)[] = ["title", "description", "category", "fileType", "password", "playlistId", "thumbnail"];
 
 export default function PublishWizard({ onFinished }: { onFinished?: () => void }) {
   const { toast } = useToast();
@@ -34,6 +34,7 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
   const [step, setStep] = useState<StepIndex>(restored?.step ?? 0);
   const [maxReached, setMaxReached] = useState<StepIndex>(restored?.step ?? 0);
   const [playlists, setPlaylists] = useState<PlaylistOption[]>([]);
+  const [playlistsLoaded, setPlaylistsLoaded] = useState(false);
   const [paidAvailable, setPaidAvailable] = useState<boolean | null>(null);
   const [publishing, setPublishing] = useState<PublishMode | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
@@ -45,17 +46,29 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
   // Keeps the focused field above the on-screen keyboard (active only while this wizard is mounted).
   const keyboardInset = useKeyboardAwareViewport(rootRef);
 
+  const addCreatedPlaylist = useCallback((created: PlaylistOption) => {
+    setPlaylists((prev) => (prev.some((p) => p.id === created.id) ? prev : [created, ...prev]));
+    setPlaylistsLoaded(true);
+  }, []);
+
   const fetchPlaylists = useCallback(async () => {
     try {
       const res = await fetch("/api/playlists");
       if (res.ok) {
         const data = await res.json();
         setPlaylists(Array.isArray(data.playlists) ? data.playlists : []);
+        setPlaylistsLoaded(true);
       }
     } catch {
       /* playlists are optional; leave list empty */
     }
   }, []);
+
+  // A playlist that no longer exists (deleted elsewhere) must not stay selected.
+  useEffect(() => {
+    if (!playlistsLoaded) return;
+    setDraft((d) => (d.playlistId && !playlists.some((p) => String(p.id) === d.playlistId) ? { ...d, playlistId: "" } : d));
+  }, [playlists, playlistsLoaded]);
 
   useEffect(() => {
     void fetchPlaylists();
@@ -117,6 +130,7 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
           category: draft.category,
           fileType: draft.fileType,
           playlistId: draft.playlistId || null,
+          thumbnailRef: draft.thumbnail?.ref ?? null,
           password: draft.password,
           monetization: draft.monetization,
           starsPrice: draft.monetization === "paid" ? draft.starsPrice : 0,
@@ -137,6 +151,8 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
         case "validation_failed": {
           const fe = data.fieldErrors ?? {};
           setServerErrors(fe);
+          // The staged thumbnail expired or was rejected: drop it so the creator can re-upload.
+          if (fe.thumbnail) setDraft((d) => ({ ...d, thumbnail: null }));
           const keys = Object.keys(fe) as (keyof FieldErrors)[];
           goTo(keys.some((k) => DETAIL_FIELDS.includes(k)) ? 1 : 2);
           toast(message, "error");
@@ -214,7 +230,10 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
             draft={draft}
             onChange={patch}
             playlists={playlists}
-            onPlaylistsChanged={fetchPlaylists}
+            onPlaylistCreated={async (created) => {
+              addCreatedPlaylist(created); // visible immediately; the refetch below confirms it from the database
+              await fetchPlaylists();
+            }}
             onBack={() => goTo(0)}
             onContinue={() => goTo(2)}
             serverErrors={serverErrors}

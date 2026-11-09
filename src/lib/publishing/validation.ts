@@ -16,7 +16,7 @@ import {
  * (authoritative). The server NEVER relies on the client having run these.
  */
 
-export type FieldErrors = Partial<Record<"title" | "description" | "category" | "fileType" | "password" | "starsPrice" | "playlistId" | "monetization", string>>;
+export type FieldErrors = Partial<Record<"title" | "description" | "category" | "fileType" | "password" | "starsPrice" | "playlistId" | "monetization" | "thumbnail", string>>;
 
 export interface DetailsInput {
   title: string;
@@ -70,6 +70,7 @@ export interface PublishPayload {
   category: string;
   fileType: FileTypeValue;
   playlistId: number | null;
+  thumbnailRef: string | null;
   password: string;
   monetization: Monetization;
   starsPrice: number;
@@ -104,8 +105,16 @@ export function validatePublishPayload(body: unknown): PayloadResult {
   let playlistId: number | null = null;
   if (b.playlistId !== null && b.playlistId !== undefined && b.playlistId !== "") {
     const n = typeof b.playlistId === "number" ? b.playlistId : Number(b.playlistId);
-    if (!Number.isInteger(n) || n <= 0) errors.playlistId = "Choose a valid playlist.";
+    if (!Number.isInteger(n) || n <= 0 || n > 2147483647) errors.playlistId = "Choose a valid playlist.";
     else playlistId = n;
+  }
+
+  // Optional reference to a thumbnail staged via POST /api/thumbnails. Shape-checked
+  // here; ownership/unused-ness is enforced inside the publish transaction.
+  let thumbnailRef: string | null = null;
+  if (b.thumbnailRef !== null && b.thumbnailRef !== undefined && b.thumbnailRef !== "") {
+    if (typeof b.thumbnailRef === "string" && /^[a-f0-9]{24}$/.test(b.thumbnailRef)) thumbnailRef = b.thumbnailRef;
+    else errors.thumbnail = "That thumbnail is no longer available. Please upload it again.";
   }
 
   const mode: PublishMode = b.mode === "draft" ? "draft" : "publish";
@@ -121,6 +130,7 @@ export function validatePublishPayload(body: unknown): PayloadResult {
       category,
       fileType: fileType as FileTypeValue,
       playlistId,
+      thumbnailRef,
       password,
       monetization,
       starsPrice: monetization === "paid" ? (parseStarsPrice(b.starsPrice as string | number) as number) : 0,

@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import { buildThumbnailUrl } from "./config";
-import { getDbbyteStorage } from "./dbbyte";
+import { getThumbnailStorage } from "./storage";
 import { ImageValidationError, processThumbnail, type ProcessedThumbnail } from "./imageProcessing";
 import { StorageError } from "./provider";
 import { drizzleRepo, type ThumbnailRepo } from "./repo";
@@ -22,7 +22,7 @@ export interface ThumbnailDeps extends CleanupDeps {
 }
 
 export function defaultDeps(): ThumbnailDeps {
-  return { repo: drizzleRepo, storage: getDbbyteStorage(), process: processThumbnail, urlFor: (k) => buildThumbnailUrl(k) };
+  return { repo: drizzleRepo, storage: getThumbnailStorage(), process: processThumbnail, urlFor: (k) => buildThumbnailUrl(k) };
 }
 
 export interface ThumbnailInfo {

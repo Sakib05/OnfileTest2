@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { files } from "@/db/schema";
+import { files, playlists } from "@/db/schema";
+import { parsePositiveId } from "@/lib/playlists";
 import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
@@ -53,6 +54,26 @@ export async function PATCH(
     }
     if ("password" in updates) {
       updates.password = updates.password ? hashAccessPassword(String(updates.password)) : null;
+    }
+
+    // Moving a post into a playlist: the playlist must exist AND belong to the
+    // caller (otherwise a crafted request could attach a post to someone else's
+    // playlist). null / "" removes the post from its playlist.
+    if ("playlistId" in updates) {
+      const raw = updates.playlistId;
+      if (raw === null || raw === "" || raw === undefined) {
+        updates.playlistId = null;
+      } else {
+        const pid = parsePositiveId(String(raw));
+        if (!pid) return NextResponse.json({ error: "Choose a valid playlist." }, { status: 400 });
+        const [owned] = await db
+          .select({ id: playlists.id })
+          .from(playlists)
+          .where(and(eq(playlists.id, pid), eq(playlists.userId, user.id)))
+          .limit(1);
+        if (!owned) return NextResponse.json({ error: "That playlist wasn't found in your account." }, { status: 400 });
+        updates.playlistId = pid;
+      }
     }
     updates["updatedAt"] = new Date();
 

@@ -5,3 +5,6 @@ DROP TABLE IF EXISTS "file_thumbnails";
 DROP TABLE IF EXISTS "thumbnail_orphans";
 DROP TABLE IF EXISTS "thumbnail_failures";
 DROP TABLE IF EXISTS "storage_usage_manual";
+
+-- Staged thumbnails table (added with the Publish-wizard upload feature).
+DROP TABLE IF EXISTS "thumbnail_uploads";

@@ -1,6 +1,6 @@
 "use client";
-import React, { useRef, useState } from "react";
-import { AlertCircle, ImagePlus, Loader2, RefreshCw, Trash2 } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { AlertCircle, CheckCircle2, ImagePlus, Loader2, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { THUMBNAIL_MAX_BYTES } from "@/lib/publishing/constants";
 import {
   validateThumbnailFile,
@@ -8,11 +8,15 @@ import {
   type ThumbnailStorageService,
 } from "@/lib/publishing/thumbnailStorage";
 
+type Phase = "idle" | "uploading" | "processing" | "removing";
+
 /**
  * Thumbnail picker for the Post Details step. It knows nothing about any
  * concrete storage provider: every upload/remove goes through the injected
- * `ThumbnailStorageService`. While the service reports `available: false` the
- * control is disabled and says so — it never fakes a successful upload.
+ * `ThumbnailStorageService`. A chosen image is previewed immediately (local
+ * preview only while uploading), uploaded with progress, and only counts as the
+ * post's thumbnail once the service confirms it is stored. A failed upload keeps
+ * the chosen file so the creator can retry without re-picking it.
  */
 export default function ThumbnailField({
   value,
@@ -24,46 +28,85 @@ export default function ThumbnailField({
   service: ThumbnailStorageService;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState<"uploading" | "removing" | null>(null);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const [pending, setPending] = useState<File | null>(null); // file chosen but not (yet) stored
+  const [localPreview, setLocalPreview] = useState<string | null>(null);
+  const [imgBroken, setImgBroken] = useState(false);
+  const busy = phase !== "idle";
 
-  const handleFile = async (file: File | undefined) => {
-    if (!file) return;
+  // Local preview of the chosen file; revoked as soon as it's no longer needed.
+  useEffect(() => {
+    if (!pending) {
+      setLocalPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(pending);
+    setLocalPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [pending]);
+
+  const upload = async (file: File) => {
     setError(null);
+    setSuccess(false);
+    setProgress(0);
+    setPhase("uploading");
+    try {
+      const staged = await service.upload(file, {
+        onProgress: setProgress,
+        onProcessing: () => setPhase("processing"),
+      });
+      const previous = value;
+      setImgBroken(false);
+      onChange(staged);
+      setPending(null);
+      setSuccess(true);
+      if (previous && previous.ref !== staged.ref) void service.remove(previous.ref).catch(() => undefined);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : "The thumbnail couldn't be uploaded. Please try again.");
+    } finally {
+      setPhase("idle");
+    }
+  };
+
+  const handleFile = (file: File | undefined) => {
+    if (!file) return;
+    setSuccess(false);
     const problem = validateThumbnailFile(file);
     if (problem) {
+      setPending(null);
       setError(problem);
       return;
     }
-    setBusy("uploading");
-    try {
-      const staged = await service.upload(file);
-      const previous = value;
-      onChange(staged);
-      if (previous) void service.remove(previous.ref).catch(() => undefined);
-    } catch {
-      setError("The thumbnail couldn't be uploaded. Please try again.");
-    } finally {
-      setBusy(null);
-      if (inputRef.current) inputRef.current.value = "";
-    }
+    setPending(file);
+    void upload(file);
   };
 
   const handleRemove = async () => {
-    if (!value) return;
     setError(null);
-    setBusy("removing");
+    setSuccess(false);
+    // Discarding a failed/never-stored pick needs no server call.
+    if (!value) {
+      setPending(null);
+      return;
+    }
+    setPhase("removing");
     try {
       await service.remove(value.ref);
       onChange(null);
-    } catch {
-      setError("The thumbnail couldn't be removed. Please try again.");
+      setPending(null);
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : "The thumbnail couldn't be removed. Please try again.");
     } finally {
-      setBusy(null);
+      setPhase("idle");
     }
   };
 
-  const disabled = !service.available || busy !== null;
+  const disabled = !service.available || busy;
+  const shown = localPreview ?? (value && !imgBroken ? value.previewUrl : null);
+  const hasThumb = !!value || !!pending;
 
   return (
     <div className="flex flex-col gap-2">
@@ -76,15 +119,25 @@ export default function ThumbnailField({
           className="relative w-28 aspect-video rounded-xl overflow-hidden bg-secondary border border-app flex items-center justify-center flex-shrink-0"
           aria-labelledby="thumb-label"
         >
-          {value ? (
-            // eslint-disable-next-line @next/next/no-img-element -- staged preview from the storage service
-            <img src={value.previewUrl} alt="Selected thumbnail preview" className="absolute inset-0 w-full h-full object-cover" />
+          {shown ? (
+            // eslint-disable-next-line @next/next/no-img-element -- remote storage URL or local preview
+            <img
+              src={shown}
+              alt="Selected thumbnail preview"
+              className="absolute inset-0 w-full h-full object-cover"
+              onError={() => {
+                if (!localPreview) setImgBroken(true);
+              }}
+            />
           ) : (
             <ImagePlus size={22} className="text-muted" aria-hidden="true" />
           )}
-          {busy === "uploading" && (
-            <div className="absolute inset-0 bg-black/50 flex items-center justify-center" role="status" aria-label="Uploading thumbnail">
-              <Loader2 size={20} className="text-white animate-spin" />
+          {busy && phase !== "removing" && (
+            <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-1" role="status" aria-label="Uploading thumbnail">
+              <Loader2 size={18} className="text-white animate-spin" />
+              <span className="text-[10px] font-semibold text-white tabular-nums">
+                {phase === "uploading" ? `${progress}%` : "Saving…"}
+              </span>
             </div>
           )}
         </div>
@@ -97,7 +150,10 @@ export default function ThumbnailField({
             accept="image/jpeg,image/png,image/webp"
             className="sr-only"
             disabled={disabled}
-            onChange={(e) => void handleFile(e.target.files?.[0])}
+            onChange={(e) => {
+              handleFile(e.target.files?.[0]);
+              e.target.value = ""; // allow re-picking the same file
+            }}
           />
           <label
             htmlFor="thumb-input"
@@ -107,21 +163,42 @@ export default function ThumbnailField({
             }`}
           >
             {value ? <RefreshCw size={15} /> : <ImagePlus size={15} />}
-            {busy === "uploading" ? "Uploading…" : value ? "Replace Thumbnail" : "Upload Thumbnail"}
+            {phase === "uploading" ? "Uploading…" : phase === "processing" ? "Saving…" : value ? "Replace Thumbnail" : "Upload Thumbnail"}
           </label>
-          {value && (
+
+          {pending && !busy && error && (
+            <button
+              type="button"
+              onClick={() => void upload(pending)}
+              className="btn-primary !px-4 !py-2.5 min-h-11 text-sm font-semibold inline-flex items-center justify-center gap-2"
+            >
+              <RotateCcw size={15} />
+              Retry upload
+            </button>
+          )}
+
+          {hasThumb && (
             <button
               type="button"
               onClick={() => void handleRemove()}
-              disabled={busy !== null}
+              disabled={busy}
               className="text-xs font-semibold text-red-500 min-h-11 inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
             >
               <Trash2 size={14} />
-              {busy === "removing" ? "Removing…" : "Remove Thumbnail"}
+              {phase === "removing" ? "Removing…" : value ? "Remove Thumbnail" : "Cancel"}
             </button>
           )}
         </div>
       </div>
+
+      {busy && phase !== "removing" && (
+        <div className="h-1.5 rounded-full bg-secondary overflow-hidden" aria-hidden="true">
+          <div
+            className="h-full bg-brand transition-all duration-200"
+            style={{ width: `${phase === "processing" ? 100 : progress}%` }}
+          />
+        </div>
+      )}
 
       <p className="text-xs text-muted">
         JPEG, PNG or WebP · up to {Math.round(THUMBNAIL_MAX_BYTES / (1024 * 1024))} MB. Without one, a default thumbnail is
@@ -131,6 +208,12 @@ export default function ThumbnailField({
       {!service.available && service.unavailableMessage && (
         <p className="text-xs text-secondary rounded-lg bg-secondary px-3 py-2" role="note">
           {service.unavailableMessage}
+        </p>
+      )}
+      {success && !error && value && (
+        <p role="status" className="text-xs text-green-600 flex items-center gap-1.5">
+          <CheckCircle2 size={13} className="flex-shrink-0" />
+          Thumbnail uploaded. It will be attached when you publish.
         </p>
       )}
       {error && (

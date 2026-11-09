@@ -1,4 +1,4 @@
-import { getDbbyteStorage } from "./dbbyte";
+import { getThumbnailStorage } from "./storage";
 import { StorageError, type ThumbnailStorage } from "./provider";
 import { bumpOrphanAttempt, deleteOrphanRow, drizzleRepo, listOrphans, type ThumbnailRepo } from "./repo";
 
@@ -13,7 +13,7 @@ export interface CleanupDeps {
 }
 
 export function defaultCleanupDeps(): CleanupDeps {
-  return { repo: drizzleRepo, storage: getDbbyteStorage() };
+  return { repo: drizzleRepo, storage: getThumbnailStorage() };
 }
 
 export type ServiceFailure = {
@@ -81,7 +81,7 @@ export async function findThumbnailKeyForCleanup(userId: number, fileId: number,
 }
 
 /** Admin-triggered: retries deleting objects recorded as orphans. */
-export async function retryOrphanCleanup(limit = 20, storage: ThumbnailStorage | null = getDbbyteStorage()) {
+export async function retryOrphanCleanup(limit = 20, storage: ThumbnailStorage | null = getThumbnailStorage()) {
   if (!storage) return { attempted: 0, deleted: 0, failed: 0, error: "not_configured" as const };
   const orphans = await listOrphans(limit);
   let deleted = 0;

@@ -1,13 +1,15 @@
 "use client";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { FolderOpen, ListPlus, Star } from "lucide-react";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { STARS_MAX } from "@/lib/publishing/constants";
+import { PLAYLIST_TITLE_MAX } from "@/lib/playlists";
 
 export interface PlaylistOption {
   id: number;
   title: string;
+  totalFiles?: number;
 }
 
 /**
@@ -23,40 +25,63 @@ export default function PlaylistPicker({
   playlists: PlaylistOption[];
   value: string;
   onChange: (id: string) => void;
-  onCreated: () => void | Promise<void>;
+  /** Receives the playlist exactly as saved by the server. */
+  onCreated: (playlist: PlaylistOption) => void | Promise<void>;
 }) {
   const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ title: "", description: "", password: "", starsPrice: "" });
 
+  const submitGuard = useRef(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.title.trim()) {
-      toast("Playlist title is required", "error");
+    // This dialog is rendered by a component that lives inside the Post Details
+    // <form>. React bubbles submit events through portals, so without this the
+    // outer form would ALSO submit and advance the wizard while the playlist is created.
+    e.stopPropagation();
+    if (submitGuard.current) return; // blocks double-taps before state updates
+    const title = form.title.trim();
+    if (!title) {
+      setFormError("Playlist title is required.");
       return;
     }
+    if (title.length > PLAYLIST_TITLE_MAX) {
+      setFormError(`Title must be ${PLAYLIST_TITLE_MAX} characters or fewer.`);
+      return;
+    }
+    const price = form.starsPrice.trim() ? Number(form.starsPrice) : 0;
+    if (!Number.isInteger(price) || price < 0 || price > STARS_MAX) {
+      setFormError(`Stars price must be a whole number from 0 to ${STARS_MAX}.`);
+      return;
+    }
+    setFormError(null);
+    submitGuard.current = true;
     setSaving(true);
     try {
       const res = await fetch("/api/playlists", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, starsPrice: form.starsPrice ? parseInt(form.starsPrice, 10) : 0 }),
+        body: JSON.stringify({ title, description: form.description.trim(), password: form.password, starsPrice: price }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        toast("Playlist created! 🎬");
+      const data = (await res.json().catch(() => ({}))) as { playlist?: PlaylistOption; error?: string; duplicate?: boolean };
+      if (res.ok && data.playlist) {
+        toast(data.duplicate ? "That playlist already exists — selected it for you." : "Playlist created! 🎬");
         setForm({ title: "", description: "", password: "", starsPrice: "" });
         setOpen(false);
-        await onCreated();
+        await onCreated(data.playlist);
         onChange(String(data.playlist.id));
+      } else if (res.status === 401) {
+        setFormError("Your session has expired. Please reopen Onfile from Telegram.");
       } else {
-        const err = await res.json().catch(() => ({}));
-        toast(err.error || "Failed to create playlist", "error");
+        setFormError(data.error || "Couldn't create the playlist. Please try again.");
       }
     } catch {
-      toast("Network error.", "error");
+      setFormError("Network problem. Check your connection and try again.");
     } finally {
+      submitGuard.current = false;
       setSaving(false);
     }
   };
@@ -83,7 +108,10 @@ export default function PlaylistPicker({
         </select>
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            setFormError(null);
+            setOpen(true);
+          }}
           className="btn-secondary !px-4 min-h-12 flex items-center gap-1.5 text-sm font-semibold flex-shrink-0"
         >
           <ListPlus size={16} />
@@ -91,8 +119,8 @@ export default function PlaylistPicker({
         </button>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Create New Playlist" size="md">
-        <form onSubmit={create} className="flex flex-col gap-4">
+      <Modal open={open} onClose={() => { if (!saving) setOpen(false); }} title="Create New Playlist" size="md">
+        <form onSubmit={create} className="flex flex-col gap-4" noValidate>
           <div>
             <label htmlFor="pl-title" className="text-xs font-medium text-secondary mb-1.5 block">
               Playlist Title *
@@ -103,7 +131,8 @@ export default function PlaylistPicker({
               placeholder="e.g. Premium Video Course"
               value={form.title}
               onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))}
-              required
+              maxLength={PLAYLIST_TITLE_MAX + 20}
+              autoFocus
             />
           </div>
           <div>
@@ -151,8 +180,13 @@ export default function PlaylistPicker({
               />
             </div>
           </div>
+          {formError && (
+            <p role="alert" className="text-xs text-red-500">
+              {formError}
+            </p>
+          )}
           <div className="flex gap-3">
-            <button type="button" onClick={() => setOpen(false)} className="flex-1 btn-secondary py-3 text-sm min-h-12">
+            <button type="button" onClick={() => setOpen(false)} disabled={saving} className="flex-1 btn-secondary py-3 text-sm min-h-12">
               Cancel
             </button>
             <button type="submit" disabled={saving} className="flex-1 btn-primary py-3 text-sm min-h-12 disabled:opacity-60">

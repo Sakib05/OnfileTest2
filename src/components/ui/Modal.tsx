@@ -1,5 +1,6 @@
 "use client";
-import React, { useEffect } from "react";
+import React, { useEffect, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +14,24 @@ interface ModalProps {
 }
 
 export default function Modal({ open, onClose, title, children, size = "md", hideClose }: ModalProps) {
+  // Rendered in a portal on <body>: a modal opened from inside a <form> (e.g. the
+  // "New playlist" dialog inside the Publish details form) must NOT be a DOM
+  // descendant of that form, or its own <form>/<button>s would nest inside it.
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true, // client
+    () => false // server
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden";
@@ -22,7 +41,7 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
     return () => { document.body.style.overflow = ""; };
   }, [open]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
   const sizeClass = {
     sm: "max-w-sm",
@@ -30,7 +49,7 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
     lg: "max-w-lg",
   }[size];
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 animate-fade-in"
       onClick={onClose}
@@ -52,6 +71,8 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
             <h2 className="text-base font-semibold text-primary">{title}</h2>
             {!hideClose && (
               <button
+                type="button"
+                aria-label="Close"
                 onClick={onClose}
                 className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-secondary transition-colors"
               >
@@ -62,6 +83,7 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
         )}
         <div className="p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

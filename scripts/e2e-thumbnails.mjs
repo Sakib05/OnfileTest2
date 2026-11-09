@@ -60,8 +60,8 @@ r=await fetch(`${base}/api/files/${A.fid}/thumbnail`,{method:"POST",headers:{...
 ok("spoofed ids with another user's session -> 404",r.status===404,r.status);
 r=await fetch(`${base}/api/files/${A.fid}/thumbnail`,{method:"POST",headers:{...ck(A)},body:form(Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>"),"x.png","image/png")});
 ok("SVG renamed .png -> 415",r.status===415,r.status+" "+(await r.text()).slice(0,80));
-r=await fetch(`${base}/api/files/${A.fid}/thumbnail`,{method:"POST",headers:{...ck(A)},body:form(Buffer.alloc(2*1024*1024+10,1))});
-ok("3MB-ish upload -> 413",r.status===413,r.status);
+r=await fetch(`${base}/api/files/${A.fid}/thumbnail`,{method:"POST",headers:{...ck(A)},body:form(Buffer.alloc(4*1024*1024+1024,1))});
+ok(">4MB upload -> 413",r.status===413,r.status);
 ok("no DBByte upload happened for rejected requests",uploads===0,uploads);
 
 r=await fetch(`${base}/api/files/${A.fid}/thumbnail`,{method:"POST",headers:{...ck(A)},body:form(jpg)});

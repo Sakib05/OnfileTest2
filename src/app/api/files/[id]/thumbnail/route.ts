@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rateLimit";
-import { MAX_UPLOAD_BYTES } from "@/lib/thumbnails/imageProcessing";
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/thumbnails/imageProcessing";
 import { removeThumbnail, uploadThumbnail, type ServiceFailure } from "@/lib/thumbnails/service";
 
 // Node runtime (sharp is a native module); never statically cached.
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Cheap early rejection before buffering the body (multipart overhead allowance: 64 KB).
     const declared = Number(req.headers.get("content-length") ?? "0");
     if (declared > MAX_UPLOAD_BYTES + 64 * 1024) {
-      return NextResponse.json({ error: "Image must be 2 MB or smaller.", code: "too_large" }, { status: 413, headers: NO_STORE });
+      return NextResponse.json({ error: `Image must be ${MAX_UPLOAD_MB} MB or smaller.`, code: "too_large" }, { status: 413, headers: NO_STORE });
     }
 
     let form: FormData;
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: "No image provided.", code: "bad_request" }, { status: 400, headers: NO_STORE });
     }
     if (file.size > MAX_UPLOAD_BYTES) {
-      return NextResponse.json({ error: "Image must be 2 MB or smaller.", code: "too_large" }, { status: 413, headers: NO_STORE });
+      return NextResponse.json({ error: `Image must be ${MAX_UPLOAD_MB} MB or smaller.`, code: "too_large" }, { status: 413, headers: NO_STORE });
     }
 
     const bytes = new Uint8Array(await file.arrayBuffer());

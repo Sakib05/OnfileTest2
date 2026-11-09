@@ -23,16 +23,31 @@ export interface DbbyteConfig {
   apiBaseUrl: string;
 }
 
+/**
+ * Environment values pasted into a hosting dashboard are frequently stored with
+ * decoration that makes an otherwise-correct secret invalid: wrapping quotes,
+ * trailing newlines/spaces, a leading "Bearer ", or the whole "NAME=value" line.
+ * Any of these produces DBByte's "401 Invalid or revoked API key" even though
+ * the same key works from curl. Normalise defensively; never log the value.
+ */
+export function normalizeEnvValue(raw: string | undefined, name?: string): string {
+  let v = (raw ?? "").trim();
+  if (name && v.toUpperCase().startsWith(`${name.toUpperCase()}=`)) v = v.slice(name.length + 1).trim();
+  v = v.replace(/^["'`]+|["'`]+$/g, "").trim();
+  v = v.replace(/^bearer\s+/i, "").trim();
+  return v.replace(/[\r\n\t ]+/g, "");
+}
+
 export function getDbbyteConfig(env: NodeJS.ProcessEnv = process.env): DbbyteConfig | null {
-  const apiKey = env.DBBYTE_API_KEY?.trim();
-  const bucket = env.DBBYTE_BUCKET?.trim();
-  const cdnBaseUrl = env.DBBYTE_CDN_BASE_URL?.trim().replace(/\/+$/, "");
+  const apiKey = normalizeEnvValue(env.DBBYTE_API_KEY, "DBBYTE_API_KEY");
+  const bucket = normalizeEnvValue(env.DBBYTE_BUCKET, "DBBYTE_BUCKET");
+  const cdnBaseUrl = normalizeEnvValue(env.DBBYTE_CDN_BASE_URL, "DBBYTE_CDN_BASE_URL").replace(/\/+$/, "");
   if (!apiKey || !bucket || !cdnBaseUrl) return null;
   return {
     apiKey,
     bucket,
     cdnBaseUrl,
-    apiBaseUrl: (env.DBBYTE_API_BASE_URL?.trim() || "https://api.dbbyte.com").replace(/\/+$/, ""),
+    apiBaseUrl: (normalizeEnvValue(env.DBBYTE_API_BASE_URL, "DBBYTE_API_BASE_URL") || "https://api.dbbyte.com").replace(/\/+$/, ""),
   };
 }
 

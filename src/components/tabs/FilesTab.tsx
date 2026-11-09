@@ -35,12 +35,12 @@ interface FileItem {
 interface PlaylistItem {
   id: number;
   title: string;
-  description?: string;
+  description?: string | null;
   totalFiles?: number;
   totalViews?: number;
   totalDownloads?: number;
   starsPrice?: number;
-  password?: string;
+  hasPassword?: boolean;
   isPublished: boolean;
   createdAt: string;
 }
@@ -61,6 +61,12 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [detailFile, setDetailFile] = useState<FileItem | null>(null);
   const [thumbFile, setThumbFile] = useState<FileItem | null>(null);
+  // Playlist contents viewer
+  const [openPlaylist, setOpenPlaylist] = useState<PlaylistItem | null>(null);
+  const [plFiles, setPlFiles] = useState<FileItem[]>([]);
+  const [plLoading, setPlLoading] = useState(false);
+  const [plError, setPlError] = useState<string | null>(null);
+  const [removingFileId, setRemovingFileId] = useState<number | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -79,6 +85,47 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const loadPlaylistFiles = useCallback(async (playlistId: number) => {
+    setPlLoading(true);
+    setPlError(null);
+    try {
+      const res = await fetch(`/api/files?playlistId=${playlistId}`);
+      if (!res.ok) throw new Error("failed");
+      const data = await res.json();
+      setPlFiles(Array.isArray(data.files) ? data.files : []);
+    } catch {
+      setPlError("Couldn't load this playlist. Please try again.");
+    } finally {
+      setPlLoading(false);
+    }
+  }, []);
+
+  const showPlaylist = (pl: PlaylistItem) => {
+    setOpenPlaylist(pl);
+    setPlFiles([]);
+    void loadPlaylistFiles(pl.id);
+  };
+
+  const removeFromPlaylist = async (file: FileItem) => {
+    if (removingFileId !== null) return;
+    setRemovingFileId(file.id);
+    try {
+      const res = await fetch(`/api/files/${file.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playlistId: null }),
+      });
+      if (!res.ok) throw new Error("failed");
+      setPlFiles((prev) => prev.filter((f) => f.id !== file.id));
+      toast("Removed from playlist");
+      void fetchAll(); // refresh counts
+    } catch {
+      toast("Couldn't remove it from the playlist. Please try again.", "error");
+    } finally {
+      setRemovingFileId(null);
+    }
+  };
 
   const filtered = (): (FileItem | PlaylistItem & { _type: string })[] => {
     const f = activeFilter.toLowerCase();
@@ -228,17 +275,17 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     <div className="w-12 h-12 rounded-xl gradient-brand flex items-center justify-center flex-shrink-0">
                       <FolderPlus size={20} color="white" />
                     </div>
-                    <div className="flex-1 min-w-0">
+                    <button type="button" onClick={() => showPlaylist(pl)} className="flex-1 min-w-0 text-left" aria-label={`Open playlist ${pl.title}`}>
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-primary text-sm line-clamp-1">{pl.title}</p>
-                        {pl.password && <Lock size={11} className="text-brand flex-shrink-0" />}
+                        {pl.hasPassword && <Lock size={11} className="text-brand flex-shrink-0" />}
                         {(pl.starsPrice ?? 0) > 0 && <Star size={11} className="text-yellow-500 flex-shrink-0" />}
                       </div>
                       <div className="flex items-center gap-3 mt-1">
                         <span className="chip bg-brand-10 text-brand">{pl.totalFiles ?? 0} files</span>
                         <span className="text-xs text-secondary">{formatNumber(pl.totalDownloads ?? 0)} dl</span>
                       </div>
-                    </div>
+                    </button>
                     <button
                       className="flex-shrink-0 w-7 h-7 rounded-lg bg-secondary flex items-center justify-center"
                       onClick={() => { setMenuOpen(pl.id); setMenuType("playlist"); }}
@@ -250,7 +297,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     <ActionMenu
                       onClose={() => setMenuOpen(null)}
                       onDelete={() => { setDeleteTarget({ id: pl.id, type: "playlist" }); setMenuOpen(null); }}
-                      onShare={() => toast("Playlist link copied!")}
+                      onView={() => showPlaylist(pl)}
                     />
                   )}
                 </div>
@@ -325,6 +372,47 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         description={`Are you sure you want to delete this ${deleteTarget?.type === "file" ? "file" : "playlist"}? This action cannot be undone.`}
       />
 
+      {/* Playlist contents */}
+      <Modal open={!!openPlaylist} onClose={() => setOpenPlaylist(null)} title={openPlaylist?.title ?? "Playlist"} size="md">
+        {openPlaylist && (
+          <div className="flex flex-col gap-3">
+            {openPlaylist.description && <p className="text-sm text-secondary whitespace-pre-wrap break-words">{openPlaylist.description}</p>}
+            {plLoading ? (
+              <p className="text-sm text-secondary text-center py-6" role="status">Loading…</p>
+            ) : plError ? (
+              <div className="text-center py-4">
+                <p role="alert" className="text-sm text-red-500 mb-3">{plError}</p>
+                <button type="button" className="btn-secondary text-sm px-4 py-2" onClick={() => void loadPlaylistFiles(openPlaylist.id)}>Try again</button>
+              </div>
+            ) : plFiles.length === 0 ? (
+              <p className="text-sm text-secondary text-center py-6">No posts in this playlist yet. Pick it in the Details step when you publish.</p>
+            ) : (
+              <ul className="flex flex-col gap-2 max-h-[55vh] overflow-y-auto">
+                {plFiles.map((f) => (
+                  <li key={f.id} className="flex items-center gap-3 bg-secondary rounded-xl p-2.5">
+                    <div className="w-14 h-10 rounded-lg bg-card relative overflow-hidden flex-shrink-0 flex items-center justify-center">
+                      <FileThumb url={f.thumbnailUrl} fileType={f.fileType} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-primary line-clamp-1">{f.title}</p>
+                      <p className="text-xs text-secondary">{f.isPublished ? "Published" : "Draft"}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void removeFromPlaylist(f)}
+                      disabled={removingFileId !== null}
+                      className="text-xs font-semibold text-red-500 px-2 min-h-9 disabled:opacity-50"
+                    >
+                      {removingFileId === f.id ? "Removing…" : "Remove"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </Modal>
+
       {/* Thumbnail Modal */}
       <Modal open={!!thumbFile} onClose={() => setThumbFile(null)} title="Thumbnail" size="md">
         {thumbFile && (
@@ -395,6 +483,7 @@ function ActionMenu({
   onOpen,
   onEdit,
   onThumbnail,
+  onView,
 }: {
   onClose: () => void;
   onDelete: () => void;
@@ -403,8 +492,10 @@ function ActionMenu({
   onOpen?: () => void;
   onEdit?: () => void;
   onThumbnail?: () => void;
+  onView?: () => void;
 }) {
   const actions = [
+    onView && { icon: Eye, label: "View posts", action: onView, color: "text-primary" },
     onEdit && { icon: Edit2, label: "Edit", action: onEdit, color: "text-primary" },
     onThumbnail && { icon: Image, label: "Thumbnail", action: onThumbnail, color: "text-primary" },
     onOpen && { icon: ExternalLink, label: "Open Link", action: onOpen, color: "text-blue-500" },

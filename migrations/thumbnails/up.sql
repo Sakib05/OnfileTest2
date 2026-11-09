@@ -55,3 +55,25 @@ CREATE TABLE IF NOT EXISTS "storage_usage_manual" (
   "updated_at" timestamp NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS "storage_usage_manual_metric_idx" ON "storage_usage_manual" ("metric");
+
+-- Staged thumbnails (Publish wizard uploads before the post exists). ADDITIVE.
+CREATE TABLE IF NOT EXISTS "thumbnail_uploads" (
+  "id" serial PRIMARY KEY,
+  "ref" varchar(32) NOT NULL,
+  "user_id" integer NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+  "provider" varchar(16) NOT NULL,
+  "object_key" varchar(255) NOT NULL,
+  "version" varchar(32) NOT NULL,
+  "mime_type" varchar(64) NOT NULL,
+  "format" varchar(16) NOT NULL,
+  "size_bytes" integer NOT NULL,
+  "width" integer NOT NULL,
+  "height" integer NOT NULL,
+  "status" varchar(16) NOT NULL DEFAULT 'staged',
+  "file_id" integer,
+  "created_at" timestamp NOT NULL DEFAULT now(),
+  "updated_at" timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "thumbnail_uploads_ref_idx" ON "thumbnail_uploads" ("ref");
+CREATE UNIQUE INDEX IF NOT EXISTS "thumbnail_uploads_object_key_idx" ON "thumbnail_uploads" ("provider", "object_key");
+CREATE INDEX IF NOT EXISTS "thumbnail_uploads_user_status_idx" ON "thumbnail_uploads" ("user_id", "status");

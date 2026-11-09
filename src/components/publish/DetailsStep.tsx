@@ -21,7 +21,7 @@ export default function DetailsStep({
   draft,
   onChange,
   playlists,
-  onPlaylistsChanged,
+  onPlaylistCreated,
   onBack,
   onContinue,
   serverErrors,
@@ -30,7 +30,7 @@ export default function DetailsStep({
   draft: PublishDraft;
   onChange: (patch: Partial<PublishDraft>) => void;
   playlists: PlaylistOption[];
-  onPlaylistsChanged: () => void | Promise<void>;
+  onPlaylistCreated: (playlist: PlaylistOption) => void | Promise<void>;
   onBack: () => void;
   onContinue: () => void;
   serverErrors?: FieldErrors;
@@ -105,6 +105,7 @@ export default function DetailsStep({
 
       <section className="bg-card rounded-2xl border border-app shadow-app-sm p-4">
         <ThumbnailField value={draft.thumbnail} onChange={(thumbnail) => onChange({ thumbnail })} service={storage} />
+        {err(errors.thumbnail)}
       </section>
 
       <section className="bg-card rounded-2xl border border-app shadow-app-sm p-4 flex flex-col gap-4">
@@ -152,7 +153,7 @@ export default function DetailsStep({
           playlists={playlists}
           value={draft.playlistId}
           onChange={(playlistId) => onChange({ playlistId })}
-          onCreated={onPlaylistsChanged}
+          onCreated={onPlaylistCreated}
         />
         {err(errors.playlistId)}
 

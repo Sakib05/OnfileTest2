@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/adminAuth";
 import { getDbbyteConfig, getUsageThresholds } from "@/lib/thumbnails/config";
 import { getAdminSnapshot, upsertManualUsage } from "@/lib/thumbnails/repo";
 import { retryOrphanCleanup } from "@/lib/thumbnails/cleanup";
+import { getDbbyteStorage } from "@/lib/thumbnails/dbbyte";
 import { notifyAdmins } from "@/lib/thumbnails/notify";
 import {
   USAGE_METRICS,
@@ -109,6 +110,12 @@ export async function POST(req: NextRequest) {
   if ("response" in auth) return auth.response;
   try {
     const body = (await req.json().catch(() => ({}))) as { action?: string };
+    if (body.action === "check_credentials") {
+      // Verifies the configured DBByte key against DBByte's documented GET /health. Never returns the key.
+      const storage = getDbbyteStorage();
+      if (!storage) return NextResponse.json({ ok: false, code: "not_configured", message: "DBByte env vars are missing." }, { headers: NO_STORE });
+      return NextResponse.json(await storage.checkCredentials(), { headers: NO_STORE });
+    }
     if (body.action !== "retry_orphans") return NextResponse.json({ error: "Unknown action" }, { status: 400 });
     const result = await retryOrphanCleanup();
     return NextResponse.json({ result, status: await buildStatus() }, { headers: NO_STORE });

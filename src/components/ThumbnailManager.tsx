@@ -3,8 +3,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { ImagePlus, Trash2, Loader2 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import FileThumb from "@/components/ui/FileThumb";
+import { prepareImageForUpload } from "@/lib/publishing/imageCompress";
 
-const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_BYTES = 5 * 1024 * 1024;
 const ACCEPT = "image/jpeg,image/png,image/webp";
 
 interface Props {
@@ -22,7 +23,7 @@ function precheck(file: File): string | null {
   if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
     return "Only JPEG, PNG or WebP images are allowed.";
   }
-  if (file.size > MAX_BYTES) return `Image is ${formatBytes(file.size)}. Maximum is 2 MB.`;
+  if (file.size > MAX_BYTES) return `Image is ${formatBytes(file.size)}. Maximum is 5 MB.`;
   if (file.size === 0) return "The file is empty.";
   return null;
 }
@@ -61,14 +62,23 @@ export default function ThumbnailManager({ fileId, fileType, currentUrl, onChang
     setSelected(f);
   };
 
-  const upload = () => {
+  const upload = async () => {
     if (!selected || busy) return;
     setError(null);
     setPhase("uploading");
     setProgress(0);
 
+    let toSend: File;
+    try {
+      toSend = await prepareImageForUpload(selected);
+    } catch (e) {
+      setPhase("idle");
+      setError(e instanceof Error ? e.message : "This image couldn't be prepared for upload.");
+      return;
+    }
+
     const form = new FormData();
-    form.append("file", selected);
+    form.append("file", toSend);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api/files/${fileId}/thumbnail`);
     xhr.responseType = "json";
@@ -183,7 +193,7 @@ export default function ThumbnailManager({ fileId, fileType, currentUrl, onChang
           </button>
         )}
       </div>
-      <p className="text-[11px] text-muted text-center">JPEG, PNG or WebP · up to 2 MB</p>
+      <p className="text-[11px] text-muted text-center">JPEG, PNG or WebP · up to 5 MB</p>
     </div>
   );
 }

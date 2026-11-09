@@ -6,6 +6,7 @@ import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { publishPost } from "@/lib/publishing/publishPost";
 import { dbPublishDeps } from "@/lib/publishing/publishDeps";
 import { rateLimit } from "@/lib/rateLimit";
+import { parsePositiveId } from "@/lib/playlists";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
@@ -24,7 +25,9 @@ export async function GET(req: NextRequest) {
       conditions.push(eq(files.fileType, type as "video" | "audio" | "document" | "image" | "archive" | "other"));
     }
     if (playlistId) {
-      conditions.push(eq(files.playlistId, parseInt(playlistId)));
+      const pid = parsePositiveId(playlistId);
+      if (!pid) return NextResponse.json({ error: "Invalid playlist id" }, { status: 400 });
+      conditions.push(eq(files.playlistId, pid));
     }
 
     const result = await db

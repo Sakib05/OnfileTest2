@@ -20,6 +20,8 @@ export interface PublishFileRecord {
   category: string | null;
   fileType: string;
   playlistId: number | null;
+  /** Ref of a staged thumbnail (POST /api/thumbnails) to attach to the new post, or null. */
+  thumbnailRef: string | null;
   /** Plain-text password; the persistence layer hashes it. */
   password: string | null;
   starsPrice: number;
@@ -34,7 +36,9 @@ export interface PublishDeps {
    * Must atomically (per user) check that no existing file of this user points
    * at the same post, then insert. Returns "duplicate" without inserting.
    */
-  insertUnlessDuplicate(record: PublishFileRecord): Promise<{ status: "created"; file: unknown } | { status: "duplicate" }>;
+  insertUnlessDuplicate(
+    record: PublishFileRecord
+  ): Promise<{ status: "created"; file: unknown } | { status: "duplicate" } | { status: "invalid_thumbnail" } | { status: "invalid_playlist" }>;
   paidPublishingAvailable(): boolean;
 }
 
@@ -90,10 +94,27 @@ export async function publishPost(deps: PublishDeps, userId: number, rawBody: un
     category: v.category || null,
     fileType: v.fileType,
     playlistId: v.playlistId,
+    thumbnailRef: v.thumbnailRef,
     password: v.password || null,
     starsPrice: v.starsPrice,
     isPublished: v.mode === "publish",
   });
+  if (result.status === "invalid_thumbnail") {
+    return {
+      status: 400,
+      body: {
+        error: "Your thumbnail is no longer available. Please upload it again or publish without one.",
+        reason: "validation_failed",
+        fieldErrors: { thumbnail: "That thumbnail is no longer available. Please upload it again." },
+      },
+    };
+  }
+  if (result.status === "invalid_playlist") {
+    return {
+      status: 400,
+      body: { error: "That playlist wasn't found in your account.", reason: "validation_failed", fieldErrors: { playlistId: "Choose one of your playlists." } },
+    };
+  }
   if (result.status === "duplicate") {
     return {
       status: 409,

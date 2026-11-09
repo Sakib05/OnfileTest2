@@ -151,6 +151,24 @@ export class DbbyteStorage implements ThumbnailStorage {
     });
   }
 
+  /**
+   * Credential self-check against DBByte's documented `GET /health` endpoint,
+   * which requires a valid API key (any read/write/delete permission). Lets an
+   * admin distinguish "key rejected" from "bucket/permission problem" without
+   * uploading anything. Never returns or logs the key.
+   */
+  async checkCredentials(): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
+    try {
+      const res = await this.request(`${this.cfg.apiBaseUrl}/health`, { method: "GET" });
+      if (res.ok) return { ok: true };
+      const err = await this.toError(res);
+      return { ok: false, status: res.status, code: err.code, message: err.message };
+    } catch (e) {
+      const se = e instanceof StorageError ? e : new StorageError("unknown", "unknown");
+      return { ok: false, code: se.code, message: se.message };
+    }
+  }
+
   async delete(key: string): Promise<void> {
     await this.withRetries(async () => {
       const res = await this.request(this.url(`/delete/${encodeURIComponent(key)}`), { method: "DELETE" });
@@ -161,7 +179,7 @@ export class DbbyteStorage implements ThumbnailStorage {
 }
 
 /** Returns a configured DBByte client, or null when env vars are missing. */
-export function getDbbyteStorage(): DbbyteStorage | null {
-  const cfg = getDbbyteConfig();
+export function getDbbyteStorage(env: NodeJS.ProcessEnv = process.env): DbbyteStorage | null {
+  const cfg = getDbbyteConfig(env);
   return cfg ? new DbbyteStorage(cfg) : null;
 }
