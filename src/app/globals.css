@@ -231,6 +231,19 @@
   .status-rejected { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
   .status-processing { background: rgba(59, 130, 246, 0.12); color: #2563eb; }
 
+  /* The html element uses smooth scrolling. While a text field is focused the
+     browser (and useKeyboardAwareViewport) must be able to scroll it into view
+     immediately: a smooth scroll that starts while the viewport is still being
+     resized by the keyboard is computed against the old layout and can stop
+     short, leaving the field under the keyboard. */
+  html:has(input:focus, textarea:focus, select:focus) {
+    scroll-behavior: auto;
+  }
+  /* Leave a little room around a field when it is scrolled into view. */
+  input, textarea, select {
+    scroll-margin-block: 16px;
+  }
+
   /* While the on-screen keyboard is open in the publishing wizard (flag set by
      useKeyboardAwareViewport), the floating nav would ride on top of the
      keyboard and cover the active field, so it is hidden until the keyboard closes. */

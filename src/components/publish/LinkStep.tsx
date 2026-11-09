@@ -1,10 +1,8 @@
 "use client";
 import React, { useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, ClipboardPaste, Link2, Loader2, ShieldCheck, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Link2, Loader2, ShieldCheck, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseTelegramPostLink, POST_LINK_FAILURE_MESSAGES } from "@/lib/telegramPostLink";
-import { getTelegramWebApp } from "@/lib/telegramWebApp";
-import { PASTE_MESSAGES, readClipboardText } from "@/lib/clipboard";
 import { useApp } from "@/contexts/AppContext";
 import type { PublishDraft, VerifiedLinkInfo } from "./draft";
 
@@ -31,8 +29,6 @@ export default function LinkStep({
   const { refreshChannels } = useApp();
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<{ message: string; reason?: string } | null>(null);
-  const [pasteHint, setPasteHint] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   const requestSeq = useRef(0);
 
   const trimmed = draft.link.trim();
@@ -42,25 +38,7 @@ export default function LinkStep({
     requestSeq.current++; // invalidate any in-flight verification for the old value
     setStatus("idle");
     setError(null);
-    setPasteHint(null);
     onChange({ link: value, verified: null });
-  };
-
-  // Reads the clipboard into the field. Deliberately does NOT focus the input:
-  // focusing would pop the Android keyboard, which the creator doesn't need
-  // just to tap Continue. Typing remains available by tapping the field.
-  const handlePaste = async () => {
-    setPasteHint(null);
-    const tg = getTelegramWebApp();
-    const result = await readClipboardText({
-      navigatorRead: navigator.clipboard?.readText ? () => navigator.clipboard.readText() : null,
-      telegramRead: tg?.readTextFromClipboard ? (cb) => tg.readTextFromClipboard!(cb) : null,
-    });
-    if (result.status === "ok") {
-      setLink(result.text); // replaces any existing value; never submits or advances
-    } else {
-      setPasteHint(PASTE_MESSAGES[result.status]);
-    }
   };
 
   const verify = async () => {
@@ -159,7 +137,6 @@ export default function LinkStep({
           <div className="relative flex-1">
             <input
               id="post-link"
-              ref={inputRef}
               type="url"
               inputMode="url"
               autoComplete="off"
@@ -181,10 +158,7 @@ export default function LinkStep({
             {draft.link && !verifying && (
               <button
                 type="button"
-                onClick={() => {
-                  setLink("");
-                  inputRef.current?.focus();
-                }}
+                onClick={() => setLink("")}
                 aria-label="Clear link"
                 className="absolute right-1 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-muted"
               >
@@ -192,20 +166,9 @@ export default function LinkStep({
               </button>
             )}
           </div>
-          <button
-            type="button"
-            onClick={handlePaste}
-            disabled={verifying}
-            className="btn-secondary !px-4 min-h-12 flex items-center gap-1.5 text-sm font-semibold flex-shrink-0 disabled:opacity-60"
-          >
-            <ClipboardPaste size={16} />
-            Paste
-          </button>
         </div>
 
         <div id="post-link-feedback" aria-live="polite" className="flex flex-col gap-2">
-          {pasteHint && <p className="text-xs text-secondary">{pasteHint}</p>}
-
           {status === "error" && error && (
             <div
               role="alert"

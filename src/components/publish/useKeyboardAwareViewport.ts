@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState, type RefObject } from "react";
+import { getTelegramWebApp } from "@/lib/telegramWebApp";
 import { coveredBottomInset, isKeyboardOpen, KEYBOARD_MIN_SHRINK_PX, revealDelta } from "@/lib/keyboardViewport";
 
 const NON_TEXT_INPUT_TYPES = new Set([
@@ -19,7 +20,8 @@ function isEditable(el: Element | null): el is HTMLElement {
  * polling, no repeated focusing, no assumed keyboard height.
  *
  * Why this is needed: depending on the host, the keyboard either
- *  (a) resizes the whole webview / layout viewport (Telegram Android), or
+ *  (a) resizes the whole webview / layout viewport (Telegram Android; the
+ *      Mini App bridge also reports it via the `viewportChanged` event), or
  *  (b) only shrinks `window.visualViewport` and leaves the layout viewport
  *      full-size (Chrome Android default).
  * In both cases the page's fixed floating bottom nav and fixed bottom padding
@@ -44,6 +46,9 @@ export function useKeyboardAwareViewport(rootRef: RefObject<HTMLElement | null>)
     const coarseQuery = window.matchMedia?.("(pointer: coarse)");
     const portraitQuery = window.matchMedia?.("(orientation: portrait)");
     const html = document.documentElement;
+    // Telegram's own signal that the visible Mini App area changed (keyboard,
+    // sheet expand/collapse). Optional: absent in plain browsers.
+    const tg = getTelegramWebApp();
 
     const visibleHeight = () => vv?.height ?? window.innerHeight;
 
@@ -115,6 +120,7 @@ export function useKeyboardAwareViewport(rootRef: RefObject<HTMLElement | null>)
 
     vv?.addEventListener("resize", onViewportChange);
     window.addEventListener("resize", onViewportChange);
+    tg?.onEvent?.("viewportChanged", onViewportChange);
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
     portraitQuery?.addEventListener?.("change", onOrientation);
@@ -122,6 +128,7 @@ export function useKeyboardAwareViewport(rootRef: RefObject<HTMLElement | null>)
     return () => {
       vv?.removeEventListener("resize", onViewportChange);
       window.removeEventListener("resize", onViewportChange);
+      tg?.offEvent?.("viewportChanged", onViewportChange);
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
       portraitQuery?.removeEventListener?.("change", onOrientation);
