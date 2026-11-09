@@ -231,6 +231,11 @@
   .status-rejected { background: rgba(239, 68, 68, 0.12); color: #dc2626; }
   .status-processing { background: rgba(59, 130, 246, 0.12); color: #2563eb; }
 
+  /* While the on-screen keyboard is open in the publishing wizard (flag set by
+     useKeyboardAwareViewport), the floating nav would ride on top of the
+     keyboard and cover the active field, so it is hidden until the keyboard closes. */
+  html[data-keyboard-open="true"] .bottom-nav-wrap { display: none; }
+
   /* Safe area for mobile/TMA */
   .safe-top { padding-top: env(safe-area-inset-top); }
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }

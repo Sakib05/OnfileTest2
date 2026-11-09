@@ -5,6 +5,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
 import type { FieldErrors } from "@/lib/publishing/validation";
 import type { PublishMode } from "@/lib/publishing/constants";
+import { useKeyboardAwareViewport } from "./useKeyboardAwareViewport";
 import StepIndicator from "./StepIndicator";
 import LinkStep from "./LinkStep";
 import DetailsStep from "./DetailsStep";
@@ -40,6 +41,9 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
   const [done, setDone] = useState<{ published: boolean; title: string } | null>(null);
   const publishGuard = useRef(false);
   const topRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Keeps the focused field above the on-screen keyboard (active only while this wizard is mounted).
+  const keyboardInset = useKeyboardAwareViewport(rootRef);
 
   const fetchPlaylists = useCallback(async () => {
     try {
@@ -198,7 +202,7 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
   const playlistTitle = draft.playlistId ? (playlists.find((p) => String(p.id) === draft.playlistId)?.title ?? null) : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div ref={rootRef} className="flex flex-col gap-6" style={keyboardInset ? { paddingBottom: keyboardInset } : undefined}>
       <div ref={topRef} className="scroll-mt-4">
         <StepIndicator current={step} maxReached={draft.verified ? maxReached : 0} onSelect={goTo} />
       </div>

@@ -4,6 +4,7 @@ import { AlertCircle, CheckCircle2, ClipboardPaste, Link2, Loader2, ShieldCheck,
 import { cn } from "@/lib/utils";
 import { parseTelegramPostLink, POST_LINK_FAILURE_MESSAGES } from "@/lib/telegramPostLink";
 import { getTelegramWebApp } from "@/lib/telegramWebApp";
+import { PASTE_MESSAGES, readClipboardText } from "@/lib/clipboard";
 import { useApp } from "@/contexts/AppContext";
 import type { PublishDraft, VerifiedLinkInfo } from "./draft";
 
@@ -45,27 +46,20 @@ export default function LinkStep({
     onChange({ link: value, verified: null });
   };
 
+  // Reads the clipboard into the field. Deliberately does NOT focus the input:
+  // focusing would pop the Android keyboard, which the creator doesn't need
+  // just to tap Continue. Typing remains available by tapping the field.
   const handlePaste = async () => {
     setPasteHint(null);
-    try {
-      let text: string | null = null;
-      if (navigator.clipboard?.readText) {
-        text = await navigator.clipboard.readText();
-      } else {
-        const tg = getTelegramWebApp();
-        if (tg?.readTextFromClipboard) {
-          text = await new Promise<string | null>((resolve) => tg.readTextFromClipboard!((t: string | null) => resolve(t)));
-        }
-      }
-      if (text && text.trim()) {
-        setLink(text.trim());
-        inputRef.current?.focus();
-      } else {
-        setPasteHint("Nothing to paste. Copy a post link in Telegram first.");
-      }
-    } catch {
-      setPasteHint("Couldn't read your clipboard. Press and hold the field, then tap Paste.");
-      inputRef.current?.focus();
+    const tg = getTelegramWebApp();
+    const result = await readClipboardText({
+      navigatorRead: navigator.clipboard?.readText ? () => navigator.clipboard.readText() : null,
+      telegramRead: tg?.readTextFromClipboard ? (cb) => tg.readTextFromClipboard!(cb) : null,
+    });
+    if (result.status === "ok") {
+      setLink(result.text); // replaces any existing value; never submits or advances
+    } else {
+      setPasteHint(PASTE_MESSAGES[result.status]);
     }
   };
 

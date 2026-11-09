@@ -16,7 +16,7 @@ export default function BottomNav() {
   const { activeTab, setActiveTab } = useApp();
 
   return (
-    <div className="fixed bottom-4 left-0 right-0 z-40 flex justify-center px-4 safe-bottom">
+    <div className="bottom-nav-wrap fixed bottom-4 left-0 right-0 z-40 flex justify-center px-4 safe-bottom">
       <div
         className="floating-nav rounded-full px-3 py-2 flex items-center gap-1"
         style={{ maxWidth: 340, width: "100%" }}
