@@ -5,7 +5,7 @@ import {
   Download, Lock, Star, Eye, Shield, Flag, Clock, CheckCircle2, AlertCircle,
   Play, FileText, Music, Image as ImageIcon, Archive, Film, ArrowLeft, Share2
 } from "lucide-react";
-import { formatBytes, getFileTypeIcon, cn } from "@/lib/utils";
+import { formatBytes, cn } from "@/lib/utils";
 import Modal from "@/components/ui/Modal";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import FileThumb from "@/components/ui/FileThumb";
@@ -15,6 +15,7 @@ interface FileInfo {
   title: string;
   description?: string;
   fileType: string;
+  mimeType?: string | null;
   fileSize?: number;
   starsPrice?: number;
   hasPassword?: boolean;
@@ -205,7 +206,7 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
           {/* Success */}
           <div className="bg-card rounded-3xl border border-app shadow-app-lg p-6 text-center flex flex-col items-center gap-4 animate-scale-in">
             <div className="w-20 h-20 rounded-2xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center text-4xl relative overflow-hidden">
-              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} eager />
+              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} eager />
             </div>
             <div className="w-14 h-14 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center -mt-8 border-4 border-card">
               <CheckCircle2 size={28} className="text-green-500" />
@@ -266,7 +267,7 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
         <div className="bg-card rounded-3xl border border-app shadow-app-lg p-5">
           <div className="flex items-center gap-4 mb-4">
             <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-3xl flex-shrink-0 relative overflow-hidden">
-              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} alt={file.title} eager />
+              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} alt={file.title} eager />
             </div>
             <div className="flex-1 min-w-0">
               <h1 className="font-bold text-primary text-base leading-snug">{file.title}</h1>

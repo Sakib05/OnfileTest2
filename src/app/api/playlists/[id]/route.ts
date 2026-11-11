@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { files, playlists } from "@/db/schema";
+import { playlists } from "@/db/schema";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
 import { PLAYLIST_DESCRIPTION_MAX, PLAYLIST_TITLE_MAX, parsePositiveId, validatePlaylistInput } from "@/lib/playlists";
 import { toPublicPlaylist } from "@/lib/playlistView";
+import { deletePlaylist, getPlaylistCovers, getPlaylistFileCounts, statusForError } from "@/lib/playlistMembers";
 import { STARS_MAX } from "@/lib/publishing/constants";
 
 export const dynamic = "force-dynamic";
@@ -24,23 +25,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     const playlistId = parsePositiveId((await params).id);
     if (!playlistId) return NextResponse.json({ error: "Invalid playlist id" }, { status: 400 });
 
-    // Deleting a playlist must NEVER delete the posts inside it: they are
-    // detached (playlist_id -> NULL) in the same transaction, so no post is left
-    // pointing at a playlist that no longer exists.
-    const deleted = await db.transaction(async (tx) => {
-      const [pl] = await tx
-        .select({ id: playlists.id })
-        .from(playlists)
-        .where(and(eq(playlists.id, playlistId), eq(playlists.userId, user.id)))
-        .for("update");
-      if (!pl) return null;
-      await tx.update(files).set({ playlistId: null }).where(and(eq(files.playlistId, playlistId), eq(files.userId, user.id)));
-      await tx.delete(playlists).where(and(eq(playlists.id, playlistId), eq(playlists.userId, user.id)));
-      return pl;
-    });
-
-    if (!deleted) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    return NextResponse.json({ success: true });
+    // Deleting a playlist removes ONLY the playlist and its membership rows — never
+    // the files (they stay in the Library and in every other playlist).
+    const result = await deletePlaylist(user.id, playlistId);
+    if (!result.ok) return NextResponse.json({ error: "Not found" }, { status: statusForError(result.code) });
+    return NextResponse.json({ success: true, detachedFiles: result.detachedFiles });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -117,11 +106,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
     if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    const [{ n }] = await db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(files)
-      .where(and(eq(files.playlistId, playlistId), eq(files.userId, user.id)));
-    return NextResponse.json({ playlist: toPublicPlaylist(updated, n) });
+    const [counts, covers] = await Promise.all([getPlaylistFileCounts([playlistId]), getPlaylistCovers([playlistId])]);
+    return NextResponse.json({ playlist: toPublicPlaylist(updated, counts.get(playlistId) ?? 0, covers.get(playlistId)) });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rateLimit";
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from "@/lib/thumbnails/imageProcessing";
+import { MULTIPART_OVERHEAD_BYTES } from "@/lib/thumbnails/limits";
 import { stageThumbnail } from "@/lib/thumbnails/staged";
 
 // Node runtime (sharp is a native module); never statically cached.
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest) {
 
     // Cheap early rejection before buffering the body (multipart overhead allowance: 64 KB).
     const declared = Number(req.headers.get("content-length") ?? "0");
-    if (declared > MAX_UPLOAD_BYTES + 64 * 1024) {
+    if (declared > MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES) {
       return NextResponse.json({ error: `Image must be ${MAX_UPLOAD_MB} MB or smaller.`, code: "too_large" }, { status: 413, headers: NO_STORE });
     }
 

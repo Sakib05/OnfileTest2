@@ -329,6 +329,38 @@ export const files = pgTable(
   ]
 );
 
+// ─── Playlist memberships ────────────────────────────────────────────────────
+// ADDITIVE join table: a file (one row in `files`, one Telegram post, one
+// thumbnail) can belong to any number of the creator's playlists, in a
+// creator-defined order. Rows here are only *references* — deleting a row (or a
+// whole playlist) never deletes the file. `files.playlist_id` is kept as a
+// legacy column (never dropped, so old data and a rollback stay safe); existing
+// values are copied into this table by migrations/playlist_files/up.sql and,
+// as a self-healing fallback, lazily by src/lib/playlistMembers.ts.
+//   position: ascending = display order; the first row is the playlist cover.
+//   user_id : denormalised owner, always equal to both parents' owner; every
+//             write re-verifies ownership server-side.
+export const playlistFiles = pgTable(
+  "playlist_files",
+  {
+    id: serial("id").primaryKey(),
+    playlistId: integer("playlist_id")
+      .notNull()
+      .references(() => playlists.id, { onDelete: "cascade" }),
+    fileId: integer("file_id")
+      .notNull()
+      .references(() => files.id, { onDelete: "cascade" }),
+    userId: integer("user_id").notNull(),
+    position: integer("position").default(0).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("playlist_files_playlist_file_idx").on(t.playlistId, t.fileId),
+    index("playlist_files_playlist_position_idx").on(t.playlistId, t.position),
+    index("playlist_files_file_id_idx").on(t.fileId),
+  ]
+);
+
 // ─── Analytics ────────────────────────────────────────────────────────────────
 export const analytics = pgTable(
   "analytics",

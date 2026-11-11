@@ -6,11 +6,13 @@
  * cold-start path (Next.js also externalizes `sharp` automatically).
  */
 
-// Largest body the server accepts. Vercel serverless functions reject request
-// bodies over 4.5 MB, so the server limit is 4 MB. The UI lets creators pick
-// images up to 5 MB (THUMBNAIL_MAX_BYTES) and shrinks them in the browser
-// (src/lib/publishing/imageCompress.ts) before sending.
-export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+// Largest body the server accepts: 2 MiB (2,097,152 bytes), the same constant
+// the UI and the browser-side compressor use (src/lib/thumbnails/limits.ts).
+// Enforced here independently of any client-side check. An image of exactly
+// 2 MiB is accepted; one byte more is rejected.
+import { THUMBNAIL_MAX_BYTES } from "./limits";
+
+export const MAX_UPLOAD_BYTES = THUMBNAIL_MAX_BYTES;
 export const MAX_UPLOAD_MB = MAX_UPLOAD_BYTES / (1024 * 1024);
 export const MAX_DIMENSION = 1280;
 const MAX_INPUT_PIXELS = 40_000_000; // decompression-bomb guard (~40 MP)

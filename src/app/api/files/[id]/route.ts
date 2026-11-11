@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { files, playlists } from "@/db/schema";
-import { parsePositiveId } from "@/lib/playlists";
+import { files } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
@@ -47,7 +46,7 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await req.json();
-    const allowed = ["title", "description", "category", "fileType", "password", "starsPrice", "playlistId", "isPublished"];
+    const allowed = ["title", "description", "category", "fileType", "password", "starsPrice", "isPublished"];
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if (key in body) updates[key] = body[key];
@@ -56,25 +55,9 @@ export async function PATCH(
       updates.password = updates.password ? hashAccessPassword(String(updates.password)) : null;
     }
 
-    // Moving a post into a playlist: the playlist must exist AND belong to the
-    // caller (otherwise a crafted request could attach a post to someone else's
-    // playlist). null / "" removes the post from its playlist.
-    if ("playlistId" in updates) {
-      const raw = updates.playlistId;
-      if (raw === null || raw === "" || raw === undefined) {
-        updates.playlistId = null;
-      } else {
-        const pid = parsePositiveId(String(raw));
-        if (!pid) return NextResponse.json({ error: "Choose a valid playlist." }, { status: 400 });
-        const [owned] = await db
-          .select({ id: playlists.id })
-          .from(playlists)
-          .where(and(eq(playlists.id, pid), eq(playlists.userId, user.id)))
-          .limit(1);
-        if (!owned) return NextResponse.json({ error: "That playlist wasn't found in your account." }, { status: 400 });
-        updates.playlistId = pid;
-      }
-    }
+    // Playlist membership is NOT editable here any more: a file can be in many playlists, so it is
+    // managed through /api/playlists/:id/files[...] (add / remove / reorder / transfer), which
+    // verify ownership of the playlist(s) and the file. A stray `playlistId` is ignored.
     updates["updatedAt"] = new Date();
 
     const [updated] = await db

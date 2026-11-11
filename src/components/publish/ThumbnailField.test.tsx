@@ -42,13 +42,13 @@ afterEach(async () => {
 });
 
 describe("ThumbnailField", () => {
-  it("rejects unsupported types and files over 5 MB without calling the service", async () => {
+  it("rejects unsupported types and files over 2 MB without calling the service", async () => {
     const service: ThumbnailStorageService = { available: true, upload: vi.fn(), remove: vi.fn() };
     await act(async () => root.render(<Harness service={service} />));
     await pick(file("image/gif", 100, "a.gif"));
     expect(container.textContent).toContain("Unsupported file");
-    await pick(file("image/png", 5 * 1024 * 1024 + 1));
-    expect(container.textContent).toContain("Maximum size is 5 MB");
+    await pick(file("image/png", 2 * 1024 * 1024 + 1));
+    expect(container.textContent).toContain("Maximum size is 2 MB");
     expect(service.upload).not.toHaveBeenCalled();
     expect(current).toBeNull();
   });

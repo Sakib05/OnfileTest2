@@ -284,3 +284,34 @@
   --tg-bubble: #2b3a4a;
   --tg-toggle-off: #555558;
 }
+
+/* ── File-type artwork (src/components/ui/FileTypeArt.tsx) ─────────────────
+   One tile system: per-kind gradient (--ft-a → --ft-b), white glyph, deep accent.
+   Colours deepen slightly in the dark theme so tiles don't glare. */
+.ft-tile {
+  background:
+    radial-gradient(120% 90% at 18% 8%, rgba(255,255,255,0.28), rgba(255,255,255,0) 55%),
+    linear-gradient(150deg, var(--ft-a), var(--ft-b));
+  --ft-a: #b6aea3;
+  --ft-b: #7b7369;
+}
+.ft-tile .ft-glyph { filter: drop-shadow(0 1.5px 1.5px rgba(0,0,0,0.22)); }
+.ft-tile[data-kind="pdf"] { --ft-a: #ff7466; --ft-b: #d92d20; }
+.ft-tile[data-kind="word"] { --ft-a: #5b9bff; --ft-b: #1f5fe0; }
+.ft-tile[data-kind="excel"] { --ft-a: #3ed49a; --ft-b: #0f8a58; }
+.ft-tile[data-kind="powerpoint"] { --ft-a: #ff9552; --ft-b: #e5530f; }
+.ft-tile[data-kind="document"] { --ft-a: #8f9bff; --ft-b: #4a45d6; }
+.ft-tile[data-kind="image"] { --ft-a: #f77fb8; --ft-b: #d12a7a; }
+.ft-tile[data-kind="video"] { --ft-a: #ae8bff; --ft-b: #7230e0; }
+.ft-tile[data-kind="audio"] { --ft-a: #3fc4f5; --ft-b: #0276b8; }
+.ft-tile[data-kind="archive"] { --ft-a: #ffc53d; --ft-b: #c77a00; }
+.ft-tile[data-kind="apk"] { --ft-a: #36d6c4; --ft-b: #0b8a7d; }
+.dark .ft-tile { filter: brightness(0.86) saturate(0.95); }
+
+/* Default playlist image (empty playlist / first file without a thumbnail). */
+.pl-tile {
+  background:
+    radial-gradient(120% 90% at 18% 8%, rgba(255,255,255,0.3), rgba(255,255,255,0) 55%),
+    linear-gradient(150deg, var(--color-primary-light), var(--color-primary-dark));
+}
+.dark .pl-tile { filter: brightness(0.9); }

@@ -138,6 +138,28 @@ describe("processThumbnail — rejections", () => {
     await rejects(big, "too_large");
   });
 
+  it("limit is exactly 2 MiB (2,097,152 bytes)", () => {
+    expect(MAX_UPLOAD_BYTES).toBe(2_097_152);
+  });
+
+  it("accepts a valid image of EXACTLY 2 MiB (size gate is inclusive)", async () => {
+    const base = await jpeg().toBuffer();
+    const exact = Buffer.concat([base, Buffer.alloc(MAX_UPLOAD_BYTES - base.length)]);
+    expect(exact.length).toBe(MAX_UPLOAD_BYTES);
+    const out = await processThumbnail(exact);
+    expect(out.sizeBytes).toBeLessThanOrEqual(MAX_UPLOAD_BYTES);
+  });
+
+  it("rejects 2 MiB + 1 byte as too_large, and exactly 2 MiB of junk as unsupported_type (not too_large)", async () => {
+    await rejects(Buffer.alloc(MAX_UPLOAD_BYTES + 1), "too_large");
+    await rejects(Buffer.alloc(MAX_UPLOAD_BYTES), "unsupported_type");
+  });
+
+  it("rejects a corrupted (truncated) image", async () => {
+    const base = await jpeg(800, 600).toBuffer();
+    await rejects(base.subarray(0, Math.floor(base.length / 2)), "corrupt");
+  });
+
   it("rejects SVG", async () => {
     await rejects(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'), "unsupported_type");
   });

@@ -25,8 +25,9 @@ immediately and re-fetches it; a deleted playlist is dropped from the draft; Fil
   Never-published uploads are expired and deleted after 24 h (lazy purge). Existing posts use the existing
   `/api/files/:id/thumbnail` endpoints (Library → ⋯ → Thumbnail); editing a post never touches its thumbnail.
 * Provider selection lives only in `src/lib/thumbnails/storage.ts` (`THUMBNAIL_STORAGE_PROVIDER`, default `dbbyte`).
-* Limits: pick up to 5 MB. Vercel functions reject bodies > 4.5 MB, so the browser shrinks large images first
-  (`imageCompress.ts`) and the server accepts ≤ 4 MB.
+* Limits: **2 MiB (2,097,152 bytes) everywhere** — defined once in `src/lib/thumbnails/limits.ts` and used by the
+  pickers, the browser compressor (`imageCompress.ts`, which guarantees the payload is ≤ 2 MiB or shows an error),
+  both upload routes and the server image pipeline (`imageProcessing.ts`). The server enforces it independently.
 * No old data touched: only one NEW table (`thumbnail_uploads`, see `migrations/thumbnails/up.sql`, additive/idempotent).
 
 ## DBByte "401 Invalid or revoked API key"

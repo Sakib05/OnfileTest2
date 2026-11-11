@@ -1,7 +1,7 @@
 "use client";
 import React from "react";
 import { AlertCircle, AlertTriangle, ArrowLeft, FolderOpen, Lock, Loader2, Pencil, Rocket, Save, Star, Tag } from "lucide-react";
-import { getFileTypeIcon } from "@/lib/utils";
+import FileTypeArt from "@/components/ui/FileTypeArt";
 import { PAID_PUBLISHING_UNAVAILABLE_MESSAGE } from "@/lib/publishing/payments";
 import type { PublishMode } from "@/lib/publishing/constants";
 import type { PublishDraft, StepIndex } from "./draft";
@@ -45,12 +45,10 @@ export default function PreviewStep({
             // eslint-disable-next-line @next/next/no-img-element -- staged preview from the storage service
             <img src={draft.thumbnail.previewUrl} alt="Thumbnail" className="absolute inset-0 w-full h-full object-cover" />
           ) : (
-            <div className="absolute inset-0 gradient-brand opacity-90 flex flex-col items-center justify-center gap-1">
-              <span className="text-5xl" aria-hidden="true">
-                {getFileTypeIcon(draft.fileType)}
-              </span>
-              <span className="text-[11px] font-semibold text-white/90">Default thumbnail</span>
-            </div>
+            <>
+              <FileTypeArt fileType={draft.fileType} title={draft.title} />
+              <span className="absolute bottom-2 left-0 right-0 text-center text-[11px] font-semibold text-white/90 drop-shadow">Default thumbnail</span>
+            </>
           )}
           <span
             className={`absolute top-3 right-3 px-2.5 py-1 rounded-full text-xs font-bold flex items-center gap-1 ${

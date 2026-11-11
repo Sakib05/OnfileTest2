@@ -1,15 +1,18 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  MoreHorizontal, Edit2, FolderPlus, ExternalLink, Share2, BarChart2, Trash2,
-  Plus, Play, FileText, Music, Image, Archive, Film, Grid, List, Search,
+  MoreHorizontal, Edit2, ExternalLink, Share2, BarChart2, Trash2,
+  Plus, Image, Grid, List, Search,
   Lock, Star, Eye, Download
 } from "lucide-react";
-import { cn, formatBytes, formatNumber, getFileTypeBadgeColor, getFileTypeIcon, timeAgo } from "@/lib/utils";
+import { cn, formatBytes, formatNumber, getFileTypeBadgeColor } from "@/lib/utils";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import FileThumb from "@/components/ui/FileThumb";
+import FileTypeArt from "@/components/ui/FileTypeArt";
+import PlaylistThumb from "@/components/ui/PlaylistThumb";
+import PlaylistManager, { type PlaylistSummary } from "@/components/playlists/PlaylistManager";
 import ThumbnailManager from "@/components/ThumbnailManager";
 
 interface FileItem {
@@ -17,6 +20,7 @@ interface FileItem {
   title: string;
   description?: string;
   fileType: string;
+  mimeType?: string | null;
   fileSize?: number;
   starsPrice?: number;
   password?: string;
@@ -43,6 +47,8 @@ interface PlaylistItem {
   hasPassword?: boolean;
   isPublished: boolean;
   createdAt: string;
+  /** Derived from the playlist's first file; null → default playlist image. */
+  thumbnailUrl?: string | null;
 }
 
 const FILTERS = ["All", "Video", "Document", "Audio", "Image", "Archive", "Playlist"];
@@ -61,12 +67,8 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [detailFile, setDetailFile] = useState<FileItem | null>(null);
   const [thumbFile, setThumbFile] = useState<FileItem | null>(null);
-  // Playlist contents viewer
-  const [openPlaylist, setOpenPlaylist] = useState<PlaylistItem | null>(null);
-  const [plFiles, setPlFiles] = useState<FileItem[]>([]);
-  const [plLoading, setPlLoading] = useState(false);
-  const [plError, setPlError] = useState<string | null>(null);
-  const [removingFileId, setRemovingFileId] = useState<number | null>(null);
+  // Playlist manager (contents, reorder, add/remove/move, edit, delete)
+  const [manager, setManager] = useState<{ id: number; view: "list" | "edit" } | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -86,46 +88,17 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  const loadPlaylistFiles = useCallback(async (playlistId: number) => {
-    setPlLoading(true);
-    setPlError(null);
+  const refreshPlaylists = useCallback(async () => {
     try {
-      const res = await fetch(`/api/files?playlistId=${playlistId}`);
-      if (!res.ok) throw new Error("failed");
-      const data = await res.json();
-      setPlFiles(Array.isArray(data.files) ? data.files : []);
+      const res = await fetch("/api/playlists", { cache: "no-store" });
+      if (res.ok) setPlaylists(await res.json().then((d) => d.playlists || []));
     } catch {
-      setPlError("Couldn't load this playlist. Please try again.");
-    } finally {
-      setPlLoading(false);
+      // ignore
     }
   }, []);
 
-  const showPlaylist = (pl: PlaylistItem) => {
-    setOpenPlaylist(pl);
-    setPlFiles([]);
-    void loadPlaylistFiles(pl.id);
-  };
-
-  const removeFromPlaylist = async (file: FileItem) => {
-    if (removingFileId !== null) return;
-    setRemovingFileId(file.id);
-    try {
-      const res = await fetch(`/api/files/${file.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ playlistId: null }),
-      });
-      if (!res.ok) throw new Error("failed");
-      setPlFiles((prev) => prev.filter((f) => f.id !== file.id));
-      toast("Removed from playlist");
-      void fetchAll(); // refresh counts
-    } catch {
-      toast("Couldn't remove it from the playlist. Please try again.", "error");
-    } finally {
-      setRemovingFileId(null);
-    }
-  };
+  const openManager = (pl: PlaylistItem, view: "list" | "edit" = "list") => setManager({ id: pl.id, view });
+  const managedPlaylist = manager ? playlists.find((p) => p.id === manager.id) ?? null : null;
 
   const filtered = (): (FileItem | PlaylistItem & { _type: string })[] => {
     const f = activeFilter.toLowerCase();
@@ -252,7 +225,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         </div>
       ) : filtered().length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-4 py-16">
-          <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-3xl">📁</div>
+          <div className="w-16 h-16 rounded-2xl relative overflow-hidden"><FileTypeArt kind="other" /></div>
           <div className="text-center">
             <p className="font-semibold text-primary mb-1">No files yet</p>
             <p className="text-sm text-secondary">Upload your first file to get started</p>
@@ -272,10 +245,10 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
               return (
                 <div key={`pl-${pl.id}`} className={cn("bg-card border border-app rounded-2xl shadow-app-sm relative", viewMode === "grid" ? "p-3" : "p-4")}>
                   <div className={cn("flex gap-3", viewMode === "grid" ? "flex-col" : "flex-row items-center")}>
-                    <div className="w-12 h-12 rounded-xl gradient-brand flex items-center justify-center flex-shrink-0">
-                      <FolderPlus size={20} color="white" />
+                    <div className={cn("rounded-xl relative overflow-hidden flex-shrink-0 bg-secondary", viewMode === "grid" ? "w-full h-20" : "w-12 h-12")}>
+                      <PlaylistThumb url={pl.thumbnailUrl} />
                     </div>
-                    <button type="button" onClick={() => showPlaylist(pl)} className="flex-1 min-w-0 text-left" aria-label={`Open playlist ${pl.title}`}>
+                    <button type="button" onClick={() => openManager(pl)} className="flex-1 min-w-0 text-left" aria-label={`Open playlist ${pl.title}`}>
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-primary text-sm line-clamp-1">{pl.title}</p>
                         {pl.hasPassword && <Lock size={11} className="text-brand flex-shrink-0" />}
@@ -297,7 +270,8 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     <ActionMenu
                       onClose={() => setMenuOpen(null)}
                       onDelete={() => { setDeleteTarget({ id: pl.id, type: "playlist" }); setMenuOpen(null); }}
-                      onView={() => showPlaylist(pl)}
+                      onView={() => openManager(pl)}
+                      onEdit={() => openManager(pl, "edit")}
                     />
                   )}
                 </div>
@@ -313,7 +287,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
                     viewMode === "grid" ? "w-full h-20" : "w-12 h-12",
                     "bg-secondary relative overflow-hidden"
                   )}>
-                    <FileThumb url={fi.thumbnailUrl} fileType={fi.fileType} />
+                    <FileThumb url={fi.thumbnailUrl} fileType={fi.fileType} title={fi.title} mimeType={fi.mimeType} />
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -369,49 +343,24 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         onConfirm={handleDelete}
         loading={deleteLoading}
         title={`Delete ${deleteTarget?.type === "file" ? "File" : "Playlist"}`}
-        description={`Are you sure you want to delete this ${deleteTarget?.type === "file" ? "file" : "playlist"}? This action cannot be undone.`}
+        description={deleteTarget?.type === "file"
+          ? "Are you sure you want to delete this file? It will also disappear from every playlist. This action cannot be undone."
+          : "Delete this playlist? Its files will NOT be deleted — they stay in your Library and in any other playlist. Only the playlist itself is removed."}
       />
 
-      {/* Playlist contents */}
-      <Modal open={!!openPlaylist} onClose={() => setOpenPlaylist(null)} title={openPlaylist?.title ?? "Playlist"} size="md">
-        {openPlaylist && (
-          <div className="flex flex-col gap-3">
-            {openPlaylist.description && <p className="text-sm text-secondary whitespace-pre-wrap break-words">{openPlaylist.description}</p>}
-            {plLoading ? (
-              <p className="text-sm text-secondary text-center py-6" role="status">Loading…</p>
-            ) : plError ? (
-              <div className="text-center py-4">
-                <p role="alert" className="text-sm text-red-500 mb-3">{plError}</p>
-                <button type="button" className="btn-secondary text-sm px-4 py-2" onClick={() => void loadPlaylistFiles(openPlaylist.id)}>Try again</button>
-              </div>
-            ) : plFiles.length === 0 ? (
-              <p className="text-sm text-secondary text-center py-6">No posts in this playlist yet. Pick it in the Details step when you publish.</p>
-            ) : (
-              <ul className="flex flex-col gap-2 max-h-[55vh] overflow-y-auto">
-                {plFiles.map((f) => (
-                  <li key={f.id} className="flex items-center gap-3 bg-secondary rounded-xl p-2.5">
-                    <div className="w-14 h-10 rounded-lg bg-card relative overflow-hidden flex-shrink-0 flex items-center justify-center">
-                      <FileThumb url={f.thumbnailUrl} fileType={f.fileType} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-primary line-clamp-1">{f.title}</p>
-                      <p className="text-xs text-secondary">{f.isPublished ? "Published" : "Draft"}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void removeFromPlaylist(f)}
-                      disabled={removingFileId !== null}
-                      className="text-xs font-semibold text-red-500 px-2 min-h-9 disabled:opacity-50"
-                    >
-                      {removingFileId === f.id ? "Removing…" : "Remove"}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </Modal>
+      {/* Playlist manager */}
+      {manager && managedPlaylist && (
+        <PlaylistManager
+          key={manager.id}
+          playlist={managedPlaylist}
+          allPlaylists={playlists}
+          initialView={manager.view}
+          onClose={() => { setManager(null); void refreshPlaylists(); }}
+          onPlaylistChanged={(p: PlaylistSummary) => setPlaylists((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...p } : x)))}
+          onChanged={() => void refreshPlaylists()}
+          onDeleted={() => { setManager(null); void fetchAll(); }}
+        />
+      )}
 
       {/* Thumbnail Modal */}
       <Modal open={!!thumbFile} onClose={() => setThumbFile(null)} title="Thumbnail" size="md">
@@ -419,12 +368,14 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
           <ThumbnailManager
             fileId={thumbFile.id}
             fileType={thumbFile.fileType}
+            fileTitle={thumbFile.title}
             currentUrl={thumbFile.thumbnailUrl}
             onToast={toast}
             onChanged={({ url, width, height }) => {
               const patch = { thumbnailUrl: url, thumbnailWidth: width, thumbnailHeight: height };
               setFiles((prev) => prev.map((f) => (f.id === thumbFile.id ? { ...f, ...patch } : f)));
               setThumbFile((f) => (f ? { ...f, ...patch } : f));
+              void refreshPlaylists(); // a playlist cover follows its first file's thumbnail
             }}
           />
         )}
@@ -436,7 +387,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3">
               <div className="w-14 h-14 rounded-2xl bg-secondary text-3xl flex items-center justify-center relative overflow-hidden flex-shrink-0">
-                <FileThumb url={detailFile.thumbnailUrl} fileType={detailFile.fileType} />
+                <FileThumb url={detailFile.thumbnailUrl} fileType={detailFile.fileType} title={detailFile.title} mimeType={detailFile.mimeType} />
               </div>
               <div>
                 <p className="font-bold text-primary">{detailFile.title}</p>

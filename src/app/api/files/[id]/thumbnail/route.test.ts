@@ -67,9 +67,9 @@ describe("POST /api/files/[id]/thumbnail", () => {
     expect(uploadThumbnail).not.toHaveBeenCalled();
   });
 
-  it("413 for > 4 MB before any processing", async () => {
+  it("413 for > 2 MiB before any processing", async () => {
     getSessionUser.mockResolvedValue({ id: 7 });
-    const res = await POST(uploadReq({}, 4 * 1024 * 1024 + 1), ctx("10"));
+    const res = await POST(uploadReq({}, 2 * 1024 * 1024 + 1), ctx("10"));
     expect(res.status).toBe(413);
     expect(uploadThumbnail).not.toHaveBeenCalled();
   });

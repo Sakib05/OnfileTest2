@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { db } from "@/db";
 import { channels, files, playlists } from "@/db/schema";
 import { hashAccessPassword } from "@/lib/password";
+import { appendMembershipInTx } from "@/lib/playlistMembers";
 import { claimStagedThumbnail } from "@/lib/thumbnails/staged";
 import { resolvePublicChatId } from "@/lib/telegramBot";
 import { parseTelegramPostLink, postIdentityKey } from "@/lib/telegramPostLink";
@@ -74,13 +75,14 @@ async function insertInTransaction(record: Parameters<PublishDeps["insertUnlessD
       }
 
       // Re-check playlist ownership atomically with the insert (it may have been
-      // deleted since the earlier check). FOR SHARE blocks a concurrent delete.
+      // deleted since the earlier check). FOR UPDATE blocks a concurrent delete and
+      // serialises with the other membership operations on this playlist.
       if (record.playlistId !== null) {
         const [pl] = await tx
           .select({ id: playlists.id })
           .from(playlists)
           .where(and(eq(playlists.id, record.playlistId), eq(playlists.userId, record.userId)))
-          .for("share");
+          .for("update");
         if (!pl) throw new RollbackPublish("invalid_playlist");
       }
 
@@ -100,6 +102,12 @@ async function insertInTransaction(record: Parameters<PublishDeps["insertUnlessD
           isPublished: record.isPublished,
         })
         .returning();
+
+      // Register the new post as the LAST member of its playlist (a reference; the
+      // file row itself is the single source of truth and can join other playlists later).
+      if (record.playlistId !== null) {
+        await appendMembershipInTx(tx, record.userId, record.playlistId, file.id);
+      }
 
       // Attach the staged thumbnail (ownership + unused checks happen in the claim).
       if (record.thumbnailRef) {

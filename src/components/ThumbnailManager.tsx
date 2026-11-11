@@ -4,13 +4,13 @@ import { ImagePlus, Trash2, Loader2 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import FileThumb from "@/components/ui/FileThumb";
 import { prepareImageForUpload } from "@/lib/publishing/imageCompress";
-
-const MAX_BYTES = 5 * 1024 * 1024;
+import { THUMBNAIL_MAX_BYTES, THUMBNAIL_MAX_LABEL } from "@/lib/thumbnails/limits";
 const ACCEPT = "image/jpeg,image/png,image/webp";
 
 interface Props {
   fileId: number;
   fileType: string;
+  fileTitle?: string;
   currentUrl?: string | null;
   onChanged: (thumb: { url: string | null; width: number | null; height: number | null }) => void;
   onToast: (message: string, type?: "success" | "error" | "warning" | "info") => void;
@@ -23,12 +23,12 @@ function precheck(file: File): string | null {
   if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
     return "Only JPEG, PNG or WebP images are allowed.";
   }
-  if (file.size > MAX_BYTES) return `Image is ${formatBytes(file.size)}. Maximum is 5 MB.`;
+  if (file.size > THUMBNAIL_MAX_BYTES) return `Image is ${formatBytes(file.size)}. Maximum is ${THUMBNAIL_MAX_LABEL}.`;
   if (file.size === 0) return "The file is empty.";
   return null;
 }
 
-export default function ThumbnailManager({ fileId, fileType, currentUrl, onChanged, onToast }: Props) {
+export default function ThumbnailManager({ fileId, fileType, fileTitle, currentUrl, onChanged, onToast }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [selected, setSelected] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -139,7 +139,7 @@ export default function ThumbnailManager({ fileId, fileType, currentUrl, onChang
           // eslint-disable-next-line @next/next/no-img-element -- local blob preview
           <img src={previewUrl} alt="Selected thumbnail preview" className="absolute inset-0 w-full h-full object-cover" />
         ) : (
-          <FileThumb url={shown} fileType={fileType} alt="Current thumbnail" eager />
+          <FileThumb url={shown} fileType={fileType} title={fileTitle} alt="Current thumbnail" eager />
         )}
       </div>
 
@@ -193,7 +193,7 @@ export default function ThumbnailManager({ fileId, fileType, currentUrl, onChang
           </button>
         )}
       </div>
-      <p className="text-[11px] text-muted text-center">JPEG, PNG or WebP · up to 5 MB</p>
+      <p className="text-[11px] text-muted text-center">JPEG, PNG or WebP · Maximum {THUMBNAIL_MAX_LABEL}</p>
     </div>
   );
 }

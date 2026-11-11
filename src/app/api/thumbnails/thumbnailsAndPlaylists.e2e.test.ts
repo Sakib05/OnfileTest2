@@ -5,7 +5,7 @@ import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray, like } from "drizzle-orm";
 import { db } from "@/db";
-import { channels, files, fileThumbnails, playlists, sessions, thumbnailOrphans, thumbnailUploads, users } from "@/db/schema";
+import { channels, files, fileThumbnails, playlistFiles, playlists, sessions, thumbnailOrphans, thumbnailUploads, users } from "@/db/schema";
 import { createSession } from "@/lib/auth";
 import { dbPublishDeps } from "@/lib/publishing/publishDeps";
 import { publishPost } from "@/lib/publishing/publishPost";
@@ -15,6 +15,8 @@ import { DELETE as stageDelete } from "./[ref]/route";
 import { GET as playlistsGet, POST as playlistsPost } from "../playlists/route";
 import { DELETE as playlistDelete, PATCH as playlistPatch } from "../playlists/[id]/route";
 import { PATCH as filePatch } from "../files/[id]/route";
+import { POST as membersAdd } from "../playlists/[id]/files/route";
+import { DELETE as membersRemove } from "../playlists/[id]/files/[fileId]/route";
 import { GET as linkGet } from "../link/[slug]/route";
 
 /**
@@ -176,9 +178,30 @@ describe("Thumbnail upload (real route + real DB + real sharp + DBByte client vs
     expect(r1.status).toBe(415);
     const r2 = await stage(tokenB, Buffer.from("<html>not an image</html>"), "a.png", "image/png");
     expect(r2.status).toBe(415);
-    const r3 = await stage(tokenB, Buffer.alloc(4 * 1024 * 1024 + 1024), "big.png", "image/png");
+    const r3 = await stage(tokenB, Buffer.alloc(2 * 1024 * 1024 + 1), "big.png", "image/png");
     expect(r3.status).toBe(413);
-    expect((await r3.json()).error).toMatch(/4 MB/);
+    expect((await r3.json()).error).toMatch(/2 MB/);
+  });
+
+  it("server enforces 2 MiB independently: exactly 2 MiB is accepted, 2 MiB + 1 byte is refused (413) and never reaches storage", async () => {
+    const base = await jpeg(640, 360);
+    const exact = Buffer.concat([base, Buffer.alloc(2 * 1024 * 1024 - base.length)]);
+    expect(exact.length).toBe(2_097_152);
+    const ok = await stage(tokenA, exact, "exact.jpg");
+    expect(ok.status).toBe(201);
+
+    const stored = bucket.size;
+    const over = await stage(tokenA, Buffer.concat([base, Buffer.alloc(2 * 1024 * 1024 - base.length + 1)]), "over.jpg");
+    expect(over.status).toBe(413);
+    expect((await over.json()).error).toBe("Image must be 2 MB or smaller.");
+    expect(bucket.size).toBe(stored);
+  });
+
+  it("corrupted image and invalid MIME type are rejected; a retry after a failure succeeds", async () => {
+    const half = (await jpeg(800, 600)).subarray(0, 300);
+    expect((await stage(tokenA, half, "broken.jpg")).status).toBe(400); // decoder rejects truncated data
+    expect((await stage(tokenA, Buffer.from("%PDF-1.4"), "doc.pdf", "application/pdf")).status).toBe(415);
+    expect((await stage(tokenA, await jpeg(), "ok.jpg")).status).toBe(201);
   });
 
   it("maps a provider authentication failure to a friendly 503, stores no row, and a retry then succeeds", async () => {
@@ -350,11 +373,17 @@ describe("Playlists (real routes + real sessions + real Postgres)", () => {
   it("refuses to attach another creator's playlist (publish and edit) and invalid ids", async () => {
     expect((await publishPost(dbPublishDeps, userA, pubBody({ playlistId: playlistOfB }))).status).toBe(400);
     const [mine] = await db.select().from(files).where(and(eq(files.userId, userA), eq(files.playlistId, playlistA)));
-    const steal = await filePatch(req(`/api/files/${mine.id}`, { method: "PATCH", token: tokenA, json: { playlistId: playlistOfB } }), ctxId(mine.id));
-    expect(steal.status).toBe(400);
-    expect((await db.select().from(files).where(eq(files.id, mine.id)))[0].playlistId).toBe(playlistA);
-    const invalid = await filePatch(req(`/api/files/${mine.id}`, { method: "PATCH", token: tokenA, json: { playlistId: "abc" } }), ctxId(mine.id));
+    // Membership is managed through /api/playlists/:id/files: another creator's playlist is a 404 and nothing is written.
+    const steal = await membersAdd(req(`/api/playlists/${playlistOfB}/files`, { method: "POST", token: tokenA, json: { fileIds: [mine.id] } }), ctxId(playlistOfB));
+    expect(steal.status).toBe(404);
+    expect(await db.select().from(playlistFiles).where(eq(playlistFiles.playlistId, playlistOfB))).toHaveLength(0);
+    const invalid = await membersAdd(req(`/api/playlists/${playlistA}/files`, { method: "POST", token: tokenA, json: { fileIds: ["abc"] } }), ctxId(playlistA));
     expect(invalid.status).toBe(400);
+    // a stray playlistId on the file PATCH is ignored (no longer an attach path)
+    const ignored = await filePatch(req(`/api/files/${mine.id}`, { method: "PATCH", token: tokenA, json: { playlistId: playlistOfB } }), ctxId(mine.id));
+    expect(ignored.status).toBe(200);
+    expect(await db.select().from(playlistFiles).where(eq(playlistFiles.playlistId, playlistOfB))).toHaveLength(0);
+    expect((await db.select().from(files).where(eq(files.id, mine.id)))[0].playlistId).toBe(playlistA);
     expect((await publishPost(dbPublishDeps, userA, pubBody({ playlistId: 999999999 }))).status).toBe(400);
   });
 
@@ -366,10 +395,13 @@ describe("Playlists (real routes + real sessions + real Postgres)", () => {
     expect(after).toMatchObject({ title: "Renamed", playlistId: playlistA });
     expect(await db.select().from(fileThumbnails).where(eq(fileThumbnails.fileId, mine.id))).toHaveLength(1);
 
-    const detach = await filePatch(req(`/api/files/${mine.id}`, { method: "PATCH", token: tokenA, json: { playlistId: null } }), ctxId(mine.id));
+    // removing the playlist association = removing the membership; the file + thumbnail stay
+    const detach = await membersRemove(req(`/api/playlists/${playlistA}/files/${mine.id}`, { method: "DELETE", token: tokenA }), { params: Promise.resolve({ id: String(playlistA), fileId: String(mine.id) }) });
     expect(detach.status).toBe(200);
-    expect((await db.select().from(files).where(eq(files.id, mine.id)))[0].playlistId).toBeNull();
-    await filePatch(req(`/api/files/${mine.id}`, { method: "PATCH", token: tokenA, json: { playlistId: playlistA } }), ctxId(mine.id));
+    expect(await db.select().from(playlistFiles).where(eq(playlistFiles.fileId, mine.id))).toHaveLength(0);
+    expect(await db.select().from(files).where(eq(files.id, mine.id))).toHaveLength(1);
+    expect(await db.select().from(fileThumbnails).where(eq(fileThumbnails.fileId, mine.id))).toHaveLength(1);
+    await membersAdd(req(`/api/playlists/${playlistA}/files`, { method: "POST", token: tokenA, json: { fileIds: [mine.id] } }), ctxId(playlistA));
   });
 
   it("only the owner can edit/delete; deleting keeps the posts (detached) and their thumbnails", async () => {
@@ -383,13 +415,15 @@ describe("Playlists (real routes + real sessions + real Postgres)", () => {
     expect((await rename.json()).playlist.title).toBe("Course A v2");
     expect((await playlistPatch(req(`/api/playlists/${playlistA}`, { method: "PATCH", token: tokenA, json: { title: "" } }), ctxId(playlistA))).status).toBe(400);
 
-    const [inPl] = await db.select().from(files).where(eq(files.playlistId, playlistA));
+    const [member] = await db.select().from(playlistFiles).where(eq(playlistFiles.playlistId, playlistA));
+    const inPl = { id: member.fileId };
     const del = await playlistDelete(req(`/api/playlists/${playlistA}`, { method: "DELETE", token: tokenA }), ctxId(playlistA));
     expect(del.status).toBe(200);
     const kept = (await db.select().from(files).where(eq(files.id, inPl.id)))[0];
     expect(kept).toBeTruthy();
     expect(kept.playlistId).toBeNull();
     expect(await db.select().from(fileThumbnails).where(eq(fileThumbnails.fileId, inPl.id))).toHaveLength(1);
+    expect(await db.select().from(playlistFiles).where(eq(playlistFiles.playlistId, playlistA))).toHaveLength(0); // memberships gone with the playlist
     expect(await db.select().from(playlists).where(eq(playlists.id, playlistOfB))).toHaveLength(1); // B's data untouched
   });
 });

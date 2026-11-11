@@ -10,6 +10,7 @@ import { parsePositiveId } from "@/lib/playlists";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
+import { listPlaylistFiles } from "@/lib/playlistMembers";
 
 export async function GET(req: NextRequest) {
   try {
@@ -20,22 +21,26 @@ export async function GET(req: NextRequest) {
     const type = searchParams.get("type");
     const playlistId = searchParams.get("playlistId");
 
+    // A playlist's contents live in the membership table (a file can be in many
+    // playlists) and are ordered by the creator's chosen position.
+    if (playlistId) {
+      const pid = parsePositiveId(playlistId);
+      if (!pid) return NextResponse.json({ error: "Invalid playlist id" }, { status: 400 });
+      const inPlaylist = await listPlaylistFiles(user.id, pid);
+      if (!inPlaylist) return NextResponse.json({ error: "Not found" }, { status: 404 });
+      return NextResponse.json({ files: inPlaylist });
+    }
+
     const conditions = [eq(files.userId, user.id)];
     if (type && type !== "all" && type !== "playlist") {
       conditions.push(eq(files.fileType, type as "video" | "audio" | "document" | "image" | "archive" | "other"));
     }
-    if (playlistId) {
-      const pid = parsePositiveId(playlistId);
-      if (!pid) return NextResponse.json({ error: "Invalid playlist id" }, { status: 400 });
-      conditions.push(eq(files.playlistId, pid));
-    }
-
     const result = await db
       .select()
       .from(files)
       .where(and(...conditions))
       .orderBy(desc(files.createdAt))
-      .limit(100);
+      .limit(500);
 
     // Thumbnails are looked up separately (and never throw) so a thumbnail
     // problem can never break the library listing itself.

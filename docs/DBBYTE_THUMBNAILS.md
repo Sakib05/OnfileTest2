@@ -104,7 +104,7 @@ Run in the sandbox against a local Postgres:
 * DBByte usage figures are manual (no usage API); estimates are Onfile-side only.
 * The usage gate and 429-pause are checked at upload time; there is no scheduled job. Orphan cleanup is admin-triggered.
 * Rate limiting reuses the repo's per-instance in-memory limiter (not global on serverless).
-* Vercel request bodies are capped at 4.5 MB; the 2 MB limit is well inside it.
+* Vercel request bodies are capped at 4.5 MB; the 2 MiB (2,097,152 byte) thumbnail limit (`src/lib/thumbnails/limits.ts`) is well inside it.
 * Account deletion cascades DB rows but does not delete DBByte objects (no account-deletion flow exists yet).
 * Thumbnails are public-by-URL (see trade-off above). Playlist covers are not covered by this change.
 * `package-lock.json` is new to the repo (it had none).

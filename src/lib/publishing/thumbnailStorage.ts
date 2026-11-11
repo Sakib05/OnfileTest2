@@ -1,4 +1,4 @@
-import { THUMBNAIL_ACCEPTED_TYPES, THUMBNAIL_MAX_BYTES } from "./constants";
+import { THUMBNAIL_ACCEPTED_TYPES, THUMBNAIL_MAX_BYTES, THUMBNAIL_MAX_LABEL } from "./constants";
 import { prepareImageForUpload } from "./imageCompress";
 
 /**
@@ -66,7 +66,7 @@ export function validateThumbnailFile(file: { type: string; size: number }): str
   }
   if (file.size <= 0) return "That file is empty.";
   if (file.size > THUMBNAIL_MAX_BYTES) {
-    return `Image is too large. Maximum size is ${Math.round(THUMBNAIL_MAX_BYTES / (1024 * 1024))} MB.`;
+    return `Image is too large. Maximum size is ${THUMBNAIL_MAX_LABEL}.`;
   }
   return null;
 }
@@ -74,7 +74,7 @@ export function validateThumbnailFile(file: { type: string; size: number }): str
 function messageFor(status: number, serverMessage?: string): string {
   if (serverMessage && status !== 0) return serverMessage;
   if (status === 401) return "Your session has expired. Please reopen Onfile from Telegram.";
-  if (status === 413) return "That image is too large. Please choose a smaller one.";
+  if (status === 413) return `That image is too large. Maximum size is ${THUMBNAIL_MAX_LABEL}.`;
   return "The thumbnail couldn't be uploaded. Please try again.";
 }
 

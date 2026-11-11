@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { files, playlists } from "@/db/schema";
+import { playlists } from "@/db/schema";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
 import { validatePlaylistInput } from "@/lib/playlists";
 import { toPublicPlaylist } from "@/lib/playlistView";
+import { backfillLegacyMemberships, getPlaylistCovers, getPlaylistFileCounts } from "@/lib/playlistMembers";
 
 export const dynamic = "force-dynamic";
 
@@ -21,21 +22,22 @@ export async function GET(req: NextRequest) {
     const user = await getSessionUser(req);
     if (!user) return unauthorized();
 
-    // File counts are computed from the files table (the stored `total_files`
-    // column was never maintained, so it can't be trusted).
+    // Copies any pre-migration `files.playlist_id` links into playlist_files (idempotent no-op afterwards).
+    await backfillLegacyMemberships(user.id);
+
     const rows = await db
-      .select({
-        playlist: playlists,
-        fileCount: // Columns are written out with table names on purpose: in a single-table select
-        // Drizzle renders ${col} unqualified, which would resolve to the subquery's own table.
-        sql<number>`(select count(*)::int from "files" f where f."playlist_id" = "playlists"."id" and f."user_id" = "playlists"."user_id")`,
-      })
+      .select()
       .from(playlists)
       .where(eq(playlists.userId, user.id))
       .orderBy(desc(playlists.createdAt), desc(playlists.id));
 
+    // File counts and covers are computed live from the membership table (the stored
+    // `total_files` column was never maintained). The cover is the FIRST file's thumbnail.
+    const ids = rows.map((r) => r.id);
+    const [counts, covers] = await Promise.all([getPlaylistFileCounts(ids), getPlaylistCovers(ids)]);
+
     return NextResponse.json(
-      { playlists: rows.map((r) => toPublicPlaylist(r.playlist, r.fileCount)) },
+      { playlists: rows.map((r) => toPublicPlaylist(r, counts.get(r.id) ?? 0, covers.get(r.id))) },
       { headers: { "Cache-Control": "private, no-store" } }
     );
   } catch (err) {
@@ -106,13 +108,11 @@ export async function POST(req: NextRequest) {
       return { duplicate: false as const, playlist: created };
     });
 
-    const [{ n }] = await db
-      .select({ n: sql<number>`count(*)::int` })
-      .from(files)
-      .where(and(eq(files.playlistId, result.playlist.id), eq(files.userId, user.id)));
+    const [counts, covers] = await Promise.all([getPlaylistFileCounts([result.playlist.id]), getPlaylistCovers([result.playlist.id])]);
+    const n = counts.get(result.playlist.id) ?? 0;
 
     return NextResponse.json(
-      { playlist: toPublicPlaylist(result.playlist, n), duplicate: result.duplicate },
+      { playlist: toPublicPlaylist(result.playlist, n, covers.get(result.playlist.id)), duplicate: result.duplicate },
       { status: result.duplicate ? 200 : 201, headers: { "Cache-Control": "private, no-store" } }
     );
   } catch (err) {

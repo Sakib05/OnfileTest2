@@ -56,17 +56,6 @@ export function slugify(text: string): string {
     .replace(/(^-|-$)/g, "");
 }
 
-export function getFileTypeIcon(type: string): string {
-  switch (type) {
-    case "video": return "🎬";
-    case "audio": return "🎵";
-    case "document": return "📄";
-    case "image": return "🖼️";
-    case "archive": return "📦";
-    default: return "📁";
-  }
-}
-
 export function getFileTypeBadgeColor(type: string): string {
   switch (type) {
     case "video": return "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300";

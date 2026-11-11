@@ -32,4 +32,4 @@ export type Monetization = "free" | "paid";
 export type PublishMode = "publish" | "draft";
 
 export const THUMBNAIL_ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
-export const THUMBNAIL_MAX_BYTES = 5 * 1024 * 1024;
+export { THUMBNAIL_MAX_BYTES, THUMBNAIL_MAX_LABEL } from "@/lib/thumbnails/limits";

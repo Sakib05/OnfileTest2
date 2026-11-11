@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, ImagePlus, Loader2, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
-import { THUMBNAIL_MAX_BYTES } from "@/lib/publishing/constants";
+import { THUMBNAIL_MAX_LABEL } from "@/lib/publishing/constants";
 import {
   validateThumbnailFile,
   type StagedThumbnail,
@@ -201,7 +201,7 @@ export default function ThumbnailField({
       )}
 
       <p className="text-xs text-muted">
-        JPEG, PNG or WebP · up to {Math.round(THUMBNAIL_MAX_BYTES / (1024 * 1024))} MB. Without one, a default thumbnail is
+        JPEG, PNG or WebP · Maximum {THUMBNAIL_MAX_LABEL}. Without one, a default thumbnail is
         used.
       </p>
 
