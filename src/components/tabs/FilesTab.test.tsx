@@ -2,8 +2,13 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import FilesTab from "./FilesTab";
 import { ToastProvider } from "@/components/ui/Toast";
+
+const router = { push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn(), refresh: vi.fn(), forward: vi.fn() };
+vi.mock("next/navigation", () => ({ useRouter: () => router }));
+
+import FilesTab from "./FilesTab";
+import { FROM_LIBRARY_KEY } from "@/lib/playlistNav";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,6 +59,8 @@ async function mount(files = FILES as unknown[], playlists = PLAYLISTS as unknow
 }
 
 beforeEach(() => {
+  Object.values(router).forEach((m) => m.mockReset());
+  sessionStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -184,7 +191,7 @@ describe("My Library — cards", () => {
     await click(chip("Document"));
     const card = container.querySelector('[data-testid="file-card"]')!;
     expect(card.textContent).toContain("Report.pdf");
-    expect(card.textContent).toContain("document");
+    expect(card.textContent).toContain("document"); // the type tag (now on the thumbnail)
     expect(card.textContent).toContain("+$0.50");
     expect(card.querySelectorAll("svg").length).toBeGreaterThanOrEqual(3);
   });
@@ -217,7 +224,7 @@ describe("My Library — cards", () => {
     const menu = document.querySelector('[role="menu"]') as HTMLElement;
     expect(menu.style.position === "" ? menu.className : "fixed").toContain("fixed");
     const labels = Array.from(menu.querySelectorAll('[role="menuitem"]')).map((m) => m.textContent);
-    expect(labels).toEqual(["Thumbnail", "Open Link", "Share", "Analytics", "Delete"]);
+    expect(labels).toEqual(["Open Link", "Share", "Analytics", "Delete"]); // no "Thumbnail" item any more
     await click(Array.from(menu.querySelectorAll("button")).find((b) => b.textContent === "Analytics")!);
     expect(document.body.textContent).toContain("File Details");
     expect(document.body.textContent).not.toMatch(SIZE_RE);
@@ -230,5 +237,167 @@ describe("My Library — cards", () => {
     await click(byLabel("More actions for playlist Course"));
     const labels = Array.from(document.querySelectorAll('[role="menuitem"]')).map((m) => m.textContent);
     expect(labels).toEqual(["View posts", "Edit", "Delete"]);
+  });
+});
+
+describe("My Library — search field layout", () => {
+  it("is one flex row: [icon][input][close] — the icon is an in-flow sibling, never absolutely positioned over the input", async () => {
+    await mount();
+    await click(byLabel("Search library"));
+    const field = container.querySelector('[data-testid="library-search-field"]') as HTMLElement;
+    const kids = Array.from(field.children) as HTMLElement[];
+    expect(field.className).toContain("flex");
+    expect(field.className).toContain("items-center");
+    expect(kids).toHaveLength(3);
+    expect(kids[0].getAttribute("data-testid")).toBe("library-search-icon");
+    expect(kids[1].tagName).toBe("INPUT");
+    expect(kids[2].getAttribute("aria-label")).toBe("Close search");
+    for (const el of kids) expect(el.className.toString()).not.toMatch(/\babsolute\b/);
+    expect(kids[0].getAttribute("class")).toContain("flex-shrink-0");
+    expect(kids[1].className).toContain("min-w-0"); // lets the input shrink instead of clipping/overlapping
+    expect((kids[1] as HTMLInputElement).placeholder).toBe("Search files & playlists...");
+    expect(kids[1].className).not.toMatch(/\bpl-\d/); // no padding hack needed to dodge an overlay
+  });
+});
+
+describe("My Library — file type tag on the thumbnail", () => {
+  it("is pinned to the thumbnail's top-right corner, inside the thumbnail frame, in List, Grid and Home rows", async () => {
+    const check = () => {
+      const card = container.querySelector('[data-testid="file-card"]') as HTMLElement;
+      const badge = card.querySelector('[data-testid="file-type-badge"]') as HTMLElement;
+      expect(badge).not.toBeNull();
+      expect(badge.className).toContain("absolute");
+      expect(badge.className).toContain("top-1.5");
+      expect(badge.className).toContain("right-1.5");
+      const frame = badge.parentElement as HTMLElement;
+      expect(frame.className).toContain("relative");
+      expect(frame.className).toContain("overflow-hidden");
+      expect(frame.querySelector('[data-testid="file-type-art"], img')).not.toBeNull(); // same frame as the artwork
+      // old placement removed: only ONE type tag per card, and none in the text block
+      expect(card.querySelectorAll('[data-testid="file-type-badge"]')).toHaveLength(1);
+      expect(card.querySelector("span.text-left")?.textContent ?? "").not.toMatch(/^(video|audio|document|image|archive)\b/i);
+      expect(card.querySelector(".chip.capitalize")).toBeNull();
+      return badge;
+    };
+    await mount([mkFile(1, "video", "Clip")], []);
+    check(); // Home row
+    await click(chip("Video"));
+    expect(check().textContent).toBe("video"); // list
+    await click(byLabel("Grid view"));
+    check(); // grid
+  });
+
+  it("is readable on any artwork (translucent dark pill with white text), so it works in light and dark themes", async () => {
+    await mount([mkFile(1, "image", "Photo", { thumbnailUrl: "https://cdn.example/p.jpg" })], []);
+    const badge = container.querySelector('[data-testid="file-type-badge"]') as HTMLElement;
+    expect(badge.className).toContain("bg-black/60");
+    expect(badge.className).toContain("text-white");
+    expect(badge.getAttribute("data-file-type")).toBe("image");
+  });
+
+  it("keeps the Stars price chip below the thumbnail (it is not a type tag)", async () => {
+    await mount([mkFile(1, "video", "Paid", { starsPrice: 50 } as Partial<F>)], []);
+    await click(chip("Video"));
+    const card = container.querySelector('[data-testid="file-card"]')!;
+    expect(card.textContent).toContain("⭐ 50");
+    expect(card.querySelector('[data-testid="file-type-badge"]')?.textContent).not.toContain("50");
+  });
+});
+
+describe("My Library — relative upload time", () => {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+
+  it("shows how long ago each file was uploaded, from the file's createdAt, in every layout", async () => {
+    await mount([
+      mkFile(1, "video", "Fresh", { createdAt: new Date().toISOString() }),
+      mkFile(2, "video", "Two hours", { createdAt: hoursAgo(2) }),
+      mkFile(3, "video", "Yesterday", { createdAt: hoursAgo(30) }),
+      mkFile(4, "video", "Days", { createdAt: hoursAgo(72) }),
+      mkFile(5, "video", "Weeks", { createdAt: hoursAgo(24 * 15) }),
+      mkFile(6, "video", "Month", { createdAt: hoursAgo(24 * 40) }),
+    ], []);
+    await click(chip("Video"));
+    const text = (title: string) =>
+      Array.from(container.querySelectorAll('[data-testid="file-card"]')).find((c) => c.textContent?.includes(title))!.querySelector('[data-testid="relative-time"]')?.textContent;
+    expect(text("Fresh")).toBe("Just now");
+    expect(text("Two hours")).toBe("2 hours ago");
+    expect(text("Yesterday")).toBe("Yesterday");
+    expect(text("Days")).toBe("3 days ago");
+    expect(text("Weeks")).toBe("2 weeks ago");
+    expect(text("Month")).toBe("1 month ago");
+    await click(byLabel("Grid view"));
+    expect(container.querySelectorAll('[data-testid="relative-time"]')).toHaveLength(6);
+    // exposes the real instant for assistive tech / tooltips
+    expect(container.querySelector("time")?.getAttribute("datetime")).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("handles missing or invalid timestamps safely (no crash, no invented time)", async () => {
+    await mount([
+      mkFile(1, "video", "No date", { createdAt: undefined as unknown as string }),
+      mkFile(2, "video", "Bad date", { createdAt: "not-a-date" }),
+      mkFile(3, "video", "Empty date", { createdAt: "" }),
+      mkFile(4, "video", "Good", { createdAt: hoursAgo(5) }),
+    ], []);
+    await click(chip("Video"));
+    expect(container.querySelectorAll('[data-testid="file-card"]')).toHaveLength(4);
+    expect(container.querySelectorAll('[data-testid="relative-time"]')).toHaveLength(1);
+    expect(container.textContent).toContain("5 hours ago");
+    expect(container.textContent).not.toMatch(/NaN|Invalid/);
+  });
+
+  it("does not add per-card requests (reuses the one files + playlists snapshot) and shows no upload time on playlists", async () => {
+    await mount();
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalledTimes(2); // /api/files + /api/playlists, regardless of card count
+    await click(chip("Playlist"));
+    expect(container.querySelectorAll('[data-testid="playlist-card"]')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="playlist-card"] [data-testid="relative-time"]')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("My Library — file menu has no Thumbnail option", () => {
+  it("omits Thumbnail but keeps every other file action, and no thumbnail modal is mounted", async () => {
+    await mount();
+    await click(chip("Document"));
+    await click(byLabel("More actions for Report.pdf"));
+    const labels = Array.from(document.querySelectorAll('[role="menuitem"]')).map((m) => m.textContent);
+    expect(labels).not.toContain("Thumbnail");
+    expect(labels).toEqual(["Open Link", "Share", "Analytics", "Delete"]);
+    expect(document.body.textContent).not.toContain("Replace thumbnail");
+  });
+
+  it("still renders thumbnails and the FileTypeArt fallback", async () => {
+    await mount([mkFile(1, "video", "With", { thumbnailUrl: "https://cdn.example/t.jpg" }), mkFile(2, "audio", "Without")], []);
+    await click(chip("Video"));
+    expect((container.querySelector("img") as HTMLImageElement).src).toBe("https://cdn.example/t.jpg");
+    await click(chip("Audio"));
+    expect(container.querySelectorAll('[data-testid="file-type-art"]')).toHaveLength(1);
+    expect(container.querySelector("img")).toBeNull();
+  });
+});
+
+describe("My Library — playlists open as a full page (no popup)", () => {
+  it("clicking a playlist card navigates to /playlists/[id] and opens no modal", async () => {
+    await mount();
+    await click(chip("Playlist"));
+    await click(byLabel("Open playlist Course"));
+    expect(router.push).toHaveBeenCalledWith("/playlists/2");
+    expect(document.querySelector(".fixed.inset-0.z-50")).toBeNull();
+    expect(sessionStorage.getItem(FROM_LIBRARY_KEY)).toBe("1"); // lets Back return to the Library with real history
+  });
+
+  it("opens from a Home row too, and 'View posts' / 'Edit' in the menu go to the page", async () => {
+    await mount();
+    await click(byLabel("Open playlist Mix Playlist"));
+    expect(router.push).toHaveBeenLastCalledWith("/playlists/1");
+
+    await click(byLabel("More actions for playlist Mix Playlist"));
+    await click(Array.from(document.querySelectorAll('[role="menuitem"]')).find((m) => m.textContent === "View posts") ?? null);
+    expect(router.push).toHaveBeenLastCalledWith("/playlists/1");
+
+    await click(byLabel("More actions for playlist Mix Playlist"));
+    await click(Array.from(document.querySelectorAll('[role="menuitem"]')).find((m) => m.textContent === "Edit") ?? null);
+    expect(router.push).toHaveBeenLastCalledWith("/playlists/1?edit=1");
   });
 });

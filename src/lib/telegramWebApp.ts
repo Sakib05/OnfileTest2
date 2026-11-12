@@ -28,6 +28,14 @@ export interface TelegramWebApp {
    * `false` if the user cancelled / Telegram could not deliver it.
    */
   requestChat?: (reqId: string, callback?: (sent: boolean) => void) => void;
+  /** Bot API 6.1+. The native header "Back" arrow (also driven by the Android back gesture). */
+  BackButton?: {
+    isVisible?: boolean;
+    show: () => void;
+    hide: () => void;
+    onClick: (callback: () => void) => void;
+    offClick: (callback: () => void) => void;
+  };
   /** Bot API 6.0+. Subscribe to a bridge event, e.g. "viewportChanged". */
   onEvent?: (eventType: string, handler: (...args: unknown[]) => void) => void;
   offEvent?: (eventType: string, handler: (...args: unknown[]) => void) => void;

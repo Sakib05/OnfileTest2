@@ -1,9 +1,12 @@
 "use client";
 import React, { memo } from "react";
 import { MoreHorizontal, Lock, Star, Eye, Download } from "lucide-react";
-import { cn, formatNumber, getFileTypeBadgeColor } from "@/lib/utils";
+import { cn, formatNumber } from "@/lib/utils";
 import FileThumb from "@/components/ui/FileThumb";
 import PlaylistThumb from "@/components/ui/PlaylistThumb";
+import FileTypeBadge from "./FileTypeBadge";
+import RelativeTime from "./RelativeTime";
+import { parseTimestamp } from "@/lib/relativeTime";
 import type { CardLayout, FileItem, PlaylistItem } from "./types";
 
 /**
@@ -26,8 +29,12 @@ const SHELL: Record<CardLayout, string> = {
 interface CardShellProps {
   layout: CardLayout;
   thumb: React.ReactNode;
+  /** Overlaid inside the thumbnail frame (top-right), so it stays attached to the artwork. */
+  thumbBadge?: React.ReactNode;
   title: string;
   titleSuffix?: React.ReactNode;
+  /** Quiet secondary line directly under the title (e.g. "2 hours ago"). */
+  subtitle?: React.ReactNode;
   badges?: React.ReactNode;
   stats?: React.ReactNode;
   openLabel: string;
@@ -38,7 +45,7 @@ interface CardShellProps {
 }
 
 /** One card, three layouts. Used for both files and playlists so they stay visually identical. */
-function CardShell({ layout, thumb, title, titleSuffix, badges, stats, openLabel, menuLabel, onOpen, onMenu, testId }: CardShellProps) {
+function CardShell({ layout, thumb, thumbBadge, title, titleSuffix, subtitle, badges, stats, openLabel, menuLabel, onOpen, onMenu, testId }: CardShellProps) {
   const menuButton = (
     <button
       type="button"
@@ -55,7 +62,10 @@ function CardShell({ layout, thumb, title, titleSuffix, badges, stats, openLabel
   );
 
   const thumbBox = (
-    <span className={cn("block relative overflow-hidden rounded-xl bg-secondary", THUMB_FRAME[layout])}>{thumb}</span>
+    <span className={cn("block relative overflow-hidden rounded-xl bg-secondary", THUMB_FRAME[layout])}>
+      {thumb}
+      {thumbBadge}
+    </span>
   );
 
   const text = (
@@ -64,6 +74,7 @@ function CardShell({ layout, thumb, title, titleSuffix, badges, stats, openLabel
         <span className="font-semibold text-primary text-sm leading-snug line-clamp-2 break-words">{title}</span>
         {titleSuffix}
       </span>
+      {subtitle && <span className="block mt-0.5 text-xs text-muted truncate">{subtitle}</span>}
       {badges && <span className="flex items-center gap-1.5 mt-1.5 flex-wrap">{badges}</span>}
       {stats && <span className="flex items-center gap-x-3 gap-y-1 mt-1.5 flex-wrap text-xs text-secondary">{stats}</span>}
     </span>
@@ -111,7 +122,10 @@ interface FileCardProps {
   onMenu: (file: FileItem, anchor: DOMRect) => void;
 }
 
-/** A file card. Shows title, type, views, downloads, earnings and lock / Stars status — never the file size. */
+/**
+ * A file card. Shows title, upload age, views, downloads, earnings and lock / Stars status — never the
+ * file size. The file-type tag is pinned to the thumbnail's top-right corner (not below it).
+ */
 export const FileCard = memo(function FileCard({ file, layout, onOpen, onMenu }: FileCardProps) {
   const compact = layout === "row";
   return (
@@ -125,17 +139,14 @@ export const FileCard = memo(function FileCard({ file, layout, onOpen, onMenu }:
       onOpen={() => onOpen(file)}
       onMenu={(a) => onMenu(file, a)}
       thumb={<FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} />}
+      thumbBadge={<FileTypeBadge fileType={file.fileType} />}
+      subtitle={parseTimestamp(file.createdAt) !== null ? <RelativeTime value={file.createdAt} /> : undefined}
       badges={
-        <>
-          <span className={cn("chip capitalize", getFileTypeBadgeColor(file.fileType))} style={{ padding: "2px 8px", fontSize: 11 }}>
-            {file.fileType}
+        (file.starsPrice ?? 0) > 0 ? (
+          <span className="chip bg-yellow-50 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400" style={{ padding: "2px 8px", fontSize: 11 }}>
+            ⭐ {file.starsPrice}
           </span>
-          {(file.starsPrice ?? 0) > 0 && (
-            <span className="chip bg-yellow-50 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400" style={{ padding: "2px 8px", fontSize: 11 }}>
-              ⭐ {file.starsPrice}
-            </span>
-          )}
-        </>
+        ) : undefined
       }
       stats={
         <>

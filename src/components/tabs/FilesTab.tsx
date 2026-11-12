@@ -1,7 +1,8 @@
 "use client";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import {
-  Edit2, ExternalLink, Share2, BarChart2, Trash2, Plus, Image, Grid, List, Search,
+  Edit2, ExternalLink, Share2, BarChart2, Trash2, Plus, Grid, List, Search,
   Eye, Download, ChevronLeft, SearchX,
 } from "lucide-react";
 import { cn, formatNumber } from "@/lib/utils";
@@ -10,8 +11,6 @@ import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import FileThumb from "@/components/ui/FileThumb";
 import FileTypeArt from "@/components/ui/FileTypeArt";
-import PlaylistManager, { type PlaylistSummary } from "@/components/playlists/PlaylistManager";
-import ThumbnailManager from "@/components/ThumbnailManager";
 import { fileKindLabel } from "@/lib/fileKinds";
 import {
   LIBRARY_FILTERS, buildHomeSections, filesForFilter, filterByQuery, sortNewestFirst,
@@ -20,6 +19,9 @@ import {
 import { FileCard, PlaylistCard, LibrarySkeleton } from "@/components/library/LibraryCards";
 import HomeSections from "@/components/library/HomeSections";
 import LibrarySearch from "@/components/library/LibrarySearch";
+import RelativeTime from "@/components/library/RelativeTime";
+import { parseTimestamp } from "@/lib/relativeTime";
+import { markNavigatedFromLibrary } from "@/lib/playlistNav";
 import LibraryMenu, { type MenuAction } from "@/components/library/LibraryMenu";
 import type { FileItem, MenuTarget, PlaylistItem } from "@/components/library/types";
 
@@ -44,6 +46,7 @@ const EMPTY_COPY: Record<Exclude<LibraryFilter, "Home">, { title: string; hint: 
 
 export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void }) {
   const { toast } = useToast();
+  const router = useRouter();
   const [activeFilter, setActiveFilter] = useState<LibraryFilter>("Home");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -57,9 +60,6 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; type: "file" | "playlist" } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [detailFile, setDetailFile] = useState<FileItem | null>(null);
-  const [thumbFile, setThumbFile] = useState<FileItem | null>(null);
-  // Playlist manager (contents, reorder, add/remove/move, edit, delete)
-  const [manager, setManager] = useState<{ id: number; view: "list" | "edit" } | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const chipBarRef = useRef<HTMLDivElement>(null);
@@ -82,17 +82,12 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     void fetchAll(); // initial data load on mount
   }, [fetchAll]);
 
-  const refreshPlaylists = useCallback(async () => {
-    try {
-      const res = await fetch("/api/playlists", { cache: "no-store" });
-      if (res.ok) setPlaylists(await res.json().then((d) => d.playlists || []));
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const openManager = useCallback((pl: PlaylistItem, view: "list" | "edit" = "list") => setManager({ id: pl.id, view }), []);
-  const managedPlaylist = manager ? playlists.find((p) => p.id === manager.id) ?? null : null;
+  // A playlist opens as its own full page (route /playlists/[id]) — never in a popup.
+  // Returning (Back / Telegram BackButton / Android back) lands on this tab again and re-fetches the library.
+  const openPlaylist = useCallback((pl: PlaylistItem, view: "list" | "edit" = "list") => {
+    markNavigatedFromLibrary();
+    router.push(view === "edit" ? `/playlists/${pl.id}?edit=1` : `/playlists/${pl.id}`);
+  }, [router]);
 
   // ── Search open / close ──────────────────────────────────────────────────
   useEffect(() => {
@@ -190,15 +185,14 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
       const pl = playlists.find((p) => p.id === menu.id);
       if (!pl) return [];
       return [
-        { icon: Eye, label: "View posts", action: () => openManager(pl) },
-        { icon: Edit2, label: "Edit", action: () => openManager(pl, "edit") },
+        { icon: Eye, label: "View posts", action: () => openPlaylist(pl) },
+        { icon: Edit2, label: "Edit", action: () => openPlaylist(pl, "edit") },
         { icon: Trash2, label: "Delete", color: "text-red-500", action: () => setDeleteTarget({ id: pl.id, type: "playlist" }) },
       ];
     }
     const fi = files.find((f) => f.id === menu.id);
     if (!fi) return [];
     return [
-      { icon: Image, label: "Thumbnail", action: () => setThumbFile(fi) },
       { icon: ExternalLink, label: "Open Link", color: "text-blue-500", action: () => { if (fi.smartLinkSlug) window.open(`/f/${fi.smartLinkSlug}`, "_blank"); } },
       { icon: Share2, label: "Share", color: "text-green-500", action: () => void handleShare(fi.smartLinkSlug) },
       { icon: BarChart2, label: "Analytics", color: "text-brand", action: () => setDetailFile(fi) },
@@ -206,7 +200,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     ];
     // handleShare only depends on stable inputs (toast); intentionally not a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menu, files, playlists, openManager]);
+  }, [menu, files, playlists, openPlaylist]);
 
   // ── Render helpers ──────────────────────────────────────────────────────
   const renderFlat = () => (
@@ -215,7 +209,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         <FileCard key={`f-${fi.id}`} file={fi} layout={viewMode} onOpen={setDetailFile} onMenu={onMenuFile} />
       ))}
       {flat.playlists.map((pl) => (
-        <PlaylistCard key={`pl-${pl.id}`} playlist={pl} layout={viewMode} onOpen={openManager} onMenu={onMenuPlaylist} />
+        <PlaylistCard key={`pl-${pl.id}`} playlist={pl} layout={viewMode} onOpen={openPlaylist} onMenu={onMenuPlaylist} />
       ))}
     </div>
   );
@@ -325,7 +319,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
             sections={sections}
             onOpenFile={setDetailFile}
             onMenuFile={onMenuFile}
-            onOpenPlaylist={openManager}
+            onOpenPlaylist={openPlaylist}
             onMenuPlaylist={onMenuPlaylist}
             onSeeAll={handleSeeAll}
           />
@@ -380,39 +374,6 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
           : "Delete this playlist? Its files will NOT be deleted — they stay in your Library and in any other playlist. Only the playlist itself is removed."}
       />
 
-      {/* Playlist manager */}
-      {manager && managedPlaylist && (
-        <PlaylistManager
-          key={manager.id}
-          playlist={managedPlaylist}
-          allPlaylists={playlists}
-          initialView={manager.view}
-          onClose={() => { setManager(null); void refreshPlaylists(); }}
-          onPlaylistChanged={(p: PlaylistSummary) => setPlaylists((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...p } : x)))}
-          onChanged={() => void refreshPlaylists()}
-          onDeleted={() => { setManager(null); void fetchAll(); }}
-        />
-      )}
-
-      {/* Thumbnail Modal */}
-      <Modal open={!!thumbFile} onClose={() => setThumbFile(null)} title="Thumbnail" size="md">
-        {thumbFile && (
-          <ThumbnailManager
-            fileId={thumbFile.id}
-            fileType={thumbFile.fileType}
-            fileTitle={thumbFile.title}
-            currentUrl={thumbFile.thumbnailUrl}
-            onToast={toast}
-            onChanged={({ url, width, height }) => {
-              const patch = { thumbnailUrl: url, thumbnailWidth: width, thumbnailHeight: height };
-              setFiles((prev) => prev.map((f) => (f.id === thumbFile.id ? { ...f, ...patch } : f)));
-              setThumbFile((f) => (f ? { ...f, ...patch } : f));
-              void refreshPlaylists(); // a playlist cover follows its first file's thumbnail
-            }}
-          />
-        )}
-      </Modal>
-
       {/* Detail Modal */}
       <Modal open={!!detailFile} onClose={() => setDetailFile(null)} title="File Details" size="md">
         {detailFile && (
@@ -424,6 +385,9 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
               <div className="min-w-0">
                 <p className="font-bold text-primary break-words">{detailFile.title}</p>
                 <p className="text-sm text-secondary">{fileKindLabel(detailFile)}</p>
+                {parseTimestamp(detailFile.createdAt) !== null && (
+                  <p className="text-xs text-muted mt-0.5">Uploaded <RelativeTime value={detailFile.createdAt} /></p>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
