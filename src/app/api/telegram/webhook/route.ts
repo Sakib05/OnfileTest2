@@ -5,12 +5,20 @@ import { getOwnBotId, verifyChannelOwnershipAndBotAccess } from "@/lib/telegramB
 import { finalizeVerifiedChannelConnection } from "@/lib/channelConnection";
 import {
   claimPendingRequestForProcessing,
+  connectMethodForRequestId,
   getLatestPendingByTelegramUser,
   getPendingByTelegramRequest,
+  lookupPendingForBotStart,
   updatePendingChannelRequestById,
   type PendingChannelRequestRecord,
 } from "@/lib/pendingChannelRequests";
 import { recordBotChannelAdminEvent } from "@/lib/botChannelEvents";
+import {
+  handleBotTextMessage,
+  notifyBotConnectionFailure,
+  notifyBotConnectionSuccess,
+  notifyBotRequestExpired,
+} from "@/lib/botConnectFlow";
 
 interface TelegramChatShared {
   request_id: number;
@@ -45,6 +53,7 @@ interface TelegramUpdate {
   message?: {
     chat: { id: number; type: string };
     from?: { id: number };
+    text?: string;
     chat_shared?: TelegramChatShared;
   };
   my_chat_member?: TelegramChatMemberUpdated;
@@ -139,6 +148,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    // Bot-chat fallback ("Connect channel via bot"): `/start <payload>` and
+    // `/connect` in a private chat. Never touches `channels` directly — see
+    // src/lib/botConnectFlow.ts.
+    if (update.message?.text && update.message.from?.id) {
+      await handleBotTextMessage({
+        chatId: update.message.chat.id,
+        chatType: update.message.chat.type,
+        fromId: update.message.from.id,
+        text: update.message.text,
+      });
+      return NextResponse.json({ ok: true });
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("telegram_webhook_failed", err instanceof Error ? err.message : "unknown_error");
@@ -156,6 +178,18 @@ async function handleChatShared(chatShared: TelegramChatShared, telegramUserId: 
       telegramUserId,
       requestId: chatShared.request_id,
     });
+    // Only for the bot-chat fallback: the user is looking at the bot chat, so
+    // tell them (rather than staying silent) that their request expired.
+    // getPendingByTelegramRequest already excludes expired rows, and the
+    // bot-range check keeps the Direct Picker's behavior unchanged.
+    // A selection from the wrong user, or for an unknown/already-resolved
+    // request, is ignored silently; only a genuine expiry is announced.
+    if (connectMethodForRequestId(chatShared.request_id) === "bot") {
+      const lookup = await lookupPendingForBotStart(telegramUserId, chatShared.request_id);
+      if (lookup.kind === "expired") {
+        await safeNotify(() => notifyBotRequestExpired(telegramUserId));
+      }
+    }
     return;
   }
   await resolvePendingAgainstChat(pending, String(chatShared.chat_id), telegramUserId, req, "chat_shared");
@@ -260,6 +294,7 @@ async function resolvePendingAgainstChat(
       status: "failed",
       failureReason: verification.reason,
     });
+    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, verification.reason));
     return;
   }
 
@@ -276,6 +311,7 @@ async function resolvePendingAgainstChat(
       status: "failed",
       failureReason: "telegram_api_error",
     });
+    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, "telegram_api_error"));
     return;
   }
 
@@ -290,4 +326,20 @@ async function resolvePendingAgainstChat(
     resolvedUserId: finalized.result.userId,
     isNewAccount: finalized.result.isNewAccount,
   });
+  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName));
+}
+
+/** Notification failures (e.g. user blocked the bot) must never affect the verified outcome. */
+async function safeNotify(fn: () => Promise<void>) {
+  try {
+    await fn();
+  } catch (err) {
+    console.error("telegram_webhook_bot_notify_failed", err instanceof Error ? err.message : "unknown_error");
+  }
+}
+
+/** In-chat confirmation is sent ONLY for bot-chat fallback requests; Direct Picker requests are untouched. */
+async function notifyIfBotMethod(pending: PendingChannelRequestRecord, fn: () => Promise<void>) {
+  if (connectMethodForRequestId(pending.telegramRequestId) !== "bot") return;
+  await safeNotify(fn);
 }

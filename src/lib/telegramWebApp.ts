@@ -69,11 +69,12 @@ export function isRunningInsideTelegram(): boolean {
 }
 
 /**
- * Feature/version detection for the direct native channel picker (Part A.6
- * of the channel connection system). Checked BEFORE ever calling
- * `requestChat` so an older Telegram client is shown an explicit "please
- * update Telegram" message instead of a silent failure or a fallback to the
- * old bot-chat flow (which this product no longer implements).
+ * Feature/version detection for the direct native channel picker. Checked
+ * BEFORE ever calling `requestChat` so a client that cannot open it is
+ * offered the "Connect channel via bot" fallback up front. Telegram exposes
+ * no dedicated capability flag for `requestChat`; `isVersionAtLeast("9.6")`
+ * is the documented gate, and `requestChatSelectionDetailed` additionally
+ * catches the runtime `WebAppMethodUnsupported` error as a safety net.
  */
 export function isRequestChatSupported(): boolean {
   const webApp = getTelegramWebApp();
@@ -92,24 +93,73 @@ export function isRequestChatSupported(): boolean {
   return true;
 }
 
+export type RequestChatOutcome =
+  /** Telegram opened the picker and the selection was delivered to the bot. */
+  | "sent"
+  /** The picker opened but the user dismissed it / Telegram could not deliver the selection. */
+  | "not_sent"
+  /** The client does not implement `requestChat` (Telegram's script throws `WebAppMethodUnsupported`). */
+  | "unsupported"
+  /** Any other client-side error (e.g. a picker is already open). Never treated as "unsupported". */
+  | "error";
+
 /**
  * Opens Telegram's native chat-selection dialog for a prepared `request_id`
  * (see createPreparedChatRequestButton in src/lib/telegramBot.ts) and
- * resolves once Telegram reports whether the selection was sent to the bot.
- * Never throws — any unexpected client error resolves to `false` so callers
- * can treat it the same as a user-cancelled selection.
+ * resolves with a precise outcome. Never throws.
+ *
+ * Why the distinction matters: `telegram-web-app.js` defines `requestChat`
+ * on every client, but when the *client* is older than Bot API 9.6 it logs
+ * and throws `Error("WebAppMethodUnsupported")` instead of calling back.
+ * Only that error means "use the bot-chat fallback"; a cancelled picker or
+ * any other error must NOT trigger the fallback.
  */
-export function requestChatSelection(preparedButtonId: string): Promise<boolean> {
+export function requestChatSelectionDetailed(preparedButtonId: string): Promise<RequestChatOutcome> {
   return new Promise((resolve) => {
     const webApp = getTelegramWebApp();
     if (!webApp || typeof webApp.requestChat !== "function") {
-      resolve(false);
+      resolve("unsupported");
       return;
     }
     try {
-      webApp.requestChat(preparedButtonId, (sent) => resolve(!!sent));
-    } catch {
-      resolve(false);
+      webApp.requestChat(preparedButtonId, (sent) => resolve(sent ? "sent" : "not_sent"));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      resolve(message.includes("WebAppMethodUnsupported") ? "unsupported" : "error");
     }
   });
+}
+
+/**
+ * Backwards-compatible boolean wrapper: resolves once Telegram reports
+ * whether the selection was sent to the bot. Any failure resolves `false`.
+ */
+export async function requestChatSelection(preparedButtonId: string): Promise<boolean> {
+  return (await requestChatSelectionDetailed(preparedButtonId)) === "sent";
+}
+
+/**
+ * Opens a t.me link (here: the Onfile bot chat) inside Telegram. Prefers
+ * `Telegram.WebApp.openTelegramLink` (opens the chat natively); only if that
+ * is missing or throws does it fall back to `window.open`, which Telegram's
+ * in-app webview also routes to the Telegram client for t.me URLs. Returns
+ * whether an attempt to open the link was made. NOTE: on clients older than
+ * Bot API 7.0 the Mini App is closed when a t.me link opens — Onfile
+ * persists the pending request so reopening the Mini App resumes it.
+ */
+export function openTelegramBotLink(url: string): boolean {
+  const webApp = getTelegramWebApp();
+  if (webApp && typeof webApp.openTelegramLink === "function") {
+    try {
+      webApp.openTelegramLink(url);
+      return true;
+    } catch {
+      // fall through to window.open
+    }
+  }
+  if (typeof window !== "undefined") {
+    window.open(url, "_blank");
+    return true;
+  }
+  return false;
 }

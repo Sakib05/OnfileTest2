@@ -36,7 +36,10 @@ export async function GET(req: NextRequest) {
   }
 
   if (pending.status === "pending") {
-    return NextResponse.json({ status: "pending" });
+    // `stage` lets the UI distinguish "waiting for the user to pick a
+    // channel" from "channel selected — verifying with Telegram" (a webhook
+    // delivery has claimed the request). Purely informational.
+    return NextResponse.json({ status: "pending", stage: pending.claimed ? "verifying" : "awaiting_selection" });
   }
 
   if (pending.status === "failed") {

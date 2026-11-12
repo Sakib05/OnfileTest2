@@ -10,11 +10,11 @@ npx drizzle-kit push          # applies src/db/schema.ts to the database in DATA
 npm run dev                   # http://localhost:3000
 ```
 Scripts: `npm run build`, `npx vitest run` (Vitest), `npm run typecheck`, `npm run lint`.
-Some tests (`*.e2e.test.ts`, `pendingChannelRequests`, `botChannelEvents`, thumbnails integration, `publishDeps`) need a
+Some tests (`*.e2e.test.ts`, `pendingChannelRequests`, `botChannelEvents`, `botFallback.e2e`, `connect-bot-request`, `botConnectFlow`, thumbnails integration, `publishDeps`) need a
 Postgres database that has the schema applied; point `DATABASE_URL` at a disposable DEV database, never Production.
 
 ## Docs
-See `docs/` — notably `LIBRARY_AND_PLAYLIST_UX.md` (latest iteration), `LIBRARY_AND_DOWNLOAD_REDESIGN.md`,
+See `docs/` — notably `BOT_CHANNEL_FALLBACK.md` (Direct Picker + "Connect channel via bot" fallback for older Telegram clients),  `LIBRARY_AND_PLAYLIST_UX.md` (latest iteration), `LIBRARY_AND_DOWNLOAD_REDESIGN.md`,
 `PLAYLISTS_AND_FILE_VISUALS.md`, `THUMBNAILS_AND_PLAYLISTS.md`, `DBBYTE_THUMBNAILS.md`.
 
 ## Architecture note

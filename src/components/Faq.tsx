@@ -89,7 +89,7 @@ const FAQ_ITEMS: FaqItem[] = [
     section: "connect",
     question: "What should I do if Telegram does not support direct channel selection?",
     answer:
-      "Connect Channel via Bot requires a recent Telegram app version (Bot API 9.6 or newer). If you see a \"Telegram Update Required\" message, update Telegram from your device's app store and try again, or use Manual Connect instead — it works on any Telegram version.",
+      "You don't need to update Telegram. If your Telegram app can't open the channel picker directly from Onfile, Onfile shows a \"Connect channel via bot\" button instead. It opens the Onfile Bot chat — tap Start if Telegram shows it, tap \"Select channel to connect\", choose your private channel, then return to Onfile. Manual Connect is also available and works on any Telegram version.",
   },
   {
     id: "connect-fix-failed",

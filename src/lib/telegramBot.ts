@@ -196,6 +196,75 @@ export const REQUIRED_BOT_ADMIN_RIGHTS = {
  */
 export const REQUIRED_USER_ADMIN_RIGHTS = REQUIRED_BOT_ADMIN_RIGHTS;
 
+/**
+ * The single source of truth for the channel-selection criteria Onfile asks
+ * Telegram to enforce (`KeyboardButtonRequestChat`). It is used by BOTH
+ * connection methods so they can never drift apart:
+ *   - Direct Picker: embedded in `savePreparedKeyboardButton` and opened with
+ *     `Telegram.WebApp.requestChat` (see createPreparedChatRequestButton).
+ *   - Bot chat fallback: embedded in a `request_chat` reply-keyboard button
+ *     sent with `sendMessage` (see buildChannelPickerKeyboard).
+ *
+ * `chat_has_username: false` keeps the private-channel filter at the picker
+ * level; it is only a UX convenience — the backend independently re-verifies
+ * "no public username", bot admin rights and the user's admin status via the
+ * Bot API (verifyChannelOwnershipAndBotAccess) regardless of what the picker
+ * filtered, since a client-side filter is never the security boundary.
+ * `bot_administrator_rights` requires `user_administrator_rights` to be a
+ * superset (see REQUIRED_USER_ADMIN_RIGHTS), otherwise Telegram rejects with
+ * `USER_RIGHTS_MISSING`.
+ */
+export function buildRequestChatCriteria(requestId: number) {
+  return {
+    request_id: requestId,
+    chat_is_channel: true,
+    chat_has_username: false,
+    bot_administrator_rights: REQUIRED_BOT_ADMIN_RIGHTS,
+    user_administrator_rights: REQUIRED_USER_ADMIN_RIGHTS,
+    request_title: true,
+  } as const;
+}
+
+/**
+ * Bot-chat fallback: a ReplyKeyboardMarkup whose single button is a
+ * `KeyboardButtonRequestChat` (Bot API 6.5+, so it works on clients that
+ * predate the Mini App `requestChat` method). Tapping it opens Telegram's
+ * native chat picker; Telegram then posts a `chat_shared` service message to
+ * the bot — the same update the Direct Picker produces. Unlike an inline
+ * button or plain text, only this keyboard-button type can open the picker.
+ */
+export function buildChannelPickerKeyboard(requestId: number) {
+  return {
+    keyboard: [[{ text: "Select channel to connect", request_chat: buildRequestChatCriteria(requestId) }]],
+    resize_keyboard: true,
+    one_time_keyboard: true,
+    is_persistent: false,
+  };
+}
+
+export type SendBotMessageResult = { ok: true } | { ok: false; description: string; errorCode?: number };
+
+/**
+ * Sends a plain-text message (no parse_mode, so channel titles or other
+ * user-controlled text can never inject markup) from the bot to a private
+ * chat. Never throws.
+ */
+export async function sendBotMessage(
+  chatId: number | string,
+  text: string,
+  replyMarkup?: Record<string, unknown>
+): Promise<SendBotMessageResult> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return { ok: false, description: "missing_bot_token" };
+  const res = await callTelegramApi<unknown>(botToken, "sendMessage", {
+    chat_id: chatId,
+    text,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
+  if (!res.ok) return { ok: false, description: res.description, errorCode: res.errorCode };
+  return { ok: true };
+}
+
 export type PreparedChatRequestResult =
   | { ok: true; preparedButtonId: string }
   | { ok: false; reason: "missing_bot_token" | "bot_not_resolved" | "telegram_api_error"; detail?: string };
@@ -245,26 +314,7 @@ export async function createPreparedChatRequestButton(
     user_id: telegramUserId,
     button: {
       text: "Select channel to connect",
-      request_chat: {
-        request_id: requestId,
-        chat_is_channel: true,
-        // Private-channel filter at the picker level (Part A.5): channels
-        // with a public @username are excluded from Telegram's own "Select
-        // a chat" screen whenever the client supports this field. This is
-        // only a UX convenience — the backend independently re-verifies
-        // "no public username" via `getChat` in
-        // verifyChannelOwnershipAndBotAccess below regardless of what the
-        // picker filtered, since a client-side filter is never trusted as
-        // the security boundary.
-        chat_has_username: false,
-        bot_administrator_rights: REQUIRED_BOT_ADMIN_RIGHTS,
-        // Required alongside `bot_administrator_rights`: Telegram rejects
-        // the request with `USER_RIGHTS_MISSING` unless
-        // `user_administrator_rights` is also specified as (at least) a
-        // superset of it. See REQUIRED_USER_ADMIN_RIGHTS above.
-        user_administrator_rights: REQUIRED_USER_ADMIN_RIGHTS,
-        request_title: true,
-      },
+      request_chat: buildRequestChatCriteria(requestId),
     },
   });
 

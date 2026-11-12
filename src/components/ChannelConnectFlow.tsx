@@ -1,6 +1,7 @@
 "use client";
 import React from "react";
-import { AlertTriangle, CheckCircle2, Loader2, Radio, ShieldCheck, XCircle } from "lucide-react";
+import { CheckCircle2, Loader2, Radio, ShieldCheck, XCircle } from "lucide-react";
+import BotFallbackPanel, { isBotFallbackPhase } from "@/components/setup/BotFallbackPanel";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
 import { useChannelConnect, type ConnectedChannel } from "@/lib/useChannelConnect";
 
@@ -22,7 +23,7 @@ export default function ChannelConnectFlow({
 }: {
   onConnected?: (channel: ConnectedChannel) => void;
 }) {
-  const { state, start, reset } = useChannelConnect(onConnected);
+  const { state, start, startViaBot, reopenBot, refresh, reset } = useChannelConnect(onConnected);
 
   if (!isRunningInsideTelegram()) {
     return (
@@ -54,7 +55,9 @@ export default function ChannelConnectFlow({
           <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
             <Loader2 size={14} className="mt-0.5 flex-shrink-0 animate-spin text-brand" />
             <div>
-              <p className="font-semibold text-primary text-xs">Waiting for channel selection…</p>
+              <p className="font-semibold text-primary text-xs">
+                {state.stage === "verifying" ? "Channel selected — verifying…" : "Waiting for channel selection…"}
+              </p>
               <p className="mt-0.5">This page updates automatically. Please wait.</p>
             </div>
           </div>
@@ -64,22 +67,14 @@ export default function ChannelConnectFlow({
         </div>
       )}
 
-      {state.phase === "unsupported" && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
-            <AlertTriangle size={14} className="mt-0.5 flex-shrink-0 text-brand" />
-            <div>
-              <p className="font-semibold text-primary text-xs">Telegram Update Required</p>
-              <p className="mt-0.5">
-                Your Telegram app does not support direct channel selection yet. Please update Telegram to the
-                latest version and try again.
-              </p>
-            </div>
-          </div>
-          <button onClick={reset} className="btn-secondary w-full py-2.5 text-sm">
-            Try Again
-          </button>
-        </div>
+      {isBotFallbackPhase(state) && (
+        <BotFallbackPanel
+          state={state}
+          onConnectViaBot={startViaBot}
+          onReopenBot={reopenBot}
+          onRefresh={refresh}
+          onCancel={reset}
+        />
       )}
 
       {state.phase === "verified" && (

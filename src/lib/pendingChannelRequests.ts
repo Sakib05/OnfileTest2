@@ -49,6 +49,31 @@ export interface PendingChannelRequestRecord {
   channel?: typeof channels.$inferSelect;
   resolvedUserId: number | null;
   isNewAccount: boolean;
+  /** True once a webhook delivery has claimed the request and is verifying it. */
+  claimed: boolean;
+  expiresAt: Date;
+}
+
+/**
+ * Which connection method created a pending request.
+ *   - "direct": Mini App `requestChat` Direct Picker (original flow).
+ *   - "bot":    bot-chat `request_chat` keyboard fallback for Telegram
+ *               clients that cannot use the Direct Picker.
+ *
+ * The method is encoded in the Telegram-facing `request_id` range rather
+ * than in a new database column, so adding the fallback needs NO schema
+ * migration and cannot break a database that hasn't been migrated:
+ *   direct: [1, 2^30)        bot: [2^30, 2^31 - 1)
+ * Both ranges sit inside the signed 32-bit range Telegram requires for
+ * `KeyboardButtonRequestChat.request_id`. The range is only used to decide
+ * which *notifications* to send — never as an authorization signal.
+ */
+export type ConnectMethod = "direct" | "bot";
+const BOT_REQUEST_ID_MIN = 1_073_741_824; // 2^30
+const REQUEST_ID_MAX_EXCLUSIVE = 2_147_483_647; // 2^31 - 1
+
+export function connectMethodForRequestId(telegramRequestId: number): ConnectMethod {
+  return telegramRequestId >= BOT_REQUEST_ID_MIN ? "bot" : "direct";
 }
 
 const TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -95,6 +120,8 @@ function rowToRecord(row: typeof pendingChannelRequests.$inferSelect): PendingCh
     failureReason: row.failureReason,
     resolvedUserId: row.resolvedUserId,
     isNewAccount: row.isNewAccount,
+    claimed: row.claimedAt !== null && row.claimedAt !== undefined,
+    expiresAt: row.expiresAt,
   };
 }
 
@@ -105,14 +132,19 @@ function rowToRecord(row: typeof pendingChannelRequests.$inferSelect): PendingCh
  * keyboard button.
  */
 export async function createPendingChannelRequest(
-  identity: ResolvedConnectingIdentity
+  identity: ResolvedConnectingIdentity,
+  options?: { method?: ConnectMethod }
 ): Promise<{ correlationToken: string; telegramRequestId: number }> {
   cleanupExpired();
 
   const correlationToken = crypto.randomBytes(24).toString("base64url");
   const tokenHash = hashToken(correlationToken);
   // Signed 32-bit integer range, as required by KeyboardButtonRequestChat.request_id.
-  const telegramRequestId = crypto.randomInt(1, 2_147_483_647);
+  // The sub-range encodes the connection method (see ConnectMethod above).
+  const telegramRequestId =
+    options?.method === "bot"
+      ? crypto.randomInt(BOT_REQUEST_ID_MIN, REQUEST_ID_MAX_EXCLUSIVE)
+      : crypto.randomInt(1, BOT_REQUEST_ID_MIN);
   const expiresAt = new Date(Date.now() + TTL_MS);
 
   await db.insert(pendingChannelRequests).values({
@@ -270,4 +302,69 @@ export async function cancelPendingByToken(token: string): Promise<boolean> {
     )
     .returning({ id: pendingChannelRequests.id });
   return result.length > 0;
+}
+
+export type StartLookupResult =
+  | { kind: "ok"; pending: PendingChannelRequestRecord }
+  | { kind: "wrong_user" }
+  | { kind: "expired" }
+  | { kind: "already_used"; status: PendingChannelStatus }
+  | { kind: "unknown" };
+
+/**
+ * Classifies a bot-chat `/start <payload>` for the Telegram user who pressed
+ * Start, so the bot can answer with a precise, honest explanation instead of
+ * a generic error. Unlike getPendingByTelegramRequest this also looks at
+ * expired / already-resolved rows (they are retained for 24h) and rows that
+ * belong to a different Telegram user — but it only ever *returns* a pending
+ * record when ALL of these hold: the row belongs to `telegramUserId`, was
+ * created for the bot method, hasn't expired, and is still `pending` and
+ * unclaimed. Anything else yields a non-leaking classification with no data.
+ */
+export async function lookupPendingForBotStart(
+  telegramUserId: number,
+  telegramRequestId: number
+): Promise<StartLookupResult> {
+  if (connectMethodForRequestId(telegramRequestId) !== "bot") return { kind: "unknown" };
+
+  const rows = await db
+    .select()
+    .from(pendingChannelRequests)
+    .where(eq(pendingChannelRequests.telegramRequestId, telegramRequestId))
+    .orderBy(desc(pendingChannelRequests.createdAt))
+    .limit(5);
+  if (rows.length === 0) return { kind: "unknown" };
+
+  const mine = rows.find((r) => r.telegramUserId === String(telegramUserId));
+  if (!mine) return { kind: "wrong_user" };
+
+  const record = rowToRecord(mine);
+  if (mine.status !== "pending" || mine.claimedAt) return { kind: "already_used", status: mine.status };
+  if (mine.expiresAt.getTime() <= Date.now()) return { kind: "expired" };
+  return { kind: "ok", pending: record };
+}
+
+/**
+ * Most recent still-pending BOT-method request for a Telegram user — used by
+ * the `/connect` command so a user who already started the bot can get the
+ * channel-selection keyboard again without re-tapping a deep link.
+ */
+export async function getLatestPendingBotRequestForUser(
+  telegramUserId: number
+): Promise<PendingChannelRequestRecord | undefined> {
+  const rows = await db
+    .select()
+    .from(pendingChannelRequests)
+    .where(
+      and(
+        eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt),
+        gt(pendingChannelRequests.expiresAt, new Date())
+      )
+    )
+    .orderBy(desc(pendingChannelRequests.createdAt))
+    .limit(10);
+  const row = rows.find((r) => connectMethodForRequestId(r.telegramRequestId) === "bot");
+  return row ? rowToRecord(row) : undefined;
 }
