@@ -1,68 +1,59 @@
 "use client";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
-  MoreHorizontal, Edit2, ExternalLink, Share2, BarChart2, Trash2,
-  Plus, Image, Grid, List, Search,
-  Lock, Star, Eye, Download
+  Edit2, ExternalLink, Share2, BarChart2, Trash2, Plus, Image, Grid, List, Search,
+  Eye, Download, ChevronLeft, SearchX,
 } from "lucide-react";
-import { cn, formatBytes, formatNumber, getFileTypeBadgeColor } from "@/lib/utils";
+import { cn, formatNumber } from "@/lib/utils";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import FileThumb from "@/components/ui/FileThumb";
 import FileTypeArt from "@/components/ui/FileTypeArt";
-import PlaylistThumb from "@/components/ui/PlaylistThumb";
 import PlaylistManager, { type PlaylistSummary } from "@/components/playlists/PlaylistManager";
 import ThumbnailManager from "@/components/ThumbnailManager";
+import { fileKindLabel } from "@/lib/fileKinds";
+import {
+  LIBRARY_FILTERS, buildHomeSections, filesForFilter, filterByQuery, sortNewestFirst,
+  type HomeSection, type LibraryFilter,
+} from "@/lib/library";
+import { FileCard, PlaylistCard, LibrarySkeleton } from "@/components/library/LibraryCards";
+import HomeSections from "@/components/library/HomeSections";
+import LibrarySearch from "@/components/library/LibrarySearch";
+import LibraryMenu, { type MenuAction } from "@/components/library/LibraryMenu";
+import type { FileItem, MenuTarget, PlaylistItem } from "@/components/library/types";
 
-interface FileItem {
-  id: number;
-  title: string;
-  description?: string;
-  fileType: string;
-  mimeType?: string | null;
-  fileSize?: number;
-  starsPrice?: number;
-  password?: string;
-  isPublished: boolean;
-  views?: number;
-  downloads?: number;
-  earnings?: string;
-  smartLinkSlug?: string;
-  createdAt: string;
-  category?: string;
-  thumbnailUrl?: string | null;
-  thumbnailWidth?: number | null;
-  thumbnailHeight?: number | null;
-}
+const CATEGORY_LABEL: Record<LibraryFilter, string> = {
+  Home: "All files",
+  Video: "Videos",
+  Document: "Documents",
+  Audio: "Audio",
+  Image: "Images",
+  Archive: "Archives",
+  Playlist: "Playlists",
+};
 
-interface PlaylistItem {
-  id: number;
-  title: string;
-  description?: string | null;
-  totalFiles?: number;
-  totalViews?: number;
-  totalDownloads?: number;
-  starsPrice?: number;
-  hasPassword?: boolean;
-  isPublished: boolean;
-  createdAt: string;
-  /** Derived from the playlist's first file; null → default playlist image. */
-  thumbnailUrl?: string | null;
-}
-
-const FILTERS = ["All", "Video", "Document", "Audio", "Image", "Archive", "Playlist"];
+const EMPTY_COPY: Record<Exclude<LibraryFilter, "Home">, { title: string; hint: string }> = {
+  Video: { title: "No videos yet", hint: "Videos you upload will appear here" },
+  Document: { title: "No documents yet", hint: "Documents you upload will appear here" },
+  Audio: { title: "No audio yet", hint: "Audio files you upload will appear here" },
+  Image: { title: "No images yet", hint: "Images you upload will appear here" },
+  Archive: { title: "No archives yet", hint: "Archives you upload will appear here" },
+  Playlist: { title: "No playlists yet", hint: "Add a file to a playlist when you publish it" },
+};
 
 export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void }) {
   const { toast } = useToast();
-  const [activeFilter, setActiveFilter] = useState("All");
+  const [activeFilter, setActiveFilter] = useState<LibraryFilter>("Home");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [files, setFiles] = useState<FileItem[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [menuOpen, setMenuOpen] = useState<number | null>(null);
-  const [menuType, setMenuType] = useState<"file" | "playlist">("file");
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** Home → "Recently Added" → See all: a flat, newest-first list of every file. */
+  const [showAllRecent, setShowAllRecent] = useState(false);
+  const [menu, setMenu] = useState<MenuTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: number; type: "file" | "playlist" } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [detailFile, setDetailFile] = useState<FileItem | null>(null);
@@ -70,13 +61,14 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   // Playlist manager (contents, reorder, add/remove/move, edit, delete)
   const [manager, setManager] = useState<{ id: number; view: "list" | "edit" } | null>(null);
 
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const chipBarRef = useRef<HTMLDivElement>(null);
+
+  // One snapshot of the creator's library (both endpoints are scoped to the
+  // signed-in user server-side). Home sections are derived from it — no per-section queries.
   const fetchAll = useCallback(async () => {
     try {
-      setLoading(true);
-      const [filesRes, plRes] = await Promise.all([
-        fetch("/api/files"),
-        fetch("/api/playlists"),
-      ]);
+      const [filesRes, plRes] = await Promise.all([fetch("/api/files"), fetch("/api/playlists")]);
       if (filesRes.ok) setFiles(await filesRes.json().then((d) => d.files || []));
       if (plRes.ok) setPlaylists(await plRes.json().then((d) => d.playlists || []));
     } catch {
@@ -86,7 +78,9 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     }
   }, []);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => {
+    void fetchAll(); // initial data load on mount
+  }, [fetchAll]);
 
   const refreshPlaylists = useCallback(async () => {
     try {
@@ -97,43 +91,72 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     }
   }, []);
 
-  const openManager = (pl: PlaylistItem, view: "list" | "edit" = "list") => setManager({ id: pl.id, view });
+  const openManager = useCallback((pl: PlaylistItem, view: "list" | "edit" = "list") => setManager({ id: pl.id, view }), []);
   const managedPlaylist = manager ? playlists.find((p) => p.id === manager.id) ?? null : null;
 
-  const filtered = (): (FileItem | PlaylistItem & { _type: string })[] => {
-    const f = activeFilter.toLowerCase();
-    let items: (FileItem | (PlaylistItem & { _type: string }))[] = [];
+  // ── Search open / close ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
-    if (f === "playlist") {
-      items = playlists.map((p) => ({ ...p, _type: "playlist" }));
-    } else if (f === "all") {
-      const pls = playlists.map((p) => ({ ...p, _type: "playlist" }));
-      items = [
-        ...(files as FileItem[]),
-        ...pls,
-      ];
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearch("");
+  }, []);
+
+  // ── Category navigation ─────────────────────────────────────────────────
+  const selectFilter = useCallback((f: LibraryFilter) => {
+    setActiveFilter(f);
+    setShowAllRecent(false);
+  }, []);
+
+  // Keep the active chip visible in the horizontally scrolling bar (e.g. after "See all").
+  useEffect(() => {
+    const bar = chipBarRef.current;
+    const chip = bar?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (!bar || !chip || typeof bar.scrollTo !== "function") return;
+    bar.scrollTo({ left: chip.offsetLeft - (bar.clientWidth - chip.clientWidth) / 2, behavior: "smooth" });
+  }, [activeFilter]);
+
+  const handleSeeAll = useCallback((section: HomeSection<FileItem | PlaylistItem>) => {
+    if (section.filter) {
+      selectFilter(section.filter);
     } else {
-      items = files.filter((fi) => fi.fileType === f);
+      setActiveFilter("Home");
+      setShowAllRecent(true);
     }
+  }, [selectFilter]);
 
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      return items.filter((i) => i.title.toLowerCase().includes(q));
-    }
-    return items;
-  };
+  // ── Derived view ────────────────────────────────────────────────────────
+  const searching = search.trim().length > 0;
 
+  const sections = useMemo(() => buildHomeSections(files, playlists), [files, playlists]);
+
+  /** Flat list for category tabs, search results and "Recently Added → See all". */
+  const flat = useMemo(() => {
+    const showFiles = activeFilter !== "Playlist";
+    const showPlaylists = activeFilter === "Home" || activeFilter === "Playlist";
+    const fl = showFiles ? filterByQuery(sortNewestFirst(filesForFilter(files, activeFilter)), search) : [];
+    const pl = showPlaylists && !(activeFilter === "Home" && showAllRecent && !searching)
+      ? filterByQuery(sortNewestFirst(playlists), search)
+      : [];
+    return { files: fl, playlists: pl };
+  }, [files, playlists, activeFilter, search, showAllRecent, searching]);
+
+  const flatCount = flat.files.length + flat.playlists.length;
+  const isHomeView = activeFilter === "Home" && !searching && !showAllRecent;
+  const libraryEmpty = files.length === 0 && playlists.length === 0;
+
+  // ── Actions ─────────────────────────────────────────────────────────────
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setDeleteLoading(true);
     try {
-      const url = deleteTarget.type === "file"
-        ? `/api/files/${deleteTarget.id}`
-        : `/api/playlists/${deleteTarget.id}`;
+      const url = deleteTarget.type === "file" ? `/api/files/${deleteTarget.id}` : `/api/playlists/${deleteTarget.id}`;
       const res = await fetch(url, { method: "DELETE" });
       if (res.ok) {
         toast(`${deleteTarget.type === "file" ? "File" : "Playlist"} deleted successfully`);
-        fetchAll();
+        void fetchAll();
         setDeleteTarget(null);
       } else {
         toast("Failed to delete. Please try again.", "error");
@@ -145,196 +168,205 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     }
   };
 
-  const isPlaylist = (item: FileItem | (PlaylistItem & { _type?: string })): item is PlaylistItem & { _type: string } =>
-    "_type" in item && (item as { _type?: string })._type === "playlist";
-
   const smartLink = (slug: string) => `${window.location.origin}/f/${slug}`;
 
-  const handleShare = (slug?: string) => {
+  const handleShare = async (slug?: string) => {
     if (!slug) return;
-    navigator.clipboard.writeText(smartLink(slug));
-    toast("Smart link copied to clipboard! 🔗");
-    setMenuOpen(null);
+    try {
+      await navigator.clipboard.writeText(smartLink(slug));
+      toast("Smart link copied to clipboard! 🔗");
+    } catch {
+      toast("Couldn't copy the link. Please copy it manually from File Details.", "error");
+    }
   };
+
+  const onMenuFile = useCallback((f: FileItem, anchor: DOMRect) => setMenu({ id: f.id, type: "file", anchor }), []);
+  const onMenuPlaylist = useCallback((p: PlaylistItem, anchor: DOMRect) => setMenu({ id: p.id, type: "playlist", anchor }), []);
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  const menuActions: MenuAction[] = useMemo(() => {
+    if (!menu) return [];
+    if (menu.type === "playlist") {
+      const pl = playlists.find((p) => p.id === menu.id);
+      if (!pl) return [];
+      return [
+        { icon: Eye, label: "View posts", action: () => openManager(pl) },
+        { icon: Edit2, label: "Edit", action: () => openManager(pl, "edit") },
+        { icon: Trash2, label: "Delete", color: "text-red-500", action: () => setDeleteTarget({ id: pl.id, type: "playlist" }) },
+      ];
+    }
+    const fi = files.find((f) => f.id === menu.id);
+    if (!fi) return [];
+    return [
+      { icon: Image, label: "Thumbnail", action: () => setThumbFile(fi) },
+      { icon: ExternalLink, label: "Open Link", color: "text-blue-500", action: () => { if (fi.smartLinkSlug) window.open(`/f/${fi.smartLinkSlug}`, "_blank"); } },
+      { icon: Share2, label: "Share", color: "text-green-500", action: () => void handleShare(fi.smartLinkSlug) },
+      { icon: BarChart2, label: "Analytics", color: "text-brand", action: () => setDetailFile(fi) },
+      { icon: Trash2, label: "Delete", color: "text-red-500", action: () => setDeleteTarget({ id: fi.id, type: "file" }) },
+    ];
+    // handleShare only depends on stable inputs (toast); intentionally not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menu, files, playlists, openManager]);
+
+  // ── Render helpers ──────────────────────────────────────────────────────
+  const renderFlat = () => (
+    <div className={cn(viewMode === "grid" ? "grid grid-cols-2 gap-3" : "flex flex-col gap-3")} data-testid="library-items" data-view={viewMode}>
+      {flat.files.map((fi) => (
+        <FileCard key={`f-${fi.id}`} file={fi} layout={viewMode} onOpen={setDetailFile} onMenu={onMenuFile} />
+      ))}
+      {flat.playlists.map((pl) => (
+        <PlaylistCard key={`pl-${pl.id}`} playlist={pl} layout={viewMode} onOpen={openManager} onMenu={onMenuPlaylist} />
+      ))}
+    </div>
+  );
+
+  const renderEmpty = () => {
+    if (searching) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-4 py-14 text-center" data-testid="library-empty-search">
+          <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-muted"><SearchX size={28} /></div>
+          <div>
+            <p className="font-semibold text-primary mb-1 break-words">No results for “{search.trim()}”</p>
+            <p className="text-sm text-secondary">Check the spelling or try a different keyword</p>
+          </div>
+          <button type="button" onClick={closeSearch} className="btn-secondary px-5 py-2.5 text-sm">Clear search</button>
+        </div>
+      );
+    }
+    const copy = activeFilter !== "Home" && !libraryEmpty
+      ? EMPTY_COPY[activeFilter]
+      : { title: "No files yet", hint: "Upload your first file to get started" };
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 py-16" data-testid="library-empty">
+        <div className="w-16 h-16 rounded-2xl relative overflow-hidden"><FileTypeArt kind="other" /></div>
+        <div className="text-center">
+          <p className="font-semibold text-primary mb-1">{copy.title}</p>
+          <p className="text-sm text-secondary">{copy.hint}</p>
+        </div>
+        <button onClick={onCreateClick} className="btn-primary px-6 py-2.5 text-sm">Upload File</button>
+      </div>
+    );
+  };
+
+  const headerLabel = searching
+    ? `${flatCount} ${flatCount === 1 ? "result" : "results"}`
+    : showAllRecent
+      ? "Recently Added"
+      : CATEGORY_LABEL[activeFilter];
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header: title · search icon · add — with the collapsible search field beneath */}
+      <div>
+      <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold text-primary">My Library</h1>
-        <button
-          onClick={onCreateClick}
-          className="w-9 h-9 rounded-xl gradient-brand flex items-center justify-center shadow-lg"
-          style={{ boxShadow: "0 4px 14px rgba(255,97,21,0.4)" }}
-        >
-          <Plus size={18} color="white" />
-        </button>
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-        <input
-          className="input-app pl-9 py-2.5 text-sm"
-          placeholder="Search files & playlists..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </div>
-
-      {/* Filter + View Toggle */}
-      <div className="flex items-center gap-2">
-        <div className="flex gap-2 overflow-x-auto no-scrollbar flex-1">
-          {FILTERS.map((f) => (
-            <button
-              key={f}
-              onClick={() => setActiveFilter(f)}
-              className={cn(
-                "flex-shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all",
-                activeFilter === f ? "tab-active" : "bg-secondary text-secondary hover:text-primary"
-              )}
-            >
-              {f}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-1 flex-shrink-0">
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setViewMode("list")}
-            className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-colors",
-              viewMode === "list" ? "bg-brand text-white" : "bg-secondary text-secondary")}
+            type="button"
+            onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+            aria-label={searchOpen ? "Close search" : "Search library"}
+            aria-expanded={searchOpen}
+            aria-controls="library-search-field"
+            className={cn(
+              "w-10 h-10 rounded-xl flex items-center justify-center border transition-colors",
+              searchOpen ? "bg-brand-10 border-brand text-brand" : "bg-secondary border-app text-primary"
+            )}
           >
-            <List size={13} />
+            <Search size={18} />
           </button>
           <button
-            onClick={() => setViewMode("grid")}
-            className={cn("w-7 h-7 rounded-lg flex items-center justify-center transition-colors",
-              viewMode === "grid" ? "bg-brand text-white" : "bg-secondary text-secondary")}
+            type="button"
+            onClick={onCreateClick}
+            aria-label="Add file"
+            className="w-10 h-10 rounded-xl bg-brand flex items-center justify-center active:scale-95 transition-transform"
           >
-            <Grid size={13} />
+            <Plus size={20} color="white" />
           </button>
         </div>
       </div>
 
-      {/* Files List/Grid */}
+      <div id="library-search-field">
+        <LibrarySearch ref={searchInputRef} open={searchOpen} query={search} onQueryChange={setSearch} onClose={closeSearch} />
+      </div>
+      </div>
+
+      {/* Categories — horizontally scrollable, never squeezed into one row */}
+      <div
+        ref={chipBarRef}
+        role="group"
+        aria-label="Library categories"
+        className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4"
+        style={{ WebkitOverflowScrolling: "touch" }}
+      >
+        {LIBRARY_FILTERS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            onClick={() => selectFilter(f)}
+            aria-pressed={activeFilter === f}
+            className={cn(
+              "flex-shrink-0 h-9 px-4 rounded-full text-[13px] font-semibold transition-colors border",
+              activeFilter === f
+                ? "bg-brand text-white border-transparent"
+                : "bg-secondary text-secondary border-app hover:text-primary"
+            )}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
       {loading ? (
-        <div className="flex flex-col gap-3">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="bg-card rounded-2xl p-4 border border-app h-20 animate-pulse-brand" />
-          ))}
-        </div>
-      ) : filtered().length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-4 py-16">
-          <div className="w-16 h-16 rounded-2xl relative overflow-hidden"><FileTypeArt kind="other" /></div>
-          <div className="text-center">
-            <p className="font-semibold text-primary mb-1">No files yet</p>
-            <p className="text-sm text-secondary">Upload your first file to get started</p>
-          </div>
-          <button onClick={onCreateClick} className="btn-primary px-6 py-2.5 text-sm">
-            Upload File
-          </button>
-        </div>
+        <LibrarySkeleton layout={viewMode} />
+      ) : isHomeView ? (
+        sections.length === 0 ? renderEmpty() : (
+          <HomeSections
+            sections={sections}
+            onOpenFile={setDetailFile}
+            onMenuFile={onMenuFile}
+            onOpenPlaylist={openManager}
+            onMenuPlaylist={onMenuPlaylist}
+            onSeeAll={handleSeeAll}
+          />
+        )
       ) : (
-        <div className={cn(viewMode === "grid" ? "grid grid-cols-2 gap-3" : "flex flex-col gap-3")}>
-          {filtered().map((item) => {
-            const isPl = isPlaylist(item);
-            const itemId = item.id;
-
-            if (isPl) {
-              const pl = item as PlaylistItem & { _type: string };
-              return (
-                <div key={`pl-${pl.id}`} className={cn("bg-card border border-app rounded-2xl shadow-app-sm relative", viewMode === "grid" ? "p-3" : "p-4")}>
-                  <div className={cn("flex gap-3", viewMode === "grid" ? "flex-col" : "flex-row items-center")}>
-                    <div className={cn("rounded-xl relative overflow-hidden flex-shrink-0 bg-secondary", viewMode === "grid" ? "w-full h-20" : "w-12 h-12")}>
-                      <PlaylistThumb url={pl.thumbnailUrl} />
-                    </div>
-                    <button type="button" onClick={() => openManager(pl)} className="flex-1 min-w-0 text-left" aria-label={`Open playlist ${pl.title}`}>
-                      <div className="flex items-center gap-2">
-                        <p className="font-semibold text-primary text-sm line-clamp-1">{pl.title}</p>
-                        {pl.hasPassword && <Lock size={11} className="text-brand flex-shrink-0" />}
-                        {(pl.starsPrice ?? 0) > 0 && <Star size={11} className="text-yellow-500 flex-shrink-0" />}
-                      </div>
-                      <div className="flex items-center gap-3 mt-1">
-                        <span className="chip bg-brand-10 text-brand">{pl.totalFiles ?? 0} files</span>
-                        <span className="text-xs text-secondary">{formatNumber(pl.totalDownloads ?? 0)} dl</span>
-                      </div>
-                    </button>
-                    <button
-                      className="flex-shrink-0 w-7 h-7 rounded-lg bg-secondary flex items-center justify-center"
-                      onClick={() => { setMenuOpen(pl.id); setMenuType("playlist"); }}
-                    >
-                      <MoreHorizontal size={14} style={{ color: "var(--color-text-secondary)" }} />
-                    </button>
-                  </div>
-                  {menuOpen === pl.id && menuType === "playlist" && (
-                    <ActionMenu
-                      onClose={() => setMenuOpen(null)}
-                      onDelete={() => { setDeleteTarget({ id: pl.id, type: "playlist" }); setMenuOpen(null); }}
-                      onView={() => openManager(pl)}
-                      onEdit={() => openManager(pl, "edit")}
-                    />
+        <>
+          {/* Results header: back (for expanded Recently Added), label, List/Grid toggle */}
+          <div className="flex items-center justify-between gap-2 min-h-10">
+            <div className="flex items-center gap-1 min-w-0">
+              {showAllRecent && !searching && (
+                <button type="button" onClick={() => setShowAllRecent(false)} aria-label="Back to Home" className="w-10 h-10 -ml-2 flex items-center justify-center text-primary">
+                  <ChevronLeft size={20} />
+                </button>
+              )}
+              <p className="text-sm font-semibold text-primary truncate" data-testid="library-results-label">{headerLabel}</p>
+              {!searching && flatCount > 0 && <span className="text-xs text-muted">{flatCount}</span>}
+            </div>
+            <div className="flex gap-1 flex-shrink-0" role="group" aria-label="Layout">
+              {([["list", List, "List view"], ["grid", Grid, "Grid view"]] as const).map(([mode, Icon, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setViewMode(mode)}
+                  aria-label={label}
+                  aria-pressed={viewMode === mode}
+                  className={cn(
+                    "w-10 h-10 rounded-xl flex items-center justify-center transition-colors",
+                    viewMode === mode ? "bg-brand text-white" : "bg-secondary text-secondary"
                   )}
-                </div>
-              );
-            }
-
-            const fi = item as FileItem;
-            return (
-              <div key={`f-${fi.id}`} className={cn("bg-card border border-app rounded-2xl shadow-app-sm relative", viewMode === "grid" ? "p-3" : "p-4")}>
-                <div className={cn("flex gap-3", viewMode === "grid" ? "flex-col" : "flex-row items-center")}>
-                  <div className={cn(
-                    "rounded-xl flex items-center justify-center flex-shrink-0 text-xl",
-                    viewMode === "grid" ? "w-full h-20" : "w-12 h-12",
-                    "bg-secondary relative overflow-hidden"
-                  )}>
-                    <FileThumb url={fi.thumbnailUrl} fileType={fi.fileType} title={fi.title} mimeType={fi.mimeType} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <p className="font-semibold text-primary text-sm line-clamp-1">{fi.title}</p>
-                      {fi.password && <Lock size={11} className="text-brand flex-shrink-0" />}
-                      {(fi.starsPrice ?? 0) > 0 && (
-                        <span className="chip bg-yellow-50 text-yellow-600 dark:bg-yellow-900/20 dark:text-yellow-400">
-                          ⭐ {fi.starsPrice}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <span className={cn("chip text-xs", getFileTypeBadgeColor(fi.fileType))}>{fi.fileType}</span>
-                      <span className="text-xs text-secondary">{formatBytes(fi.fileSize)}</span>
-                    </div>
-                    <div className="flex items-center gap-3 mt-1.5">
-                      <span className="text-xs text-secondary flex items-center gap-1">
-                        <Eye size={10} />{formatNumber(fi.views ?? 0)}
-                      </span>
-                      <span className="text-xs text-secondary flex items-center gap-1">
-                        <Download size={10} />{formatNumber(fi.downloads ?? 0)}
-                      </span>
-                      <span className="text-xs text-brand font-medium">+${Number(fi.earnings ?? 0).toFixed(2)}</span>
-                    </div>
-                  </div>
-                  <button
-                    className="flex-shrink-0 w-7 h-7 rounded-lg bg-secondary flex items-center justify-center"
-                    onClick={() => { setMenuOpen(fi.id); setMenuType("file"); }}
-                  >
-                    <MoreHorizontal size={14} style={{ color: "var(--color-text-secondary)" }} />
-                  </button>
-                </div>
-                {menuOpen === fi.id && menuType === "file" && (
-                  <ActionMenu
-                    onClose={() => setMenuOpen(null)}
-                    onDelete={() => { setDeleteTarget({ id: fi.id, type: "file" }); setMenuOpen(null); }}
-                    onShare={() => handleShare(fi.smartLinkSlug)}
-                    onDetail={() => { setDetailFile(fi); setMenuOpen(null); }}
-                    onThumbnail={() => { setThumbFile(fi); setMenuOpen(null); }}
-                    onOpen={() => { if (fi.smartLinkSlug) window.open(`/f/${fi.smartLinkSlug}`, "_blank"); setMenuOpen(null); }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
+                >
+                  <Icon size={15} />
+                </button>
+              ))}
+            </div>
+          </div>
+          {flatCount === 0 ? renderEmpty() : renderFlat()}
+        </>
       )}
+
+      {/* Item action menu */}
+      {menu && menuActions.length > 0 && <LibraryMenu anchor={menu.anchor} actions={menuActions} onClose={closeMenu} />}
 
       {/* Delete Modal */}
       <DeleteConfirmModal
@@ -386,12 +418,12 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         {detailFile && (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-3">
-              <div className="w-14 h-14 rounded-2xl bg-secondary text-3xl flex items-center justify-center relative overflow-hidden flex-shrink-0">
+              <div className="w-24 aspect-[4/3] rounded-xl bg-secondary relative overflow-hidden flex-shrink-0">
                 <FileThumb url={detailFile.thumbnailUrl} fileType={detailFile.fileType} title={detailFile.title} mimeType={detailFile.mimeType} />
               </div>
-              <div>
-                <p className="font-bold text-primary">{detailFile.title}</p>
-                <p className="text-sm text-secondary">{formatBytes(detailFile.fileSize)}</p>
+              <div className="min-w-0">
+                <p className="font-bold text-primary break-words">{detailFile.title}</p>
+                <p className="text-sm text-secondary">{fileKindLabel(detailFile)}</p>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
@@ -414,7 +446,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
               </div>
             )}
             <button
-              onClick={() => { handleShare(detailFile.smartLinkSlug); setDetailFile(null); }}
+              onClick={() => { void handleShare(detailFile.smartLinkSlug); setDetailFile(null); }}
               className="btn-primary w-full py-3 text-sm text-center"
             >
               Copy Smart Link
@@ -423,56 +455,5 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         )}
       </Modal>
     </div>
-  );
-}
-
-function ActionMenu({
-  onClose,
-  onDelete,
-  onShare,
-  onDetail,
-  onOpen,
-  onEdit,
-  onThumbnail,
-  onView,
-}: {
-  onClose: () => void;
-  onDelete: () => void;
-  onShare?: () => void;
-  onDetail?: () => void;
-  onOpen?: () => void;
-  onEdit?: () => void;
-  onThumbnail?: () => void;
-  onView?: () => void;
-}) {
-  const actions = [
-    onView && { icon: Eye, label: "View posts", action: onView, color: "text-primary" },
-    onEdit && { icon: Edit2, label: "Edit", action: onEdit, color: "text-primary" },
-    onThumbnail && { icon: Image, label: "Thumbnail", action: onThumbnail, color: "text-primary" },
-    onOpen && { icon: ExternalLink, label: "Open Link", action: onOpen, color: "text-blue-500" },
-    onShare && { icon: Share2, label: "Share", action: onShare, color: "text-green-500" },
-    onDetail && { icon: BarChart2, label: "Analytics", action: onDetail, color: "text-brand" },
-    { icon: Trash2, label: "Delete", action: onDelete, color: "text-red-500" },
-  ].filter(Boolean) as { icon: React.FC<{ size: number; className: string }>; label: string; action: () => void; color: string }[];
-
-  return (
-    <>
-      <div className="fixed inset-0 z-30" onClick={onClose} />
-      <div
-        className="absolute right-3 top-12 z-40 bg-card border border-app rounded-2xl shadow-app-lg overflow-hidden animate-scale-in"
-        style={{ minWidth: 160 }}
-      >
-        {actions.map(({ icon: Icon, label, action, color }) => (
-          <button
-            key={label}
-            onClick={() => { action(); onClose(); }}
-            className="flex items-center gap-3 px-4 py-3 w-full hover:bg-secondary transition-colors text-sm"
-          >
-            <Icon size={15} className={color} />
-            <span className={cn("font-medium", color === "text-primary" ? "text-primary" : color)}>{label}</span>
-          </button>
-        ))}
-      </div>
-    </>
   );
 }

@@ -315,3 +315,31 @@
     linear-gradient(150deg, var(--color-primary-light), var(--color-primary-dark));
 }
 .dark .pl-tile { filter: brightness(0.9); }
+
+/* ── Onfile CTA button (download page & other primary actions) ────────────
+   Solid brand orange, no glow: the call to action stands out through size and
+   colour alone. Works in both themes. */
+@layer utilities {
+  .btn-cta {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 52px;
+    padding: 0 20px;
+    border-radius: 16px;
+    background: #FF6115;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+    transition: background-color 0.15s ease, transform 0.1s ease, opacity 0.15s ease;
+  }
+  .btn-cta:hover:not(:disabled):not([aria-disabled="true"]) { background: #e5530f; }
+  .btn-cta:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.985); }
+  .btn-cta:disabled,
+  .btn-cta[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+  .btn-cta:focus-visible { outline: 2px solid #FF6115; outline-offset: 3px; }
+}

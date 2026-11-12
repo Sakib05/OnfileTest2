@@ -19,7 +19,7 @@ import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import FileThumb from "@/components/ui/FileThumb";
 import PlaylistThumb from "@/components/ui/PlaylistThumb";
 import { useToast } from "@/components/ui/Toast";
-import { cn, formatBytes } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { fileKindLabel } from "@/lib/fileKinds";
 import { PLAYLIST_DESCRIPTION_MAX, PLAYLIST_TITLE_MAX } from "@/lib/playlists";
 
@@ -391,7 +391,6 @@ function SortableRow({
           <p className="text-sm font-semibold text-primary line-clamp-1">{file.title}</p>
           <p className="text-xs text-secondary flex items-center gap-1.5 flex-wrap">
             <span>{fileKindLabel(file)}</span>
-            {file.fileSize ? <span>· {formatBytes(file.fileSize)}</span> : null}
             {index === 0 && <span className="chip bg-brand-10 text-brand" title="The first file's thumbnail is the playlist cover">Cover</span>}
           </p>
         </div>
@@ -569,7 +568,7 @@ function AddFilesView({ playlistId, memberIds, onAdded }: { playlistId: number; 
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-primary line-clamp-1">{f.title}</p>
-                    <p className="text-xs text-secondary">{fileKindLabel(f)}{f.fileSize ? ` · ${formatBytes(f.fileSize)}` : ""}</p>
+                    <p className="text-xs text-secondary">{fileKindLabel(f)}</p>
                   </div>
                   {already && <span className="chip bg-brand-10 text-brand flex-shrink-0">In playlist</span>}
                 </label>

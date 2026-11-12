@@ -1,495 +1,193 @@
 "use client";
 import React, { useState, useEffect, useCallback, use } from "react";
 import Link from "next/link";
-import {
-  Download, Lock, Star, Eye, Shield, Flag, Clock, CheckCircle2, AlertCircle,
-  Play, FileText, Music, Image as ImageIcon, Archive, Film, ArrowLeft, Share2
-} from "lucide-react";
-import { formatBytes, cn } from "@/lib/utils";
-import Modal from "@/components/ui/Modal";
-import TelegramAvatar from "@/components/ui/TelegramAvatar";
-import FileThumb from "@/components/ui/FileThumb";
+import { Eye, Download, Flag, SearchX, WifiOff, ShieldCheck } from "lucide-react";
+import { cn, formatNumber, getFileTypeBadgeColor } from "@/lib/utils";
+import { fileKindLabel } from "@/lib/fileKinds";
+import type { DownloadCreatorInfo, DownloadFileInfo } from "@/lib/download";
+import FileHero from "@/components/download/FileHero";
+import UnlockPanel from "@/components/download/UnlockPanel";
+import SuccessPanel from "@/components/download/SuccessPanel";
+import CreatorRow from "@/components/download/CreatorRow";
+import ReportModal from "@/components/download/ReportModal";
 
-interface FileInfo {
-  id: number;
-  title: string;
-  description?: string;
-  fileType: string;
-  mimeType?: string | null;
-  fileSize?: number;
-  starsPrice?: number;
-  hasPassword?: boolean;
-  views?: number;
-  downloads?: number;
-  slug: string;
-  thumbnailUrl?: string | null;
-}
+type LoadState = "loading" | "ready" | "not_found" | "error";
 
-interface CreatorInfo {
-  firstName: string | null;
-  username: string | null;
-  avatarUrl: string | null;
-}
-
-/** Creator identity row: Telegram avatar + name + @username (truncates safely on narrow screens). */
-function CreatorRow({ creator, className }: { creator: CreatorInfo | null; className?: string }) {
-  if (!creator || (!creator.firstName && !creator.username)) return null;
+function BrandMark() {
   return (
-    <div className={cn("flex items-center gap-2.5 min-w-0 w-full", className)}>
-      <TelegramAvatar
-        photoUrl={creator.avatarUrl}
-        firstName={creator.firstName}
-        username={creator.username}
-        size="sm"
-      />
-      <div className="min-w-0 flex-1 text-left">
-        <p className="text-[11px] text-muted leading-tight">Shared by</p>
-        <p className="text-sm font-semibold text-primary leading-tight truncate break-all">
-          {creator.firstName || `@${creator.username}`}
-        </p>
-        {creator.firstName && creator.username && (
-          <p className="text-xs text-secondary leading-tight truncate">@{creator.username}</p>
-        )}
+    <Link href="/" className="flex items-center gap-2 min-h-10" aria-label="Onfile home">
+      <span className="w-8 h-8 rounded-[10px] bg-brand flex items-center justify-center text-white text-sm font-black">O</span>
+      <span className="font-bold text-primary text-base tracking-tight">Onfile</span>
+    </Link>
+  );
+}
+
+function PageShell({ children, onReport }: { children: React.ReactNode; onReport?: () => void }) {
+  return (
+    <div className="min-h-screen bg-app safe-bottom">
+      <div className="mx-auto w-full max-w-md md:max-w-4xl px-4 pt-3 pb-8 flex flex-col gap-4 md:gap-6">
+        <header className="flex items-center justify-between">
+          <BrandMark />
+          {onReport && (
+            <button
+              type="button"
+              onClick={onReport}
+              aria-label="Report this file"
+              className="h-10 px-3 -mr-2 rounded-xl inline-flex items-center gap-1.5 text-xs font-medium text-muted hover:text-red-500 transition-colors"
+            >
+              <Flag size={14} />
+              Report
+            </button>
+          )}
+        </header>
+        {children}
       </div>
     </div>
   );
 }
 
-const REPORT_REASONS = [
-  { value: "copyright", label: "Copyright Infringement" },
-  { value: "nsfw", label: "Adult / NSFW Content" },
-  { value: "malware", label: "Malware / Harmful Content" },
-  { value: "broken_link", label: "Broken Link" },
-  { value: "spam", label: "Spam" },
-  { value: "other", label: "Other" },
-];
+function PageSkeleton() {
+  return (
+    <PageShell>
+      <div className="grid gap-5 md:grid-cols-2 md:gap-8 animate-pulse-brand" aria-busy="true" aria-label="Loading file">
+        <div className="aspect-video rounded-3xl bg-secondary border border-app" />
+        <div className="flex flex-col gap-4">
+          <div className="h-7 w-3/4 rounded-lg bg-secondary" />
+          <div className="h-4 w-1/2 rounded-lg bg-secondary" />
+          <div className="h-52 rounded-3xl bg-secondary border border-app" />
+        </div>
+      </div>
+    </PageShell>
+  );
+}
+
+function Message({ icon, title, text, action }: { icon: React.ReactNode; title: string; text: string; action: React.ReactNode }) {
+  return (
+    <PageShell>
+      <div className="flex flex-col items-center justify-center gap-4 text-center py-20 px-4">
+        <div className="w-20 h-20 rounded-3xl bg-secondary border border-app flex items-center justify-center text-muted">{icon}</div>
+        <div>
+          <h1 className="text-xl font-bold text-primary mb-1">{title}</h1>
+          <p className="text-sm text-secondary">{text}</p>
+        </div>
+        {action}
+      </div>
+    </PageShell>
+  );
+}
 
 export default function SmartLinkPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
-  const [file, setFile] = useState<FileInfo | null>(null);
-  const [creator, setCreator] = useState<CreatorInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [notFound, setNotFound] = useState(false);
-  const [unlocked, setUnlocked] = useState(false);
-  const [downloadLink, setDownloadLink] = useState<string | null>(null);
-
-  // Countdown Ad
-  const [countdown, setCountdown] = useState(10);
-  const [countdownActive, setCountdownActive] = useState(false);
-  const [adWatched, setAdWatched] = useState(false);
-
-  // Password
-  const [password, setPassword] = useState("");
-  const [passwordError, setPasswordError] = useState("");
-  const [passwordLoading, setPasswordLoading] = useState(false);
-
-  // Report
+  const [file, setFile] = useState<DownloadFileInfo | null>(null);
+  const [creator, setCreator] = useState<DownloadCreatorInfo | null>(null);
+  const [state, setState] = useState<LoadState>("loading");
+  /** Set only from a successful server unlock response. */
+  const [unlocked, setUnlocked] = useState<{ link: string | null } | null>(null);
   const [showReport, setShowReport] = useState(false);
-  const [reportForm, setReportForm] = useState({ reason: "copyright", description: "" });
-  const [reportLoading, setReportLoading] = useState(false);
-  const [reportSuccess, setReportSuccess] = useState(false);
-
-  // Active unlock tab
-  const [unlockTab, setUnlockTab] = useState<"ad" | "password" | "stars">("ad");
+  const [expanded, setExpanded] = useState(false);
 
   const fetchFile = useCallback(async () => {
+    setState("loading");
     try {
-      const res = await fetch(`/api/link/${slug}`);
+      const res = await fetch(`/api/link/${encodeURIComponent(slug)}`);
       if (res.ok) {
         const data = await res.json();
         setFile(data.file);
         setCreator(data.creator ?? null);
-        if (!data.file.hasPassword && !data.file.starsPrice) {
-          // Default to ad unlock
-          setUnlockTab("ad");
-        } else if (data.file.hasPassword) {
-          setUnlockTab("password");
-        }
+        setState("ready");
+      } else if (res.status === 404) {
+        setState("not_found");
       } else {
-        setNotFound(true);
+        setState("error");
       }
-    } finally {
-      setLoading(false);
+    } catch {
+      setState("error");
     }
   }, [slug]);
 
-  useEffect(() => { fetchFile(); }, [fetchFile]);
-
   useEffect(() => {
-    let timer: ReturnType<typeof setInterval>;
-    if (countdownActive && countdown > 0) {
-      timer = setInterval(() => setCountdown((c) => c - 1), 1000);
-    } else if (countdownActive && countdown === 0) {
-      setAdWatched(true);
-      setCountdownActive(false);
-    }
-    return () => clearInterval(timer);
-  }, [countdownActive, countdown]);
+    // Initial load of the public file info for this link.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fetchFile();
+  }, [fetchFile]);
 
-  const handleAdUnlock = async () => {
-    if (!adWatched) {
-      setCountdownActive(true);
-      return;
-    }
-    await unlockFile();
-  };
+  if (state === "loading") return <PageSkeleton />;
 
-  const handlePasswordUnlock = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPasswordError("");
-    setPasswordLoading(true);
-    const result = await unlockFile(password);
-    if (!result) {
-      setPasswordError("Incorrect password. Please try again.");
-    }
-    setPasswordLoading(false);
-  };
-
-  const unlockFile = async (pwd?: string): Promise<boolean> => {
-    try {
-      const res = await fetch(`/api/link/${slug}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pwd || "" }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setDownloadLink(data.telegramMessageLink);
-        setUnlocked(true);
-        return true;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  };
-
-  const handleReport = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!file) return;
-    setReportLoading(true);
-    try {
-      const res = await fetch("/api/reports", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileId: file.id, ...reportForm }),
-      });
-      if (res.ok) setReportSuccess(true);
-    } finally {
-      setReportLoading(false);
-    }
-  };
-
-  if (loading) {
+  if (state === "not_found" || (state === "ready" && !file)) {
     return (
-      <div className="min-h-screen bg-app flex items-center justify-center">
-        <div className="w-10 h-10 rounded-full border-3 border-brand border-t-transparent animate-spin" style={{ borderWidth: 3 }} />
-      </div>
+      <Message
+        icon={<SearchX size={34} />}
+        title="File not found"
+        text="This link may have expired or been removed."
+        action={<Link href="/" className="btn-primary px-6 py-3 text-sm">Go to Onfile</Link>}
+      />
     );
   }
 
-  if (notFound || !file) {
+  if (state === "error" || !file) {
     return (
-      <div className="min-h-screen bg-app flex flex-col items-center justify-center gap-4 px-6 text-center">
-        <div className="w-20 h-20 rounded-2xl bg-secondary flex items-center justify-center text-4xl">🔍</div>
-        <h1 className="text-xl font-bold text-primary">File Not Found</h1>
-        <p className="text-sm text-secondary">This link may have expired or been removed.</p>
-        <Link href="/" className="btn-primary px-6 py-3 text-sm">Go Home</Link>
-      </div>
+      <Message
+        icon={<WifiOff size={34} />}
+        title="Couldn’t load this file"
+        text="Check your connection and try again."
+        action={<button type="button" onClick={() => void fetchFile()} className="btn-primary px-6 py-3 text-sm">Try again</button>}
+      />
     );
   }
 
-  if (unlocked) {
-    return (
-      <div className="min-h-screen bg-app flex flex-col items-center justify-center px-4 py-8">
-        <div className="w-full max-w-md">
-          {/* Success */}
-          <div className="bg-card rounded-3xl border border-app shadow-app-lg p-6 text-center flex flex-col items-center gap-4 animate-scale-in">
-            <div className="w-20 h-20 rounded-2xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center text-4xl relative overflow-hidden">
-              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} eager />
-            </div>
-            <div className="w-14 h-14 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center -mt-8 border-4 border-card">
-              <CheckCircle2 size={28} className="text-green-500" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-primary mb-1">File Unlocked! 🎉</h1>
-              <p className="text-sm text-secondary">{file.title}</p>
-              <p className="text-xs text-muted mt-1">{formatBytes(file.fileSize)}</p>
-            </div>
-            {downloadLink ? (
-              <a
-                href={downloadLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-primary w-full py-4 text-sm flex items-center justify-center gap-2"
-              >
-                <Download size={16} />
-                Open in Telegram
-              </a>
-            ) : (
-              <div className="p-3 rounded-xl bg-secondary text-sm text-secondary text-center">
-                The file will be sent to you via Telegram bot shortly.
-              </div>
-            )}
-            <CreatorRow creator={creator} className="pt-3 border-t border-app" />
-            <button
-              onClick={() => setShowReport(true)}
-              className="flex items-center gap-1.5 text-xs text-muted hover:text-red-500 transition-colors"
-            >
-              <Flag size={11} />
-              Report this file
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const description = file.description?.trim() || "";
+  const longDescription = description.length > 160;
 
   return (
-    <div className="min-h-screen bg-app px-4 py-6 flex flex-col items-center">
-      <div className="w-full max-w-md flex flex-col gap-5">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg gradient-brand flex items-center justify-center text-white text-xs font-black">O</div>
-            <span className="font-bold text-primary text-sm">Onfile</span>
-          </div>
-          <button
-            onClick={() => setShowReport(true)}
-            className="flex items-center gap-1.5 text-xs text-muted hover:text-red-500 transition-colors"
-          >
-            <Flag size={12} />
-            Report
-          </button>
+    <PageShell onReport={() => setShowReport(true)}>
+      <main className="grid gap-5 md:grid-cols-2 md:gap-8 md:items-start">
+        {/* Artwork */}
+        <div className="md:sticky md:top-6">
+          <FileHero file={file} />
         </div>
 
-        {/* File Card */}
-        <div className="bg-card rounded-3xl border border-app shadow-app-lg p-5">
-          <div className="flex items-center gap-4 mb-4">
-            <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-3xl flex-shrink-0 relative overflow-hidden">
-              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} alt={file.title} eager />
+        <div className="flex flex-col gap-5 min-w-0">
+          {/* Title & facts */}
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={cn("chip capitalize", getFileTypeBadgeColor(file.fileType))}>{fileKindLabel(file)}</span>
             </div>
-            <div className="flex-1 min-w-0">
-              <h1 className="font-bold text-primary text-base leading-snug">{file.title}</h1>
-              {file.description && (
-                <p className="text-xs text-secondary mt-0.5 line-clamp-2">{file.description}</p>
+            <h1 className="text-2xl font-bold text-primary leading-tight break-words">{file.title}</h1>
+            <div className="flex items-center gap-4 text-xs text-secondary">
+              <span className="inline-flex items-center gap-1.5"><Eye size={13} />{formatNumber(file.views ?? 0)} views</span>
+              <span className="inline-flex items-center gap-1.5"><Download size={13} />{formatNumber(file.downloads ?? 0)} downloads</span>
+            </div>
+          </div>
+
+          {/* Primary action */}
+          {unlocked ? <SuccessPanel telegramMessageLink={unlocked.link} /> : <UnlockPanel slug={slug} file={file} onUnlocked={(link) => setUnlocked({ link })} />}
+
+          {/* Creator */}
+          <CreatorRow creator={creator} className="rounded-2xl border border-app bg-card p-3" />
+
+          {/* About */}
+          {description && (
+            <div className="flex flex-col gap-1.5">
+              <h2 className="text-sm font-semibold text-primary">About this file</h2>
+              <p className={cn("text-sm text-secondary leading-relaxed whitespace-pre-line break-words", !expanded && longDescription && "line-clamp-3")}>
+                {description}
+              </p>
+              {longDescription && (
+                <button type="button" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded} className="self-start min-h-10 text-xs font-semibold text-brand">
+                  {expanded ? "Show less" : "Show more"}
+                </button>
               )}
-              <div className="flex items-center gap-2 mt-1.5">
-                <span className="text-xs text-muted">{file.fileType}</span>
-                {file.fileSize && <span className="text-xs text-muted">· {formatBytes(file.fileSize)}</span>}
-              </div>
             </div>
-          </div>
-
-          <CreatorRow creator={creator} className="pt-3 mb-3 border-t border-app" />
-
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-3 border-t border-app">
-            <div className="flex items-center gap-1.5 text-xs text-secondary">
-              <Eye size={12} />
-              {file.views ?? 0} views
-            </div>
-            <div className="flex items-center gap-1.5 text-xs text-secondary">
-              <Download size={12} />
-              {file.downloads ?? 0} downloads
-            </div>
-            <div className="flex items-center gap-1.5 text-xs text-green-500">
-              <Shield size={12} />
-              Verified
-            </div>
-          </div>
+          )}
         </div>
+      </main>
 
-        {/* Unlock Options */}
-        <div className="bg-card rounded-3xl border border-app shadow-app-lg overflow-hidden">
-          {/* Tab Headers */}
-          <div className="flex border-b border-app">
-            {[
-              { id: "ad" as const, label: "🎬 Watch Ad", available: true },
-              { id: "password" as const, label: "🔐 Password", available: !!file.hasPassword },
-              { id: "stars" as const, label: "⭐ Stars", available: (file.starsPrice ?? 0) > 0 },
-            ]
-              .filter((t) => t.available || t.id === "ad")
-              .map(({ id, label }) => (
-                <button
-                  key={id}
-                  onClick={() => setUnlockTab(id)}
-                  className={cn(
-                    "flex-1 py-3 text-xs font-semibold transition-colors border-b-2",
-                    unlockTab === id
-                      ? "text-brand border-brand"
-                      : "text-secondary border-transparent"
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-          </div>
+      <footer className="flex items-center justify-center gap-1.5 text-xs text-muted pt-2">
+        <ShieldCheck size={13} />
+        Delivered through Telegram · Onfile doesn’t store your files
+      </footer>
 
-          <div className="p-5">
-            {/* Ad Countdown */}
-            {unlockTab === "ad" && (
-              <div className="flex flex-col items-center gap-4 text-center">
-                {!countdownActive && !adWatched ? (
-                  <>
-                    <div className="w-20 h-20 rounded-2xl bg-brand-10 border-2 border-brand border-dashed flex items-center justify-center">
-                      <Play size={32} className="text-brand" />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-primary">Watch a short ad</p>
-                      <p className="text-sm text-secondary mt-0.5">Watch a 10-second ad to unlock this file for free</p>
-                    </div>
-                    <button onClick={handleAdUnlock} className="btn-primary w-full py-3.5 text-sm">
-                      Watch Ad to Unlock
-                    </button>
-                  </>
-                ) : countdownActive ? (
-                  <>
-                    {/* Simulated Ad */}
-                    <div className="w-full h-36 rounded-2xl gradient-brand flex flex-col items-center justify-center gap-2 text-white relative">
-                      <p className="font-bold text-lg">Ad Space</p>
-                      <p className="text-sm opacity-80">Powered by Adsgram</p>
-                      <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
-                        <span className="text-sm font-bold">{countdown}</span>
-                      </div>
-                    </div>
-                    <p className="text-sm text-secondary">Please wait {countdown} seconds...</p>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-20 h-20 rounded-2xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                      <CheckCircle2 size={36} className="text-green-500" />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-primary">Ad completed! ✅</p>
-                      <p className="text-sm text-secondary">Click below to unlock your file</p>
-                    </div>
-                    <button onClick={handleAdUnlock} className="btn-primary w-full py-3.5 text-sm">
-                      Unlock File Now
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-
-            {/* Password Unlock */}
-            {unlockTab === "password" && (
-              <form onSubmit={handlePasswordUnlock} className="flex flex-col gap-4">
-                <div className="flex flex-col items-center gap-2 text-center mb-2">
-                  <div className="w-14 h-14 rounded-2xl bg-brand-10 border border-brand/30 flex items-center justify-center">
-                    <Lock size={24} className="text-brand" />
-                  </div>
-                  <p className="font-semibold text-primary">Password Protected</p>
-                  <p className="text-sm text-secondary">Enter the password to unlock this file</p>
-                </div>
-                <input
-                  className={cn("input-app text-sm text-center font-mono tracking-widest", passwordError && "border-red-500")}
-                  type="password"
-                  placeholder="Enter password..."
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
-                {passwordError && (
-                  <div className="flex items-center gap-2 p-2 rounded-xl bg-red-50 dark:bg-red-900/20">
-                    <AlertCircle size={13} className="text-red-500" />
-                    <p className="text-xs text-red-500">{passwordError}</p>
-                  </div>
-                )}
-                <button type="submit" disabled={passwordLoading} className="btn-primary py-3.5 text-sm">
-                  {passwordLoading ? "Verifying..." : "Unlock with Password"}
-                </button>
-              </form>
-            )}
-
-            {/* Stars Unlock */}
-            {unlockTab === "stars" && (
-              <div className="flex flex-col items-center gap-4 text-center">
-                <div className="w-14 h-14 rounded-2xl bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 flex items-center justify-center text-3xl">
-                  ⭐
-                </div>
-                <div>
-                  <p className="font-semibold text-primary">Instant Access with Stars</p>
-                  <p className="text-sm text-secondary mt-0.5">Pay {file.starsPrice} Telegram Stars for instant, ad-free access</p>
-                </div>
-                <div className="w-full p-3 rounded-xl bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800">
-                  <p className="text-2xl font-black text-yellow-600 dark:text-yellow-400">⭐ {file.starsPrice}</p>
-                  <p className="text-xs text-secondary mt-1">≈ ${((file.starsPrice ?? 0) * 0.013).toFixed(2)} USD</p>
-                </div>
-                <button className="btn-primary w-full py-3.5 text-sm flex items-center justify-center gap-2">
-                  <Star size={16} />
-                  Pay {file.starsPrice} Stars
-                </button>
-                <p className="text-xs text-muted">Telegram Stars payment via Telegram bot</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Security Badge */}
-        <div className="flex items-center justify-center gap-3 text-xs text-muted py-2">
-          <div className="flex items-center gap-1.5">
-            <Shield size={12} />
-            Secure delivery
-          </div>
-          <span>·</span>
-          <div className="flex items-center gap-1.5">
-            <CheckCircle2 size={12} />
-            Zero storage
-          </div>
-          <span>·</span>
-          <div className="flex items-center gap-1.5">
-            <Shield size={12} />
-            Protected
-          </div>
-        </div>
-      </div>
-
-      {/* Report Modal */}
-      <Modal open={showReport} onClose={() => setShowReport(false)} title="Report File" size="sm">
-        {reportSuccess ? (
-          <div className="flex flex-col items-center gap-3 text-center py-2">
-            <CheckCircle2 size={40} className="text-green-500" />
-            <p className="font-semibold text-primary">Report Submitted</p>
-            <p className="text-sm text-secondary">Our team will review this content within 24 hours.</p>
-            <button onClick={() => setShowReport(false)} className="btn-primary px-6 py-2.5 text-sm w-full">
-              Done
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={handleReport} className="flex flex-col gap-4">
-            <div>
-              <label className="text-xs font-medium text-secondary mb-1.5 block">Reason *</label>
-              <select
-                className="input-app text-sm"
-                value={reportForm.reason}
-                onChange={(e) => setReportForm((prev) => ({ ...prev, reason: e.target.value }))}
-              >
-                {REPORT_REASONS.map(({ value, label }) => (
-                  <option key={value} value={value}>{label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-secondary mb-1.5 block">Additional Details</label>
-              <textarea
-                className="input-app text-sm resize-none"
-                rows={3}
-                placeholder="Provide more details about the issue..."
-                value={reportForm.description}
-                onChange={(e) => setReportForm((prev) => ({ ...prev, description: e.target.value }))}
-              />
-            </div>
-            <div className="flex gap-3">
-              <button type="button" onClick={() => setShowReport(false)} className="flex-1 btn-secondary py-2.5 text-sm">
-                Cancel
-              </button>
-              <button type="submit" disabled={reportLoading} className="flex-1 py-2.5 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-colors">
-                {reportLoading ? "Submitting..." : "Submit Report"}
-              </button>
-            </div>
-          </form>
-        )}
-      </Modal>
-    </div>
+      {showReport && <ReportModal open fileId={file.id} onClose={() => setShowReport(false)} />}
+    </PageShell>
   );
 }
