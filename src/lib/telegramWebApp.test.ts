@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isRequestChatSupported,
   openTelegramBotLink,
+  triggerHaptic,
   requestChatSelection,
   requestChatSelectionDetailed,
 } from "@/lib/telegramWebApp";
@@ -74,16 +75,37 @@ describe("openTelegramBotLink", () => {
     const openTelegramLink = vi.fn();
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     install({ openTelegramLink });
-    expect(openTelegramBotLink("https://t.me/Bot?start=c1_a_b")).toBe(true);
-    expect(openTelegramLink).toHaveBeenCalledWith("https://t.me/Bot?start=c1_a_b");
+    expect(openTelegramBotLink("https://t.me/Bot")).toBe(true);
+    expect(openTelegramLink).toHaveBeenCalledWith("https://t.me/Bot");
     expect(open).not.toHaveBeenCalled();
   });
-  it("falls back to window.open when openTelegramLink is missing or throws", () => {
+  it("returns false (and never uses window.open) when openTelegramLink is missing or throws", () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     install({});
-    openTelegramBotLink("https://t.me/Bot?start=x");
+    expect(openTelegramBotLink("https://t.me/Bot?start=x")).toBe(false);
     install({ openTelegramLink: () => { throw new Error("nope"); } });
-    openTelegramBotLink("https://t.me/Bot?start=y");
-    expect(open).toHaveBeenCalledTimes(2);
+    expect(openTelegramBotLink("https://t.me/Bot?start=y")).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("triggerHaptic", () => {
+  it("maps kinds onto the official HapticFeedback API", () => {
+    const impactOccurred = vi.fn();
+    const notificationOccurred = vi.fn();
+    install({ HapticFeedback: { impactOccurred, notificationOccurred } });
+    expect(triggerHaptic("impact")).toBe(true);
+    expect(impactOccurred).toHaveBeenCalledWith("light");
+    expect(triggerHaptic("success")).toBe(true);
+    expect(triggerHaptic("error")).toBe(true);
+    expect(triggerHaptic("warning")).toBe(true);
+    expect(notificationOccurred.mock.calls.map((c) => c[0])).toEqual(["success", "error", "warning"]);
+  });
+  it("is a harmless no-op when HapticFeedback is unavailable or throws", () => {
+    install({});
+    expect(triggerHaptic("success")).toBe(false);
+    install({ HapticFeedback: { impactOccurred: () => { throw new Error("boom"); }, notificationOccurred: () => { throw new Error("boom"); } } });
+    expect(() => triggerHaptic("impact")).not.toThrow();
+    expect(triggerHaptic("error")).toBe(false);
   });
 });

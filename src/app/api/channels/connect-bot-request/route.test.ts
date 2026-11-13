@@ -90,10 +90,12 @@ describe("POST /api/channels/connect-bot-request", () => {
     expect(pending!.expiresAt.getTime() - Date.now()).toBeLessThanOrEqual(10 * 60 * 1000);
   });
 
-  it("each call creates a distinct request (multiple attempts are handled independently)", async () => {
+  it("each call creates a distinct request; the newest supersedes the earlier one (no duplicate live requests)", async () => {
     const a = await (await POST(req({ cookie: setupCookie() }))).json();
     const b = await (await POST(req({ cookie: setupCookie() }))).json();
     expect(a.token).not.toBe(b.token);
     expect(a.botUrl).not.toBe(b.botUrl);
+    expect((await getPendingByToken(a.token))?.status).toBe("failed");
+    expect((await getPendingByToken(b.token))?.status).toBe("pending");
   });
 });

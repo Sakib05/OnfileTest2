@@ -13,6 +13,7 @@ import {
   type PendingChannelRequestRecord,
 } from "@/lib/pendingChannelRequests";
 import { recordBotChannelAdminEvent } from "@/lib/botChannelEvents";
+import { markPrivateChatBlocked, recordPrivateChat } from "@/lib/botPrivateChats";
 import {
   handleBotTextMessage,
   notifyBotConnectionFailure,
@@ -52,7 +53,7 @@ interface TelegramUpdate {
   update_id: number;
   message?: {
     chat: { id: number; type: string };
-    from?: { id: number };
+    from?: { id: number; is_bot?: boolean };
     text?: string;
     chat_shared?: TelegramChatShared;
   };
@@ -138,13 +139,18 @@ export async function POST(req: NextRequest) {
     const updateType = update.my_chat_member ? "my_chat_member" : update.message?.chat_shared ? "chat_shared" : "unhandled";
     console.log("telegram_webhook_received", { updateId: update.update_id, updateType });
 
+    // Remember the verified private chat (user id → chat id) so the backend can
+    // later message the user in their EXISTING conversation without a "/start".
+    // Only trusted, secret-authenticated webhook updates reach this point.
+    if (update.message) await recordPrivateChatFromMessage(update.message);
+
     if (update.my_chat_member) {
       await handleMyChatMember(update.my_chat_member, req);
       return NextResponse.json({ ok: true });
     }
 
     if (update.message?.chat_shared && update.message.from?.id) {
-      await handleChatShared(update.message.chat_shared, update.message.from.id, req);
+      await handleChatShared(update.message.chat_shared, update.message.from.id, req, update.message.chat);
       return NextResponse.json({ ok: true });
     }
 
@@ -171,7 +177,15 @@ export async function POST(req: NextRequest) {
 }
 
 /** Handles the native chat-picker flow's confirmation message. */
-async function handleChatShared(chatShared: TelegramChatShared, telegramUserId: number, req: NextRequest) {
+async function handleChatShared(
+  chatShared: TelegramChatShared,
+  telegramUserId: number,
+  req: NextRequest,
+  messageChat: { id: number; type: string }
+) {
+  // `chat_shared` is delivered inside the user's private chat with the bot —
+  // the chat Telegram says it came from is where confirmations are sent.
+  const observedChatId = messageChat.type === "private" ? messageChat.id : null;
   const pending = await getPendingByTelegramRequest(telegramUserId, chatShared.request_id);
   if (!pending) {
     console.log("telegram_webhook_chat_shared_no_pending_request", {
@@ -187,12 +201,12 @@ async function handleChatShared(chatShared: TelegramChatShared, telegramUserId: 
     if (connectMethodForRequestId(chatShared.request_id) === "bot") {
       const lookup = await lookupPendingForBotStart(telegramUserId, chatShared.request_id);
       if (lookup.kind === "expired") {
-        await safeNotify(() => notifyBotRequestExpired(telegramUserId));
+        await safeNotify(() => notifyBotRequestExpired(telegramUserId, observedChatId));
       }
     }
     return;
   }
-  await resolvePendingAgainstChat(pending, String(chatShared.chat_id), telegramUserId, req, "chat_shared");
+  await resolvePendingAgainstChat(pending, String(chatShared.chat_id), telegramUserId, req, "chat_shared", observedChatId);
 }
 
 /**
@@ -212,6 +226,13 @@ async function handleMyChatMember(update: TelegramChatMemberUpdated, req: NextRe
   const ownBotId = await getOwnBotId(botToken);
   if (!ownBotId || update.new_chat_member.user.id !== ownBotId) {
     // Not an update about our own bot — nothing for this handler to do.
+    return;
+  }
+
+  // The bot's membership in a PRIVATE chat is the user starting / blocking /
+  // unblocking the bot. Keep the verified user → chat association current.
+  if (update.chat.type === "private") {
+    await handlePrivateChatMembership(update);
     return;
   }
 
@@ -262,6 +283,34 @@ async function handleMyChatMember(update: TelegramChatMemberUpdated, req: NextRe
   await resolvePendingAgainstChat(pending, String(update.chat.id), actingUserId, req, "my_chat_member");
 }
 
+/** Records (user → private chat) from any update of a human user's message in a private chat. */
+async function recordPrivateChatFromMessage(message: NonNullable<TelegramUpdate["message"]>) {
+  if (message.chat.type !== "private" || !message.from?.id || message.from.is_bot) return;
+  try {
+    await recordPrivateChat(message.from.id, message.chat.id, "webhook");
+  } catch (err) {
+    // Never block processing of the update itself (e.g. table not migrated yet).
+    console.error("telegram_webhook_record_private_chat_failed", err instanceof Error ? err.message : "unknown_error");
+  }
+}
+
+/** `my_chat_member` in a private chat: "kicked" = user blocked the bot; "member" = (re)started / unblocked. */
+async function handlePrivateChatMembership(update: TelegramChatMemberUpdated) {
+  const userId = update.from?.id;
+  if (!userId) return;
+  const status = update.new_chat_member.status;
+  console.log("telegram_webhook_private_chat_membership", { status });
+  try {
+    if (status === "kicked" || status === "left") {
+      await markPrivateChatBlocked(userId, update.chat.id);
+    } else if (status === "member") {
+      await recordPrivateChat(userId, update.chat.id, "webhook");
+    }
+  } catch (err) {
+    console.error("telegram_webhook_private_chat_membership_failed", err instanceof Error ? err.message : "unknown_error");
+  }
+}
+
 /**
  * Shared "finish a pending request" step used by both update types. Claims
  * the pending request (idempotency layer 2), independently re-verifies the
@@ -273,7 +322,8 @@ async function resolvePendingAgainstChat(
   telegramChatId: string,
   telegramUserId: number,
   req: NextRequest,
-  source: "chat_shared" | "my_chat_member"
+  source: "chat_shared" | "my_chat_member",
+  observedChatId: number | null = null
 ) {
   if (pending.status !== "pending") {
     console.log("telegram_webhook_pending_already_resolved", { pendingId: pending.id, source });
@@ -294,7 +344,7 @@ async function resolvePendingAgainstChat(
       status: "failed",
       failureReason: verification.reason,
     });
-    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, verification.reason));
+    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, verification.reason, observedChatId));
     return;
   }
 
@@ -311,7 +361,7 @@ async function resolvePendingAgainstChat(
       status: "failed",
       failureReason: "telegram_api_error",
     });
-    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, "telegram_api_error"));
+    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, "telegram_api_error", observedChatId));
     return;
   }
 
@@ -326,7 +376,7 @@ async function resolvePendingAgainstChat(
     resolvedUserId: finalized.result.userId,
     isNewAccount: finalized.result.isNewAccount,
   });
-  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName));
+  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName, observedChatId));
 }
 
 /** Notification failures (e.g. user blocked the bot) must never affect the verified outcome. */

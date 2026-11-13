@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { and, desc, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { channels, pendingChannelRequests } from "@/db/schema";
 import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
@@ -302,6 +302,30 @@ export async function cancelPendingByToken(token: string): Promise<boolean> {
     )
     .returning({ id: pendingChannelRequests.id });
   return result.length > 0;
+}
+
+/**
+ * Supersedes any still-open (pending, unclaimed, unexpired) BOT-method request
+ * of this Telegram user, so tapping "Connect channel via bot" repeatedly (or
+ * from two devices) never leaves several live requests/keyboards behind — only
+ * the newest request can complete. Returns how many were superseded. Direct
+ * Picker requests are never touched.
+ */
+export async function cancelOpenBotRequestsForUser(telegramUserId: number): Promise<number> {
+  const result = await db
+    .update(pendingChannelRequests)
+    .set({ status: "failed", failureReason: "cancelled", updatedAt: new Date() })
+    .where(
+      and(
+        eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt),
+        gt(pendingChannelRequests.expiresAt, new Date()),
+        gte(pendingChannelRequests.telegramRequestId, BOT_REQUEST_ID_MIN)
+      )
+    )
+    .returning({ id: pendingChannelRequests.id });
+  return result.length;
 }
 
 export type StartLookupResult =

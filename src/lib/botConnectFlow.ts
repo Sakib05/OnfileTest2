@@ -4,8 +4,15 @@ import {
   lookupPendingForBotStart,
   type PendingChannelRequestRecord,
 } from "@/lib/pendingChannelRequests";
-import { buildChannelPickerKeyboard, sendBotMessage } from "@/lib/telegramBot";
+import { buildChannelPickerKeyboard, probePrivateChat, sendBotMessage, type SendBotMessageResult } from "@/lib/telegramBot";
 import { CHANNEL_FAILURE_MESSAGES } from "@/lib/channelConnection";
+import {
+  getPrivateChat,
+  markPrivateChatBlocked,
+  recordPrivateChat,
+  removePrivateChat,
+  type PrivateChatRecord,
+} from "@/lib/botPrivateChats";
 
 /**
  * "Connect channel via bot" — fallback for Telegram clients that cannot use
@@ -19,8 +26,12 @@ import { CHANNEL_FAILURE_MESSAGES } from "@/lib/channelConnection";
  *      TTL, bound to the authenticated Telegram user) whose Telegram
  *      `request_id` is in the "bot" range, and returns
  *      `https://t.me/<bot>?start=<signed payload>`.
- *   2. The Mini App opens that link — Telegram opens the Onfile bot chat.
- *      Telegram's own START button / auto-send delivers `/start <payload>`.
+ *      RETURNING users (a verified private chat is on file) never get that
+ *      link: the server sends the keyboard straight into their existing chat
+ *      (deliverPickerKeyboardToExistingChat) and the Mini App opens the plain
+ *      `https://t.me/<bot>` link, so no new "/start" is produced.
+ *   2. For first-time users the Mini App opens the signed link — Telegram opens
+ *      the Onfile bot chat and its own START button delivers `/start <payload>`.
  *   3. The webhook verifies the payload's signature and that the Telegram
  *      user who pressed Start is the user the request was created for, then
  *      replies with a ReplyKeyboardMarkup containing a `request_chat`
@@ -85,6 +96,14 @@ export function verifyBotStartPayload(payload: string, telegramUserId: number): 
   return { ok: true, requestId };
 }
 
+/**
+ * Plain chat link for the configured bot — deliberately NO `?start=`. Opening
+ * it just shows the existing conversation, so Telegram sends no "/start".
+ */
+export function buildBotChatLink(botUsername: string): string {
+  return `https://t.me/${botUsername}`;
+}
+
 /** Builds the t.me deep link for the configured bot (never a hardcoded username). */
 export function buildBotDeepLink(botUsername: string, payload: string): string {
   return `https://t.me/${botUsername}?start=${payload}`;
@@ -118,12 +137,121 @@ function readyMessage(pending: PendingChannelRequestRecord): string {
   );
 }
 
-async function sendPickerKeyboard(chatId: number, pending: PendingChannelRequestRecord) {
+async function sendPickerKeyboard(chatId: number | string, pending: PendingChannelRequestRecord) {
   const res = await sendBotMessage(chatId, readyMessage(pending), buildChannelPickerKeyboard(pending.telegramRequestId));
   if (!res.ok) {
     console.error("bot_connect_send_keyboard_failed", { description: res.description, errorCode: res.errorCode });
   }
   return res;
+}
+
+// ─── Direct delivery to the user's EXISTING private chat ─────────────────────
+//
+// For users who have already started the bot, the backend sends the
+// "Select channel to connect" keyboard itself (Bot API `sendMessage` to the
+// verified private chat id). The Mini App then just opens the plain bot chat
+// link — no `?start=` payload, so Telegram posts NO new "/start" from the user.
+// Telegram only lets a bot message users who have started it, so everything
+// else falls back to the signed start link (the pre-existing flow).
+
+export type BotDeliveryFallbackReason =
+  /** No verified private chat is known and Telegram reports none (user never started the bot). */
+  | "no_chat"
+  /** Telegram says the user blocked / stopped the bot (needs "Restart" via the start link). */
+  | "bot_blocked"
+  /** The stored chat id was rejected by Telegram ("chat not found"). */
+  | "chat_invalid"
+  /** Our own association lookup failed (e.g. table not migrated yet). */
+  | "lookup_failed";
+
+export type BotDeliveryResult =
+  | { mode: "existing_chat"; chatId: string }
+  | { mode: "start_link"; reason: BotDeliveryFallbackReason }
+  | { mode: "error"; reason: "telegram_api_error"; detail?: string };
+
+export type SendFailureKind = "no_chat" | "bot_blocked" | "chat_invalid" | "telegram_api_error";
+
+/** Classifies a failed `sendMessage` to a private chat. Exported for tests. */
+export function classifySendFailure(res: Extract<SendBotMessageResult, { ok: false }>): SendFailureKind {
+  const desc = res.description ?? "";
+  if (res.errorCode === 403) {
+    // "bot can't initiate conversation with a user": the user never started the bot.
+    if (/can'?t initiate conversation/i.test(desc)) return "no_chat";
+    // "bot was blocked by the user", "user is deactivated", "bot was kicked…".
+    return "bot_blocked";
+  }
+  if (res.errorCode === 400 && /chat not found|user not found|PEER_ID_INVALID/i.test(desc)) return "chat_invalid";
+  return "telegram_api_error";
+}
+
+async function safely<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(label, err instanceof Error ? err.message : "unknown_error");
+    return undefined;
+  }
+}
+
+/**
+ * Tries to deliver the channel-selection keyboard for `pending` into the
+ * authenticated user's existing private chat with the bot. `telegramUserId`
+ * MUST come from the server-side session/setup cookie, never from the client.
+ *
+ *   existing_chat → keyboard sent; the Mini App opens the plain chat link.
+ *   start_link    → can't message the user directly; use the signed start link.
+ *   error         → transient Telegram problem; the caller should report a
+ *                   retryable error (NOT fall back, which would cause a "/start").
+ */
+export async function deliverPickerKeyboardToExistingChat(
+  telegramUserId: number,
+  pending: PendingChannelRequestRecord
+): Promise<BotDeliveryResult> {
+  // 1. The verified association (user id → private chat id) from webhook updates.
+  let lookupFailed = false;
+  let record: PrivateChatRecord | null = null;
+  try {
+    record = await getPrivateChat(telegramUserId);
+  } catch (err) {
+    lookupFailed = true;
+    console.error("bot_connect_chat_lookup_failed", err instanceof Error ? err.message : "unknown_error");
+  }
+
+  // 2. Not recorded yet (e.g. started the bot before chats were recorded):
+  //    let Telegram tell us whether a private chat exists. No guessing.
+  if (!record) {
+    const probe = await probePrivateChat(telegramUserId);
+    if (!probe.ok) {
+      if (probe.reason === "unavailable") return { mode: "error", reason: "telegram_api_error", detail: "probe_unavailable" };
+      return { mode: "start_link", reason: lookupFailed ? "lookup_failed" : "no_chat" };
+    }
+    await safely("bot_connect_chat_record_failed", () => recordPrivateChat(telegramUserId, probe.chatId, "get_chat"));
+    record = { telegramUserId: String(telegramUserId), chatId: probe.chatId, status: "active", source: "get_chat" };
+  }
+
+  // 3. Send. A stored-"blocked" chat is still attempted: the user may have
+  //    unblocked the bot, and sendMessage is the authoritative check.
+  const sent = await sendPickerKeyboard(record.chatId, pending);
+  if (sent.ok) {
+    if (record.status !== "active") {
+      await safely("bot_connect_chat_record_failed", () => recordPrivateChat(telegramUserId, record!.chatId, record!.source));
+    }
+    return { mode: "existing_chat", chatId: record.chatId };
+  }
+
+  switch (classifySendFailure(sent)) {
+    case "bot_blocked":
+      await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, record!.chatId));
+      return { mode: "start_link", reason: "bot_blocked" };
+    case "no_chat":
+      await safely("bot_connect_chat_remove_failed", () => removePrivateChat(telegramUserId, record!.chatId));
+      return { mode: "start_link", reason: "no_chat" };
+    case "chat_invalid":
+      await safely("bot_connect_chat_remove_failed", () => removePrivateChat(telegramUserId, record!.chatId));
+      return { mode: "start_link", reason: "chat_invalid" };
+    default:
+      return { mode: "error", reason: "telegram_api_error", detail: sent.description };
+  }
 }
 
 // ─── Command handling ───────────────────────────────────────────────────────
@@ -204,20 +332,51 @@ export async function handleBotTextMessage(msg: BotTextMessage): Promise<boolean
 
 const REMOVE_KEYBOARD = { remove_keyboard: true };
 
-export async function notifyBotConnectionSuccess(telegramUserId: number, channelTitle?: string | null) {
+/**
+ * The chat to notify: the stored verified private chat for this user, else
+ * the private chat the triggering update itself arrived in (`observedChatId`,
+ * only ever passed by the webhook for a `private` chat). Never the user id.
+ */
+async function resolveNotifyChatId(telegramUserId: number, observedChatId?: number | string | null): Promise<string | null> {
+  try {
+    const record = await getPrivateChat(telegramUserId);
+    if (record) return record.chatId;
+  } catch (err) {
+    console.error("bot_connect_chat_lookup_failed", err instanceof Error ? err.message : "unknown_error");
+  }
+  return observedChatId !== undefined && observedChatId !== null ? String(observedChatId) : null;
+}
+
+async function notify(telegramUserId: number, observedChatId: number | string | null | undefined, text: string) {
+  const chatId = await resolveNotifyChatId(telegramUserId, observedChatId);
+  if (!chatId) {
+    console.log("bot_connect_notify_skipped", { reason: "no_private_chat" });
+    return;
+  }
+  const res = await sendBotMessage(chatId, text, REMOVE_KEYBOARD);
+  if (!res.ok && classifySendFailure(res) === "bot_blocked") {
+    await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, chatId));
+  }
+}
+
+export async function notifyBotConnectionSuccess(
+  telegramUserId: number,
+  channelTitle?: string | null,
+  observedChatId?: number | string | null
+) {
   const name = channelTitle ? `“${channelTitle}”` : "Your channel";
-  await sendBotMessage(
+  await notify(
     telegramUserId,
-    `✅ ${name} is now connected to your Onfile account.\n\nReturn to Onfile — it updates automatically.`,
-    REMOVE_KEYBOARD
+    observedChatId,
+    `✅ ${name} is now connected to your Onfile account.\n\nReturn to Onfile — it updates automatically.`
   );
 }
 
-export async function notifyBotConnectionFailure(telegramUserId: number, reason: string) {
+export async function notifyBotConnectionFailure(telegramUserId: number, reason: string, observedChatId?: number | string | null) {
   const detail = CHANNEL_FAILURE_MESSAGES[reason] ?? "We couldn’t connect that channel.";
-  await sendBotMessage(telegramUserId, `❌ ${detail}\n\n${RETRY_HINT}`, REMOVE_KEYBOARD);
+  await notify(telegramUserId, observedChatId, `❌ ${detail}\n\n${RETRY_HINT}`);
 }
 
-export async function notifyBotRequestExpired(telegramUserId: number) {
-  await sendBotMessage(telegramUserId, BOT_MESSAGES.expiredOnSelection, REMOVE_KEYBOARD);
+export async function notifyBotRequestExpired(telegramUserId: number, observedChatId?: number | string | null) {
+  await notify(telegramUserId, observedChatId, BOT_MESSAGES.expiredOnSelection);
 }

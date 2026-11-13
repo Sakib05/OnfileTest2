@@ -2,6 +2,7 @@
 import React from "react";
 import { CheckCircle2, MessageCircle, ShieldCheck } from "lucide-react";
 import type { ConnectedChannel } from "@/lib/useChannelConnect";
+import { CONNECT_SUCCESS_MESSAGE } from "@/components/setup/ConnectSuccessNotice";
 
 /**
  * Shown ONLY after the backend has independently confirmed: the channel
@@ -28,7 +29,7 @@ export default function ChannelConnectSuccessScreen({
 
       <div>
         <h1 className="text-xl font-bold text-primary">Channel Connected Successfully!</h1>
-        <p className="text-sm text-secondary mt-2">Your private Telegram channel is connected to Onfile.</p>
+        <p className="text-sm text-secondary mt-2" data-testid="connect-success-message">{CONNECT_SUCCESS_MESSAGE}</p>
       </div>
 
       <div className="bg-card rounded-2xl border border-app shadow-app-sm p-4 w-full flex items-center gap-3">

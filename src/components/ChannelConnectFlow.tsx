@@ -1,8 +1,9 @@
 "use client";
 import React from "react";
-import { CheckCircle2, Loader2, Radio, ShieldCheck, XCircle } from "lucide-react";
-import BotFallbackPanel, { isBotFallbackPhase } from "@/components/setup/BotFallbackPanel";
-import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
+import { Loader2, Radio, ShieldCheck, XCircle } from "lucide-react";
+import BotFallbackPanel, { BotConnectFailure, isBotFallbackPhase } from "@/components/setup/BotFallbackPanel";
+import ConnectSuccessNotice from "@/components/setup/ConnectSuccessNotice";
+import { isRequestChatSupported, isRunningInsideTelegram } from "@/lib/telegramWebApp";
 import { useChannelConnect, type ConnectedChannel } from "@/lib/useChannelConnect";
 
 export type { ConnectedChannel } from "@/lib/useChannelConnect";
@@ -23,7 +24,7 @@ export default function ChannelConnectFlow({
 }: {
   onConnected?: (channel: ConnectedChannel) => void;
 }) {
-  const { state, start, startViaBot, reopenBot, refresh, reset } = useChannelConnect(onConnected);
+  const { state, check, start, startViaBot, refresh, reset } = useChannelConnect(onConnected);
 
   if (!isRunningInsideTelegram()) {
     return (
@@ -33,6 +34,9 @@ export default function ChannelConnectFlow({
       </div>
     );
   }
+
+  // Clients without the Direct Picker only have the bot option: retry with that same primary action.
+  const botOnly = !isRequestChatSupported();
 
   return (
     <div className="flex flex-col gap-4 w-full">
@@ -70,34 +74,29 @@ export default function ChannelConnectFlow({
       {isBotFallbackPhase(state) && (
         <BotFallbackPanel
           state={state}
+          check={check}
           onConnectViaBot={startViaBot}
-          onReopenBot={reopenBot}
           onRefresh={refresh}
           onCancel={reset}
         />
       )}
 
-      {state.phase === "verified" && (
-        <div className="flex flex-col items-center gap-2 text-center bg-secondary rounded-xl p-4">
-          <CheckCircle2 size={28} className="text-green-500" />
-          <p className="text-sm font-semibold text-primary">
-            {state.channel.channelName || state.channel.channelUsername || "Channel"} connected
-          </p>
-          <p className="text-xs text-secondary">Onfile verified the bot&apos;s administrator access to this channel.</p>
-        </div>
-      )}
+      {state.phase === "verified" && <ConnectSuccessNotice channel={state.channel} />}
 
-      {state.phase === "failed" && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-start gap-2 text-left text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
-            <XCircle size={14} className="mt-0.5 flex-shrink-0" />
-            <span>{state.message}</span>
+      {state.phase === "failed" &&
+        (botOnly ? (
+          <BotConnectFailure message={state.message} onRetry={startViaBot} />
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-start gap-2 text-left text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
+              <XCircle size={14} className="mt-0.5 flex-shrink-0" />
+              <span>{state.message}</span>
+            </div>
+            <button onClick={reset} className="btn-primary w-full py-3 text-sm">
+              Try Again
+            </button>
           </div>
-          <button onClick={reset} className="btn-primary w-full py-3 text-sm">
-            Try Again
-          </button>
-        </div>
-      )}
+        ))}
 
       <div className="flex items-start gap-2 text-left text-[11px] text-muted">
         <ShieldCheck size={13} className="mt-0.5 flex-shrink-0" />

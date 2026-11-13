@@ -36,6 +36,12 @@ export interface TelegramWebApp {
     onClick: (callback: () => void) => void;
     offClick: (callback: () => void) => void;
   };
+  /** Bot API 6.1+. Haptic feedback — https://core.telegram.org/bots/webapps#hapticfeedback */
+  HapticFeedback?: {
+    impactOccurred?: (style: "light" | "medium" | "heavy" | "rigid" | "soft") => unknown;
+    notificationOccurred?: (type: "error" | "success" | "warning") => unknown;
+    selectionChanged?: () => unknown;
+  };
   /** Bot API 6.0+. Subscribe to a bridge event, e.g. "viewportChanged". */
   onEvent?: (eventType: string, handler: (...args: unknown[]) => void) => void;
   offEvent?: (eventType: string, handler: (...args: unknown[]) => void) => void;
@@ -139,27 +145,59 @@ export async function requestChatSelection(preparedButtonId: string): Promise<bo
 }
 
 /**
- * Opens a t.me link (here: the Onfile bot chat) inside Telegram. Prefers
- * `Telegram.WebApp.openTelegramLink` (opens the chat natively); only if that
- * is missing or throws does it fall back to `window.open`, which Telegram's
- * in-app webview also routes to the Telegram client for t.me URLs. Returns
- * whether an attempt to open the link was made. NOTE: on clients older than
- * Bot API 7.0 the Mini App is closed when a t.me link opens — Onfile
- * persists the pending request so reopening the Mini App resumes it.
+ * Opens a t.me link (here: the Onfile bot chat) inside Telegram with the
+ * official `Telegram.WebApp.openTelegramLink`. Returns whether Telegram's
+ * bridge accepted the call — `false` when not running inside Telegram, when
+ * the method is missing, or when it throws, so callers can tell the user
+ * instead of failing silently. Deliberately NO `window.open` fallback: a
+ * browser redirect is not a supported way to open a t.me link from a Mini App.
+ * (`openLink` is documented as user-interaction-only; `openTelegramLink` has
+ * no such documented restriction, so calling it after the async request that
+ * prepares the bot chat is supported.) NOTE: on clients older than Bot API 7.0
+ * the Mini App is closed when a t.me link opens — Onfile persists the pending
+ * request so reopening the Mini App resumes it.
  */
 export function openTelegramBotLink(url: string): boolean {
   const webApp = getTelegramWebApp();
-  if (webApp && typeof webApp.openTelegramLink === "function") {
-    try {
-      webApp.openTelegramLink(url);
-      return true;
-    } catch {
-      // fall through to window.open
-    }
-  }
-  if (typeof window !== "undefined") {
-    window.open(url, "_blank");
+  if (!webApp || typeof webApp.openTelegramLink !== "function") return false;
+  try {
+    webApp.openTelegramLink(url);
     return true;
+  } catch {
+    return false;
   }
-  return false;
+}
+
+export type HapticKind =
+  /** Subtle tap — used immediately before leaving for the bot chat. */
+  | "impact"
+  /** Server-confirmed success. */
+  | "success"
+  /** Important failure. */
+  | "error"
+  /** Non-fatal problem. */
+  | "warning";
+
+/**
+ * Official Telegram haptics (`WebApp.HapticFeedback`, Bot API 6.1+). Returns
+ * whether a haptic was requested. NEVER throws and never blocks the caller:
+ * on clients/browsers without HapticFeedback this is a no-op returning false.
+ * (The Mini App can vibrate its own device; a bot message cannot make a device
+ * vibrate, and the exact moment the bot's message appears is not observable.)
+ */
+export function triggerHaptic(kind: HapticKind): boolean {
+  try {
+    const haptic = getTelegramWebApp()?.HapticFeedback;
+    if (!haptic) return false;
+    if (kind === "impact") {
+      if (typeof haptic.impactOccurred !== "function") return false;
+      haptic.impactOccurred("light");
+      return true;
+    }
+    if (typeof haptic.notificationOccurred !== "function") return false;
+    haptic.notificationOccurred(kind);
+    return true;
+  } catch {
+    return false;
+  }
 }

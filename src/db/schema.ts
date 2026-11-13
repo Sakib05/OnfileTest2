@@ -578,3 +578,31 @@ export const thumbnailUploads = pgTable(
     index("thumbnail_uploads_user_status_idx").on(t.userId, t.status),
   ]
 );
+
+// ─── Bot Private Chats ────────────────────────────────────────────────────────
+// The verified private chat between the Onfile bot and a Telegram user, learned
+// ONLY from trusted webhook updates (a `message` or `my_chat_member` update in
+// a `private` chat, delivered with our webhook secret) — never from the client.
+// It lets the backend send the "Select channel to connect" keyboard straight
+// into the user's existing conversation (no `?start=` deep link, so no second
+// "/start" for returning users) without assuming chat id == user id.
+//   status "active"  — the bot can (as far as we know) message this chat.
+//   status "blocked" — Telegram told us the user blocked/stopped the bot.
+//   source           — "webhook" (observed update) | "get_chat" (Telegram answered
+//                      a getChat probe with a private chat; legacy backfill).
+// ADDITIVE: one new table, no change to existing tables.
+// See migrations/bot_private_chats/up.sql.
+export const botPrivateChats = pgTable(
+  "bot_private_chats",
+  {
+    id: serial("id").primaryKey(),
+    telegramUserId: varchar("telegram_user_id", { length: 64 }).notNull(),
+    chatId: varchar("chat_id", { length: 64 }).notNull(),
+    status: varchar("status", { length: 16 }).default("active").notNull(),
+    source: varchar("source", { length: 16 }).default("webhook").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("bot_private_chats_user_idx").on(t.telegramUserId)]
+);

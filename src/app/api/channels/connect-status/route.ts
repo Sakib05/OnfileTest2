@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPendingByToken } from "@/lib/pendingChannelRequests";
-import { CHANNEL_FAILURE_MESSAGES } from "@/lib/channelConnection";
+import { CHANNEL_FAILURE_MESSAGES, resolveConnectingIdentity } from "@/lib/channelConnection";
 import { createSession, getSessionUser, SESSION_COOKIE_NAME, getSessionCookieOptions } from "@/lib/auth";
 import { SETUP_COOKIE_NAME } from "@/lib/setupToken";
 
@@ -23,6 +23,8 @@ import { SETUP_COOKIE_NAME } from "@/lib/setupToken";
  * session cookie isn't already present — rather than ever persisting a raw,
  * usable session token in the database while waiting for the browser to
  * poll.
+ *
+ * Status values: pending | verified | failed | expired | unauthorized.
  */
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token");
@@ -32,6 +34,18 @@ export async function GET(req: NextRequest) {
 
   const pending = await getPendingByToken(token);
   if (!pending) {
+    return NextResponse.json({ status: "expired" }, { status: 404 });
+  }
+
+  // The bearer token alone is not enough: the request must belong to the
+  // Telegram user authenticated by the session / signed setup cookie. A token
+  // presented by anyone else is indistinguishable from an unknown one.
+  const identityResult = await resolveConnectingIdentity(req);
+  if (!identityResult.ok) {
+    return NextResponse.json({ status: "unauthorized", error: identityResult.error }, { status: 401 });
+  }
+  if (identityResult.identity.telegramUserId !== pending.identity.telegramUserId) {
+    console.error("connect_status_identity_mismatch");
     return NextResponse.json({ status: "expired" }, { status: 404 });
   }
 

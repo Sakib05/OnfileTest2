@@ -19,6 +19,7 @@ import type { ConnectedChannel } from "@/lib/useChannelConnect";
 import { INVITE_LINK_FAILURE_MESSAGES, validatePrivateInviteLink } from "@/lib/inviteLink";
 import { cn } from "@/lib/utils";
 import GuideIllustration from "@/components/setup/guide/GuideIllustrations";
+import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 
 interface GuideStep {
   icon: React.FC<{ size: number; className?: string }>;
@@ -128,14 +129,26 @@ export default function ManualConnectGuide({
 
   const stepData = GUIDE_STEPS[stepIndex];
 
-  const goBack = () => {
-    if (submitting) return;
-    if (stepIndex === 0) {
-      onBack();
-      return;
-    }
+  /**
+   * Three DIFFERENT navigation actions live on this screen — keep them separate:
+   *   - bottom Back  → previous guide step (`goToPreviousStep`; never leaves the guide)
+   *   - bottom Next  → next guide step (`goNext`; never leaves the guide)
+   *   - Telegram's native Back Button (and the in-page header arrow, its
+   *     non-Telegram equivalent) → leave the WHOLE guide and return to the
+   *     previous application page (`exitGuide`), regardless of the current step.
+   */
+  const goToPreviousStep = () => {
+    if (submitting || stepIndex === 0) return;
     setStepIndex((i) => i - 1);
   };
+
+  const exitGuide = () => {
+    if (submitting) return;
+    onBack();
+  };
+
+  // Native Back Button = exit the guide page (registered through the shared manager: one listener).
+  useTelegramBackButton(exitGuide);
 
   const submitManualLink = async () => {
     if (submitting) return; // guard against duplicate submissions
@@ -207,8 +220,8 @@ export default function ManualConnectGuide({
     <div className="flex flex-col gap-4 w-full max-w-sm animate-fade-in">
       <div className="flex items-center gap-3">
         <button
-          onClick={goBack}
-          aria-label="Go back"
+          onClick={exitGuide}
+          aria-label="Exit guide"
           className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0"
         >
           <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
@@ -341,7 +354,11 @@ export default function ManualConnectGuide({
 
       {/* Back / Next — Next on step 8 runs the real /api/channels/connect-manual verification */}
       <div className="sticky bottom-0 -mx-1 flex items-center gap-3 bg-app px-1 pt-2 pb-3 safe-bottom">
-        <button onClick={goBack} disabled={submitting} className="btn-secondary flex-1 py-3 text-sm font-semibold disabled:opacity-60">
+        <button
+          onClick={goToPreviousStep}
+          disabled={submitting || stepIndex === 0}
+          className="btn-secondary flex-1 py-3 text-sm font-semibold disabled:opacity-60"
+        >
           Back
         </button>
         <button

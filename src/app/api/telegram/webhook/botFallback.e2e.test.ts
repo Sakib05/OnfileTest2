@@ -153,7 +153,8 @@ describe("bot fallback — chat_shared verification", () => {
     const note = userMessages().at(-1)!;
     expect(String(note.body.text)).toContain("is now connected");
     expect(note.body.reply_markup).toEqual({ remove_keyboard: true });
-    expect(note.body.chat_id).toBe(USER_A);
+    // Confirmation goes to the verified private chat id (stored as a string), not a user-id assumption.
+    expect(String(note.body.chat_id)).toBe(String(USER_A));
   });
 
   it("rejects a public channel (private-only rule preserved)", async () => {

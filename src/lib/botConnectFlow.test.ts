@@ -4,7 +4,9 @@ import { db } from "@/db";
 import { pendingChannelRequests } from "@/db/schema";
 import {
   BOT_MESSAGES,
+  buildBotChatLink,
   buildBotDeepLink,
+  classifySendFailure,
   createBotStartPayload,
   handleBotTextMessage,
   parseBotCommand,
@@ -268,5 +270,26 @@ describe("handleBotTextMessage — /connect", () => {
     await start(USER_A, "/connect");
     expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.noActiveRequest);
     expect(sentMessages()[0].body.reply_markup).toBeUndefined();
+  });
+});
+
+describe("returning-user helpers", () => {
+  it("buildBotChatLink is the plain chat link of the given bot — never a ?start= link", () => {
+    expect(buildBotChatLink("AnyConfiguredBot")).toBe("https://t.me/AnyConfiguredBot");
+    expect(buildBotChatLink("AnyConfiguredBot")).not.toContain("start=");
+    // The start deep link remains available for first-time users.
+    expect(buildBotDeepLink("AnyConfiguredBot", "c1_a_b")).toBe("https://t.me/AnyConfiguredBot?start=c1_a_b");
+  });
+
+  it("classifySendFailure distinguishes blocked / never-started / invalid chat / other Telegram errors", () => {
+    const f = (errorCode: number | undefined, description: string) => classifySendFailure({ ok: false, errorCode, description });
+    expect(f(403, "Forbidden: bot was blocked by the user")).toBe("bot_blocked");
+    expect(f(403, "Forbidden: user is deactivated")).toBe("bot_blocked");
+    expect(f(403, "Forbidden: bot can't initiate conversation with a user")).toBe("no_chat");
+    expect(f(400, "Bad Request: chat not found")).toBe("chat_invalid");
+    expect(f(429, "Too Many Requests: retry after 5")).toBe("telegram_api_error");
+    expect(f(500, "Internal Server Error")).toBe("telegram_api_error");
+    expect(f(undefined, "request_timed_out")).toBe("telegram_api_error");
+    expect(f(400, "Bad Request: USER_RIGHTS_MISSING")).toBe("telegram_api_error");
   });
 });

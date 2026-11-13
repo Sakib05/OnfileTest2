@@ -265,6 +265,34 @@ export async function sendBotMessage(
   return { ok: true };
 }
 
+export type ProbePrivateChatResult =
+  | { ok: true; chatId: string }
+  | { ok: false; reason: "not_found" | "not_private" | "unavailable" };
+
+/**
+ * Asks Telegram (`getChat`) whether the bot has a private chat with this
+ * Telegram user, and returns the chat id TELEGRAM reports. Used only to
+ * backfill users who started the bot before Onfile began recording private
+ * chats from webhook updates. Nothing is assumed: the result is accepted only
+ * if Telegram answers with an object of `type: "private"` and a numeric id.
+ * "chat not found" (the user never started the bot / the bot has no access)
+ * is a definitive "no chat"; timeouts, 5xx etc. are `unavailable`.
+ */
+export async function probePrivateChat(telegramUserId: number): Promise<ProbePrivateChatResult> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return { ok: false, reason: "unavailable" };
+  const res = await callTelegramApi<TelegramChat>(botToken, "getChat", { chat_id: telegramUserId });
+  if (!res.ok) {
+    const notFound = (res.errorCode === 400 || res.errorCode === 403) && /chat not found|user not found|forbidden/i.test(res.description);
+    return { ok: false, reason: notFound ? "not_found" : "unavailable" };
+  }
+  const chat = res.result as unknown;
+  if (!chat || typeof chat !== "object") return { ok: false, reason: "not_found" };
+  const { id, type } = chat as { id?: unknown; type?: unknown };
+  if (type !== "private" || typeof id !== "number") return { ok: false, reason: "not_private" };
+  return { ok: true, chatId: String(id) };
+}
+
 export type PreparedChatRequestResult =
   | { ok: true; preparedButtonId: string }
   | { ok: false; reason: "missing_bot_token" | "bot_not_resolved" | "telegram_api_error"; detail?: string };

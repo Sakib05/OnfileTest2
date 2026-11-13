@@ -13,6 +13,7 @@ import Modal from "@/components/ui/Modal";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 import Faq from "@/components/Faq";
+import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import Link from "next/link";
 
@@ -37,6 +38,9 @@ export default function ProfileTab() {
   const { user, refreshUser, refreshChannels } = useApp();
   const { toast } = useToast();
   const [subPage, setSubPage] = useState<SubPage>(null);
+  // Telegram's native Back Button returns from any Profile sub-page (same as its in-page arrow);
+  // on the Profile root it stays hidden.
+  useTelegramBackButton(() => setSubPage(null), subPage !== null);
   const [referralData, setReferralData] = useState<ReferralData | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
   const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
