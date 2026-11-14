@@ -5,6 +5,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
 import type { FieldErrors } from "@/lib/publishing/validation";
 import type { PublishMode } from "@/lib/publishing/constants";
+import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { useKeyboardAwareViewport } from "./useKeyboardAwareViewport";
 import StepIndicator from "./StepIndicator";
 import LinkStep from "./LinkStep";
@@ -99,6 +100,14 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
     setMaxReached((m) => (s > m ? s : m));
     topRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
+
+  // Telegram's native Back Button steps back through the wizard (Details → Link, …) while a later
+  // step is open and is hidden on the first step (the Create tab's root). The wizard's own
+  // Back / Continue step controls keep working exactly as before.
+  useTelegramBackButton(() => {
+    if (publishGuard.current) return; // never step away while a publish request is in flight
+    goTo(Math.max(0, step - 1) as StepIndex);
+  }, step > 0 && !done);
 
   const reset = () => {
     clearDraft();

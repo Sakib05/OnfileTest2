@@ -2,8 +2,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Edit2, ExternalLink, Share2, BarChart2, Trash2, Plus, Grid, List, Search,
-  Eye, Download, ChevronLeft, SearchX,
+  Edit2, ExternalLink, Share2, BarChart2, Trash2, Grid, List, Search,
+  Eye, Download, SearchX,
 } from "lucide-react";
 import { cn, formatNumber } from "@/lib/utils";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
@@ -22,6 +22,7 @@ import LibrarySearch from "@/components/library/LibrarySearch";
 import RelativeTime from "@/components/library/RelativeTime";
 import { parseTimestamp } from "@/lib/relativeTime";
 import { markNavigatedFromLibrary } from "@/lib/playlistNav";
+import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import LibraryMenu, { type MenuAction } from "@/components/library/LibraryMenu";
 import type { FileItem, MenuTarget, PlaylistItem } from "@/components/library/types";
 
@@ -124,6 +125,10 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
 
   // ── Derived view ────────────────────────────────────────────────────────
   const searching = search.trim().length > 0;
+
+  // "Recently Added → See all" is a nested view: Telegram's native Back Button (the only back
+  // control — there is no in-page arrow) collapses it back to the Library home; hidden otherwise.
+  useTelegramBackButton(() => setShowAllRecent(false), showAllRecent && !searching);
 
   const sections = useMemo(() => buildHomeSections(files, playlists), [files, playlists]);
 
@@ -250,7 +255,8 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Header: title · search icon · add — with the collapsible search field beneath */}
+      {/* Header: title · search icon — with the collapsible search field beneath.
+          (Adding a file lives in the Create tab and the empty-state "Upload File" button.) */}
       <div>
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold text-primary">My Library</h1>
@@ -267,14 +273,6 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
             )}
           >
             <Search size={18} />
-          </button>
-          <button
-            type="button"
-            onClick={onCreateClick}
-            aria-label="Add file"
-            className="w-10 h-10 rounded-xl bg-brand flex items-center justify-center active:scale-95 transition-transform"
-          >
-            <Plus size={20} color="white" />
           </button>
         </div>
       </div>
@@ -326,14 +324,9 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         )
       ) : (
         <>
-          {/* Results header: back (for expanded Recently Added), label, List/Grid toggle */}
+          {/* Results header: label, List/Grid toggle (no in-page back: the native Back Button collapses "Recently Added") */}
           <div className="flex items-center justify-between gap-2 min-h-10">
             <div className="flex items-center gap-1 min-w-0">
-              {showAllRecent && !searching && (
-                <button type="button" onClick={() => setShowAllRecent(false)} aria-label="Back to Home" className="w-10 h-10 -ml-2 flex items-center justify-center text-primary">
-                  <ChevronLeft size={20} />
-                </button>
-              )}
               <p className="text-sm font-semibold text-primary truncate" data-testid="library-results-label">{headerLabel}</p>
               {!searching && flatCount > 0 && <span className="text-xs text-muted">{flatCount}</span>}
             </div>

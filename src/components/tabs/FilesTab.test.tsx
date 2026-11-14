@@ -3,6 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/Toast";
+import { installTelegramBackButton } from "@/test/telegramBackMock";
 
 const router = { push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn(), refresh: vi.fn(), forward: vi.fn() };
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
@@ -72,10 +73,14 @@ afterEach(async () => {
 });
 
 describe("My Library — header & categories", () => {
-  it("shows a search icon and the Add button, with no permanently visible search bar", async () => {
+  it("shows a search icon and NO Plus/Add icon in the header, with no permanently visible search bar", async () => {
     await mount();
     expect(byLabel("Search library")).not.toBeNull();
-    expect(byLabel("Add file")).not.toBeNull();
+    // Task 5: the header Plus icon (and its click action) is gone; nothing else in the header replaced it.
+    expect(byLabel("Add file")).toBeNull();
+    expect(container.querySelector("h1")!.parentElement!.querySelector("svg.lucide-plus")).toBeNull();
+    expect(container.querySelector("svg.lucide-plus")).toBeNull();
+    expect(container.querySelector("h1")!.parentElement!.querySelectorAll("button")).toHaveLength(1);
     expect(container.querySelector('[data-testid="library-search"]')?.getAttribute("data-open")).toBe("false");
     expect(container.querySelector('[data-testid="library-search"]')?.hasAttribute("inert")).toBe(true);
   });
@@ -113,15 +118,22 @@ describe("My Library — Home sections", () => {
     expect(container.querySelector('[data-testid="home-sections"]')).toBeNull();
   });
 
-  it("Recently Added → See all expands to every file, newest first, with a way back", async () => {
+  it("Recently Added → See all expands to every file, newest first, with the native Back Button as the way back", async () => {
+    const tg = installTelegramBackButton();
     await mount();
+    expect(tg.btn.isVisible).toBe(false); // Library root: native Back hidden
     await click(byLabel("See all Recently Added"));
     const cards = container.querySelectorAll('[data-testid="file-card"]');
     expect(cards).toHaveLength(FILES.length);
     expect(cards[0].textContent).toContain("Report.pdf");
     expect(container.querySelector('[data-testid="playlist-card"]')).toBeNull();
-    await click(byLabel("Back to Home"));
+    expect(byLabel("Back to Home")).toBeNull(); // no in-page arrow any more
+    expect(tg.btn.isVisible).toBe(true);
+    expect(tg.listeners.size).toBe(1);
+    await act(async () => tg.press());
     expect(container.querySelector('[data-testid="home-sections"]')).not.toBeNull();
+    expect(tg.btn.isVisible).toBe(false);
+    tg.uninstall();
   });
 
   it("shows a tailored empty state for an empty category and a first-run state for an empty library", async () => {

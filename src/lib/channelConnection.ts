@@ -5,6 +5,7 @@ import { and, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { createSession, getSessionUser } from "@/lib/auth";
 import { verifySetupToken, SETUP_COOKIE_NAME } from "@/lib/setupToken";
+import { notifyUser } from "@/lib/notifications";
 import type { ChannelVerificationResult } from "@/lib/telegramBot";
 
 /**
@@ -129,6 +130,23 @@ export interface FinalizeOptions {
 }
 
 /**
+ * Genuine backend event: a channel was verified AND persisted. Recorded for the
+ * owning account (also covers a brand-new account — its `users` row exists by
+ * now). Never throws (see notifyUser).
+ */
+async function notifyChannelConnected(userId: number, channel: typeof channels.$inferSelect): Promise<void> {
+  const name = channel.channelName?.trim() || "Your channel";
+  await notifyUser({
+    userId,
+    type: "channel_connected",
+    title: "Channel connected",
+    body: `${name} is connected and verified. You can now publish files from it.`,
+    destination: { type: "channels", ref: channel.id },
+    dedupeKey: `channel_connected:${channel.id}:${Math.floor((channel.verifiedAt ?? new Date()).getTime() / 1000)}`,
+  });
+}
+
+/**
  * Persists a Telegram-verified channel for the resolved identity. This is
  * the ONLY place a channel row (and, for brand-new creators, the permanent
  * `users` row) is written — called identically whether verification was
@@ -203,6 +221,7 @@ export async function finalizeVerifiedChannelConnection(
         .where(eq(channels.id, existingChannel.id))
         .returning();
 
+      await notifyChannelConnected(userId, updated);
       return { ok: true, result: { channel: updated, userId, isNewAccount, newSession: justCreatedSession } };
     }
 
@@ -221,6 +240,7 @@ export async function finalizeVerifiedChannelConnection(
       })
       .returning();
 
+    await notifyChannelConnected(userId, channel);
     return { ok: true, result: { channel, userId, isNewAccount, newSession: justCreatedSession } };
   } catch (err) {
     console.error("channel_connect_failed", err instanceof Error ? err.message : "unknown_error");

@@ -14,7 +14,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowRightLeft, Check, ChevronLeft, ChevronRight, CopyPlus, GripVertical, ListPlus, Loader2, Pencil, Search, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, ChevronRight, CopyPlus, GripVertical, ListPlus, Loader2, Pencil, Search, Trash2 } from "lucide-react";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import FileThumb from "@/components/ui/FileThumb";
 import PlaylistThumb from "@/components/ui/PlaylistThumb";
@@ -114,7 +114,8 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     else goToLibrary();
   }, [view.name, goToLibrary]);
 
-  // Telegram's native BackButton (and the Android back gesture inside the Mini App) follows the same rule.
+  // Telegram's native BackButton (and the Android back gesture inside the Mini App) is the ONLY back
+  // control on this page — there is no in-page arrow — and follows the same rule.
   useTelegramBackButton(handleBack);
 
   // Visitors / sessions without a verified creator account never see a dashboard page.
@@ -285,17 +286,9 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
   const shell = (children: React.ReactNode) => (
     <div className="min-h-screen bg-app" data-testid="playlist-page">
       <div className="max-w-2xl mx-auto w-full px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2.5rem)]">
-        <header className="flex items-center gap-1 mb-4 min-h-11">
-          <button
-            type="button"
-            onClick={handleBack}
-            aria-label={view.name === "list" ? "Back to My Library" : "Back to playlist"}
-            data-testid="playlist-back"
-            className="w-11 h-11 -ml-2.5 flex-shrink-0 rounded-full flex items-center justify-center text-primary active:bg-secondary transition-colors"
-          >
-            <ChevronLeft size={24} />
-          </button>
-          <p className="flex-1 min-w-0 text-center text-sm font-semibold text-secondary truncate pr-8" data-testid="playlist-header-title">{headerTitle}</p>
+        {/* No in-page back arrow: Telegram's native Back Button is the only back control. */}
+        <header className="flex items-center justify-center mb-4 min-h-11">
+          <p className="min-w-0 text-center text-sm font-semibold text-secondary truncate" data-testid="playlist-header-title">{headerTitle}</p>
         </header>
         {children}
       </div>

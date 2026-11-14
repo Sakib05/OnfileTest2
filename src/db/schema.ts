@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 export const transactionStatusEnum = pgEnum("transaction_status", [
@@ -606,3 +607,43 @@ export const botPrivateChats = pgTable(
   },
   (t) => [uniqueIndex("bot_private_chats_user_idx").on(t.telegramUserId)]
 );
+
+// ─── In-app notifications ───────────────────────────────────────────────────
+// ADDITIVE table (no change to any existing table). One row per genuine backend
+// event that concerns ONE user (channel connected / connection failed /
+// disconnected / bot lost admin access, file published, withdrawal requested).
+// Rows are only ever written by server code through src/lib/notifications.ts —
+// never from a request body — and every read/update is scoped to the session
+// user's `user_id`.
+//   publicId        — opaque id used by the API/browser (the serial `id` is never exposed).
+//   destinationType — where tapping the notification goes: "file" | "channels" | "wallet" | null.
+//   destinationRef  — optional id for the destination (e.g. the file id); re-validated on every read.
+//   dedupeKey       — optional idempotency key, unique per user (a redelivered event can't create twice).
+//   readAt          — NULL = unread.
+// See migrations/notifications/up.sql (idempotent SQL equivalent) and down.sql.
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: serial("id").primaryKey(),
+    publicId: varchar("public_id", { length: 24 }).notNull(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 48 }).notNull(),
+    title: varchar("title", { length: 160 }).notNull(),
+    body: varchar("body", { length: 400 }).notNull(),
+    destinationType: varchar("destination_type", { length: 24 }),
+    destinationRef: varchar("destination_ref", { length: 32 }),
+    dedupeKey: varchar("dedupe_key", { length: 96 }),
+    readAt: timestamp("read_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("notifications_public_id_idx").on(t.publicId),
+    index("notifications_user_created_idx").on(t.userId, t.createdAt),
+    index("notifications_user_unread_idx").on(t.userId).where(sql`${t.readAt} is null`),
+    uniqueIndex("notifications_user_dedupe_idx").on(t.userId, t.dedupeKey),
+  ]
+);
+
+export type NotificationRow = typeof notifications.$inferSelect;

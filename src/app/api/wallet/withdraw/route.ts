@@ -4,6 +4,7 @@ import { withdrawals, users, transactions } from "@/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
+import { notifyUser } from "@/lib/notifications";
 
 export async function POST(req: NextRequest) {
   if (!isSameOriginRequest(req)) {
@@ -69,6 +70,16 @@ export async function POST(req: NextRequest) {
       status: "pending",
       description: `Withdrawal request to ${String(walletAddress).slice(0, 8)}...`,
       referenceId: String(withdrawal.id),
+    });
+
+    // Genuine backend event: a withdrawal request was recorded for this account.
+    await notifyUser({
+      userId: uid,
+      type: "withdrawal_requested",
+      title: "Withdrawal requested",
+      body: `Your withdrawal request of ${amountNum.toFixed(2)} ${currency || "USDT"} was received and is pending review.`,
+      destination: { type: "wallet" },
+      dedupeKey: `withdrawal_requested:${withdrawal.id}`,
     });
 
     return NextResponse.json({ withdrawal }, { status: 201 });

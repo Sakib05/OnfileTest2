@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   User, Users, Download, DollarSign, ChevronRight, Moon, Sun, Globe, Megaphone,
   HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle, Settings,
-  Shield, ArrowLeft, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
+  Shield, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
 import { cn, formatNumber, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -35,11 +35,15 @@ interface ReferralData {
 
 export default function ProfileTab() {
   const { dark, toggle } = useTheme();
-  const { user, refreshUser, refreshChannels } = useApp();
+  const { user, refreshUser, refreshChannels, profileEntry, setProfileEntry } = useApp();
   const { toast } = useToast();
-  const [subPage, setSubPage] = useState<SubPage>(null);
-  // Telegram's native Back Button returns from any Profile sub-page (same as its in-page arrow);
-  // on the Profile root it stays hidden.
+  // A notification tap can ask the Profile tab to open directly on a sub-page.
+  const [subPage, setSubPage] = useState<SubPage>(() => profileEntry);
+  useEffect(() => {
+    if (profileEntry) setProfileEntry(null); // one-shot: consumed
+  }, [profileEntry, setProfileEntry]);
+  // Telegram's native Back Button is the ONLY back control: it returns from any Profile
+  // sub-page to the Profile root, and stays hidden on the Profile root itself.
   useTelegramBackButton(() => setSubPage(null), subPage !== null);
   const [referralData, setReferralData] = useState<ReferralData | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
@@ -174,9 +178,6 @@ export default function ProfileTab() {
     return (
       <div className="flex flex-col gap-5 animate-fade-in">
         <div className="flex items-center gap-3">
-          <button onClick={() => setSubPage(null)} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
-            <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-          </button>
           <h1 className="text-lg font-bold text-primary">Referral Program</h1>
         </div>
 
@@ -278,9 +279,6 @@ export default function ProfileTab() {
     return (
       <div className="flex flex-col gap-5 animate-fade-in">
         <div className="flex items-center gap-3">
-          <button onClick={() => setSubPage(null)} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
-            <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-          </button>
           <h1 className="text-lg font-bold text-primary">Advertise with Us</h1>
         </div>
 
@@ -395,9 +393,6 @@ export default function ProfileTab() {
     return (
       <div className="flex flex-col gap-5 animate-fade-in">
         <div className="flex items-center gap-3">
-          <button onClick={() => setSubPage(null)} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
-            <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-          </button>
           <h1 className="text-lg font-bold text-primary">Channel Management</h1>
         </div>
 
@@ -487,16 +482,13 @@ export default function ProfileTab() {
   }
 
   if (subPage === "faq") {
-    return <Faq onBack={() => setSubPage(null)} backLabel="Back to your profile" />;
+    return <Faq />;
   }
 
   if (subPage === "settings") {
     return (
       <div className="flex flex-col gap-5 animate-fade-in">
         <div className="flex items-center gap-3">
-          <button onClick={() => setSubPage(null)} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center">
-            <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-          </button>
           <h1 className="text-lg font-bold text-primary">Account Settings</h1>
         </div>
         <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">

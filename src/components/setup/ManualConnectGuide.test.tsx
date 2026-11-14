@@ -174,13 +174,16 @@ describe("Manual Connect guide — Telegram native Back Button exits the whole g
     expect(listeners.size).toBe(1);
   });
 
-  it("the in-page header arrow is the non-Telegram equivalent: it also exits the whole guide", async () => {
+  it("there is NO in-page header arrow: the native Back Button is the only exit, bottom Back/Next stay", async () => {
     const onBack = vi.fn();
     await render(<ManualConnectGuide onBack={onBack} onConnected={() => {}} />);
     await next();
-    await next();
-    await click(buttonByLabel("Exit guide"));
-    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(buttonByLabel("Exit guide")).toBeNull();
+    // The only visible "back"-like control is the guide's own bottom step control (text "Back").
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Back");
+    expect(container.querySelector("button svg.lucide-arrow-left")).toBeNull();
+    expect(onBack).not.toHaveBeenCalled();
   });
 
   it("unmounting the guide removes the native listener and hides the button (no leaked handlers)", async () => {

@@ -3,6 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/Toast";
+import { installTelegramBackButton } from "@/test/telegramBackMock";
 
 // Capture DndContext props so the drag-end handler (what a real drag triggers) can be invoked in jsdom,
 // which has no layout engine for dnd-kit's collision detection.
@@ -198,28 +199,40 @@ describe("Playlist page — layout (full page, not a popup)", () => {
 });
 
 describe("Playlist page — navigation", () => {
+  const pressNativeBack = async (tg: ReturnType<typeof installTelegramBackButton>) => act(async () => tg.press());
+
+  it("has NO in-page back arrow (Telegram's native Back Button is the only back control)", async () => {
+    await mount();
+    expect(document.querySelector('[data-testid="playlist-back"]')).toBeNull();
+    expect(document.querySelector("svg.lucide-chevron-left")).toBeNull();
+  });
+
   it("Back returns to the Library with real history when it came from the Library", async () => {
+    const tg = installTelegramBackButton();
     sessionStorage.setItem(FROM_LIBRARY_KEY, "1");
     await mount();
-    await act(async () => (document.querySelector('[data-testid="playlist-back"]') as HTMLButtonElement).click());
+    expect(tg.btn.isVisible).toBe(true);
+    await pressNativeBack(tg);
     expect(setActiveTab).toHaveBeenCalledWith("files");
     expect(router.back).toHaveBeenCalledTimes(1);
     expect(router.replace).not.toHaveBeenCalled();
   });
 
   it("Back from a deep link (no history from the Library) replaces the route with the Library", async () => {
+    const tg = installTelegramBackButton();
     await mount();
-    await act(async () => (document.querySelector('[data-testid="playlist-back"]') as HTMLButtonElement).click());
+    await pressNativeBack(tg);
     expect(router.replace).toHaveBeenCalledWith("/");
     expect(router.back).not.toHaveBeenCalled();
     expect(setActiveTab).toHaveBeenCalledWith("files");
   });
 
   it("Back inside a sub-screen (add files) returns to the playlist first, not the Library", async () => {
+    const tg = installTelegramBackButton();
     await mount();
     await act(async () => byText("Add files from Library")!.click());
     expect(document.querySelector('[data-testid="playlist-header-title"]')?.textContent).toBe("Add files");
-    await act(async () => (document.querySelector('[data-testid="playlist-back"]') as HTMLButtonElement).click());
+    await pressNativeBack(tg);
     expect(document.querySelector('[data-testid="playlist-title"]')).not.toBeNull();
     expect(router.back).not.toHaveBeenCalled();
     expect(router.replace).not.toHaveBeenCalled();

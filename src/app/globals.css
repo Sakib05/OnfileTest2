@@ -254,6 +254,27 @@
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
 
+/* Dashboard Performance chart: no focus ring / tap highlight after a click or tap.
+   Recharts' accessibility layer makes the <svg> focusable (tabindex=0); the ring it
+   paints on pointer focus is the unwanted "border". The wrapper (PerformanceChart)
+   sets data-input="pointer" on pointer interaction and "keyboard" on key presses, so
+   keyboard users keep the normal focus indicator. Tooltips/hover are unaffected. */
+.perf-chart,
+.perf-chart * {
+  -webkit-tap-highlight-color: transparent;
+}
+.perf-chart[data-input="pointer"] .recharts-wrapper,
+.perf-chart[data-input="pointer"] .recharts-surface,
+.perf-chart[data-input="pointer"] .recharts-wrapper:focus,
+.perf-chart[data-input="pointer"] .recharts-surface:focus,
+.perf-chart[data-input="pointer"] .recharts-wrapper:focus-visible,
+.perf-chart[data-input="pointer"] .recharts-surface:focus-visible,
+.perf-chart[data-input="pointer"] :focus,
+.perf-chart[data-input="pointer"] :focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 /* Recharts overrides */
 .recharts-tooltip-wrapper .recharts-default-tooltip {
   background: var(--color-bg-card) !important;

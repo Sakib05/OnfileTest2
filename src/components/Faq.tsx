@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronDown, HelpCircle } from "lucide-react";
+import { ChevronDown, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type FaqSection = "connect" | "general";
@@ -119,15 +119,11 @@ const SECTION_LABEL: Record<FaqSection, string> = {
   general: "General",
 };
 
-export default function Faq({
-  onBack,
-  highlightSection,
-  backLabel = "Back",
-}: {
-  onBack: () => void;
-  highlightSection?: FaqSection;
-  backLabel?: string;
-}) {
+/**
+ * FAQ & Help sub-page. It has no back control of its own: the host screen
+ * (ProfileTab) registers Telegram's native Back Button while it is open.
+ */
+export default function Faq({ highlightSection }: { highlightSection?: FaqSection }) {
   const [openIds, setOpenIds] = useState<Set<string>>(() => {
     const initial = new Set<string>();
     if (highlightSection) {
@@ -158,14 +154,8 @@ export default function Faq({
 
   return (
     <div className="flex flex-col gap-5 animate-fade-in">
-      <div className="flex items-center gap-3">
-        <button onClick={onBack} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
-          <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-        </button>
-        <div>
-          <h1 className="text-lg font-bold text-primary">FAQ &amp; Help</h1>
-          <p className="text-xs text-secondary">{backLabel}</p>
-        </div>
+      <div>
+        <h1 className="text-lg font-bold text-primary">FAQ &amp; Help</h1>
       </div>
 
       {sections.map((section) => (

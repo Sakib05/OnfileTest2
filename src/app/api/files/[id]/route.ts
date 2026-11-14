@@ -4,6 +4,7 @@ import { files } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
+import { notifyUser } from "@/lib/notifications";
 import { cleanupThumbnailObject, findThumbnailKeyForCleanup } from "@/lib/thumbnails/cleanup";
 
 /**
@@ -60,6 +61,17 @@ export async function PATCH(
     // verify ownership of the playlist(s) and the file. A stray `playlistId` is ignored.
     updates["updatedAt"] = new Date();
 
+    // Needed to announce a genuine draft → published transition (and nothing else).
+    let wasPublished: boolean | null = null;
+    if (updates.isPublished === true) {
+      const [previous] = await db
+        .select({ isPublished: files.isPublished })
+        .from(files)
+        .where(and(eq(files.id, parseInt(id)), eq(files.userId, user.id)))
+        .limit(1);
+      wasPublished = previous ? !!previous.isPublished : null;
+    }
+
     const [updated] = await db
       .update(files)
       .set(updates)
@@ -67,6 +79,16 @@ export async function PATCH(
       .returning();
 
     if (!updated) return NextResponse.json({ error: "Not found or unauthorized" }, { status: 404 });
+    if (wasPublished === false && updated.isPublished) {
+      await notifyUser({
+        userId: user.id,
+        type: "file_published",
+        title: "File published",
+        body: `“${updated.title}” is live and ready to share.`,
+        destination: { type: "file", ref: updated.id },
+        dedupeKey: `file_published:${updated.id}`,
+      });
+    }
     return NextResponse.json({ file: updated });
   } catch (err) {
     console.error(err);

@@ -1,7 +1,6 @@
 "use client";
 import React from "react";
 import {
-  ArrowLeft,
   Loader2,
   MousePointerClick,
   RefreshCw,
@@ -70,7 +69,7 @@ export default function BotConnectInstructions({
 }) {
   const { state, check, start, startViaBot, refresh, reset } = useChannelConnect(onSuccess);
 
-  // Telegram's native Back Button returns to the previous setup screen (same as the in-page arrow).
+  // Telegram's native Back Button is the only back control: it returns to the Channel Connect screen.
   useTelegramBackButton(onBack);
 
   const insideTelegram = isRunningInsideTelegram();
@@ -79,12 +78,7 @@ export default function BotConnectInstructions({
 
   return (
     <div className="flex flex-col gap-5 w-full max-w-sm">
-      <div className="flex items-center gap-3">
-        <button onClick={onBack} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
-          <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-        </button>
-        <h1 className="text-lg font-bold text-primary">Connect Your Telegram Channel</h1>
-      </div>
+      <h1 className="text-lg font-bold text-primary">Connect Your Telegram Channel</h1>
 
       <div className="bg-card rounded-2xl border border-app shadow-app-sm p-4 flex flex-col gap-4">
         {STEPS.map((step, idx) => (
@@ -143,9 +137,6 @@ export default function BotConnectInstructions({
             (botOnly ? (
               <div className="flex flex-col gap-3">
                 <BotConnectFailure message={state.message} onRetry={startViaBot} />
-                <button onClick={onBack} className="text-xs font-semibold text-secondary text-center">
-                  Back to Channel Connect
-                </button>
               </div>
             ) : (
               <div className="flex flex-col gap-3">
@@ -155,9 +146,6 @@ export default function BotConnectInstructions({
                 </div>
                 <button onClick={reset} className="btn-primary w-full py-3.5 text-sm font-semibold">
                   Try Again
-                </button>
-                <button onClick={onBack} className="text-xs font-semibold text-secondary text-center">
-                  Back to Channel Connect
                 </button>
               </div>
             ))}

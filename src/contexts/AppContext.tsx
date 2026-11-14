@@ -44,6 +44,13 @@ export type AuthStatus = "loading" | "guest" | "setup_required" | "authenticated
  */
 export type ChannelStatus = "unknown" | "has_channel" | "no_channel";
 
+/**
+ * A one-shot request for the Profile tab to open directly on a sub-page (used
+ * by notification taps, e.g. "Channel connected" → Channel Management). It is
+ * consumed (cleared) by ProfileTab as soon as it reads it.
+ */
+export type ProfileEntry = "channel" | null;
+
 interface AppContextValue {
   user: UserProfile | null;
   authStatus: AuthStatus;
@@ -51,6 +58,8 @@ interface AppContextValue {
   channelStatus: ChannelStatus;
   activeTab: string;
   setActiveTab: (t: string) => void;
+  profileEntry: ProfileEntry;
+  setProfileEntry: (e: ProfileEntry) => void;
   refreshUser: () => Promise<void>;
   refreshChannels: () => Promise<void>;
   startTelegramLogin: () => Promise<{ ok: boolean; error?: string }>;
@@ -64,6 +73,8 @@ const AppContext = createContext<AppContextValue>({
   channelStatus: "unknown",
   activeTab: "home",
   setActiveTab: () => {},
+  profileEntry: null,
+  setProfileEntry: () => {},
   refreshUser: async () => {},
   refreshChannels: async () => {},
   startTelegramLogin: async () => ({ ok: false }),
@@ -76,6 +87,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [setupProfile, setSetupProfile] = useState<SetupProfile | null>(null);
   const [channelStatus, setChannelStatus] = useState<ChannelStatus>("unknown");
   const [activeTab, setActiveTab] = useState("home");
+  const [profileEntry, setProfileEntry] = useState<ProfileEntry>(null);
 
   /**
    * Checks whether the authenticated creator has at least one verified
@@ -183,6 +195,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         channelStatus,
         activeTab,
         setActiveTab,
+        profileEntry,
+        setProfileEntry,
         refreshUser,
         refreshChannels,
         startTelegramLogin,

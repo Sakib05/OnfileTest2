@@ -23,7 +23,7 @@ export type ConnectStage = "awaiting_selection" | "verifying";
 /** How the bot chat was reached (see /api/channels/connect-bot-request). */
 export type BotConnectMode = "existing_chat" | "start_link";
 
-/** Result of the manual "check status" action, shown under the waiting screen. */
+/** Result of the manual "Check" action, shown under the waiting screen. */
 export interface StatusCheckState {
   loading: boolean;
   message: string | null;
@@ -505,7 +505,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
   }, [startPolling]);
 
   /**
-   * Manual "I've finished in the bot — check status". Shows loading at once,
+   * Manual "Check" button (Connect-via-bot waiting screen). Shows loading at once,
    * asks the server (which verifies the request belongs to this Telegram
    * user), and reports pending / expired / error explicitly. Shares the
    * in-flight request with the poll timer, so it can't create duplicates.

@@ -1,7 +1,9 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, AlertTriangle } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { AlertTriangle } from "lucide-react";
+import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { cn, formatBytes, timeAgo } from "@/lib/utils";
 
 type Level = "ok" | "warning" | "high" | "restricted" | "full";
@@ -44,6 +46,10 @@ const isBytes = (m: Metric["metric"]) => m !== "requests";
 const fmt = (m: Metric["metric"], v: number | null) => (v === null ? "—" : isBytes(m) ? formatBytes(v) : v.toLocaleString());
 
 export default function AdminStoragePage() {
+  const router = useRouter();
+  // No in-page back arrow: inside Telegram the native Back Button returns to the app;
+  // in a plain browser the browser's own back navigation applies.
+  useTelegramBackButton(() => router.push("/"));
   const [status, setStatus] = useState<Status | null>(null);
   const [denied, setDenied] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -108,10 +114,7 @@ export default function AdminStoragePage() {
   return (
     <div className="min-h-screen bg-app px-4 py-6 flex flex-col items-center">
       <div className="w-full max-w-md flex flex-col gap-4">
-        <div className="flex items-center gap-3">
-          <Link href="/" className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center"><ArrowLeft size={16} /></Link>
-          <h1 className="text-lg font-bold text-primary">Thumbnail Storage (DBByte)</h1>
-        </div>
+        <h1 className="text-lg font-bold text-primary">Thumbnail Storage (DBByte)</h1>
 
         {!status.configured && (
           <div className="rounded-2xl p-3 text-xs bg-yellow-50 text-yellow-800 flex gap-2"><AlertTriangle size={14} className="flex-shrink-0" />DBByte is not configured (DBBYTE_API_KEY / DBBYTE_BUCKET / DBBYTE_CDN_BASE_URL). Thumbnail uploads are disabled.</div>

@@ -1,7 +1,6 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  ArrowLeft,
   ArrowRight,
   Check,
   ClipboardPaste,
@@ -133,8 +132,8 @@ export default function ManualConnectGuide({
    * Three DIFFERENT navigation actions live on this screen — keep them separate:
    *   - bottom Back  → previous guide step (`goToPreviousStep`; never leaves the guide)
    *   - bottom Next  → next guide step (`goNext`; never leaves the guide)
-   *   - Telegram's native Back Button (and the in-page header arrow, its
-   *     non-Telegram equivalent) → leave the WHOLE guide and return to the
+   *   - Telegram's native Back Button (the ONLY application-level back control;
+   *     there is no in-page header arrow) → leave the WHOLE guide and return to the
    *     previous application page (`exitGuide`), regardless of the current step.
    */
   const goToPreviousStep = () => {
@@ -218,20 +217,11 @@ export default function ManualConnectGuide({
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-sm animate-fade-in">
-      <div className="flex items-center gap-3">
-        <button
-          onClick={exitGuide}
-          aria-label="Exit guide"
-          className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0"
-        >
-          <ArrowLeft size={16} style={{ color: "var(--color-text)" }} />
-        </button>
-        <div className="min-w-0">
-          <h1 className="text-lg font-bold text-primary">Manual Connect Guide</h1>
-          <p className="text-xs text-secondary">
-            Step {stepIndex + 1} of {totalSteps}
-          </p>
-        </div>
+      <div className="min-w-0">
+        <h1 className="text-lg font-bold text-primary">Manual Connect Guide</h1>
+        <p className="text-xs text-secondary">
+          Step {stepIndex + 1} of {totalSteps}
+        </p>
       </div>
 
       {/* Progress indicator */}

@@ -6,6 +6,7 @@ import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { publishPost } from "@/lib/publishing/publishPost";
 import { dbPublishDeps } from "@/lib/publishing/publishDeps";
 import { rateLimit } from "@/lib/rateLimit";
+import { notifyUser } from "@/lib/notifications";
 import { parsePositiveId } from "@/lib/playlists";
 import { userHasVerifiedChannel } from "@/lib/channelConnection";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
@@ -97,6 +98,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Too many attempts. Please wait a moment.", reason: "rate_limited" }, { status: 429 });
     }
     const outcome = await publishPost(dbPublishDeps, user.id, body);
+    if (outcome.status === 201 && outcome.body.published) {
+      // Genuine backend event: a file was created AND published (drafts are not announced).
+      const created = outcome.body.file as { id?: number; title?: string } | null;
+      if (created && typeof created.id === "number") {
+        await notifyUser({
+          userId: user.id,
+          type: "file_published",
+          title: "File published",
+          body: `${created.title ? `“${created.title}”` : "Your file"} is live and ready to share.`,
+          destination: { type: "file", ref: created.id },
+          dedupeKey: `file_published:${created.id}`,
+        });
+      }
+    }
     return NextResponse.json(outcome.body, { status: outcome.status });
   } catch (err) {
     console.error(err);

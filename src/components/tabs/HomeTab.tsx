@@ -1,19 +1,16 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
-} from "recharts";
 import { Bell, TrendingUp, Download, Eye, DollarSign, Users, ChevronRight, Sparkles, Files } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
+import PerformanceChart from "@/components/dashboard/PerformanceChart";
+import NotificationsScreen from "@/components/notifications/NotificationsScreen";
+import { useToast } from "@/components/ui/Toast";
+import { useNotifications, type NotificationItem } from "@/lib/useNotifications";
+import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { formatNumber, formatCurrency } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 
-interface ChartData {
-  label: string;
-  views: number;
-  downloads: number;
-  earnings: number;
-}
+import type { PerformancePoint as ChartData } from "@/components/dashboard/PerformanceChart";
 
 const PERIODS = [
   { label: "7 Days", value: 7 },
@@ -22,7 +19,13 @@ const PERIODS = [
 ];
 
 export default function HomeTab({ onTabChange }: { onTabChange?: (tab: string) => void }) {
-  const { user } = useApp();
+  const { user, setProfileEntry } = useApp();
+  const { toast } = useToast();
+  const [showNotifications, setShowNotifications] = useState(false);
+  const notifications = useNotifications();
+  // The notification screen is a nested page: Telegram's native Back Button is
+  // shown while it is open and closes it; on the Dashboard root it stays hidden.
+  useTelegramBackButton(() => setShowNotifications(false), showNotifications);
   const [period, setPeriod] = useState(7);
   const [chartData, setChartData] = useState<ChartData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,9 +51,45 @@ export default function HomeTab({ onTabChange }: { onTabChange?: (tab: string) =
     fetchAnalytics();
   }, [fetchAnalytics]);
 
+  const openNotification = useCallback(
+    (n: NotificationItem) => {
+      if (!n.read) void notifications.markRead(n.id);
+      const dest = n.destination;
+      if (!dest) return;
+      if (!dest.available) {
+        toast("That item is no longer available.", "info");
+        return;
+      }
+      setShowNotifications(false);
+      if (dest.type === "file") onTabChange?.("files");
+      else if (dest.type === "wallet") onTabChange?.("wallet");
+      else if (dest.type === "channels") {
+        setProfileEntry("channel");
+        onTabChange?.("profile");
+      }
+    },
+    [notifications, onTabChange, setProfileEntry, toast]
+  );
+
   const totalViews = chartData.reduce((a, b) => a + b.views, 0);
   const totalDownloads = chartData.reduce((a, b) => a + b.downloads, 0);
   const totalEarnings = chartData.reduce((a, b) => a + b.earnings, 0);
+
+  if (showNotifications) {
+    return (
+      <NotificationsScreen
+        items={notifications.items}
+        status={notifications.status}
+        unreadCount={notifications.unreadCount}
+        onLoad={() => void notifications.load()}
+        onOpen={openNotification}
+        onMarkRead={(id) => void notifications.markRead(id)}
+        onMarkAllRead={() => void notifications.markAllRead()}
+      />
+    );
+  }
+
+  const unread = notifications.unreadCount;
 
   return (
     <div className="flex flex-col gap-5 pb-2">
@@ -63,9 +102,22 @@ export default function HomeTab({ onTabChange }: { onTabChange?: (tab: string) =
           className="h-7 w-auto object-contain"
           draggable={false}
         />
-        <button className="relative w-10 h-10 rounded-full bg-secondary flex items-center justify-center border border-app">
+        <button
+          type="button"
+          onClick={() => setShowNotifications(true)}
+          aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
+          data-testid="notifications-bell"
+          className="relative w-10 h-10 rounded-full bg-secondary flex items-center justify-center border border-app active:scale-95 transition-transform"
+        >
           <Bell size={18} style={{ color: "var(--color-text-secondary)" }} />
-          <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-brand" />
+          {unread > 0 && (
+            <span
+              data-testid="notifications-badge"
+              className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-brand text-white text-[10px] font-bold leading-none flex items-center justify-center border-2 border-[var(--color-bg)]"
+            >
+              {unread > 9 ? "9+" : unread}
+            </span>
+          )}
         </button>
       </div>
 
@@ -151,39 +203,7 @@ export default function HomeTab({ onTabChange }: { onTabChange?: (tab: string) =
           </div>
         ) : (
           <>
-            <ResponsiveContainer width="100%" height={160}>
-              <AreaChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-                <defs>
-                  <linearGradient id="viewsGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#FF6115" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#FF6115" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="dlGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#22c55e" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 10, fill: "var(--color-text-muted)" }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis tick={{ fontSize: 10, fill: "var(--color-text-muted)" }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{
-                    background: "var(--color-bg-card)",
-                    border: "1px solid var(--color-border)",
-                    borderRadius: 12,
-                    fontSize: 12,
-                    color: "var(--color-text)",
-                  }}
-                />
-                <Area type="monotone" dataKey="views" name="Views" stroke="#FF6115" fill="url(#viewsGrad)" strokeWidth={2} dot={false} />
-                <Area type="monotone" dataKey="downloads" name="Downloads" stroke="#22c55e" fill="url(#dlGrad)" strokeWidth={2} dot={false} />
-              </AreaChart>
-            </ResponsiveContainer>
+            <PerformanceChart data={chartData} />
             <div className="flex gap-4 mt-3">
               <div className="flex items-center gap-1.5 text-xs text-secondary">
                 <span className="w-2.5 h-2.5 rounded-full bg-brand inline-block" />Views

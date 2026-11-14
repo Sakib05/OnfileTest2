@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { installTelegramBackButton } from "@/test/telegramBackMock";
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -193,7 +194,11 @@ describe("Old Telegram client — bot fallback (single primary action)", () => {
     expect(text()).not.toContain("Tap Start");
     expect(text()).not.toContain("Come back to Onfile");
     expect(container.querySelector("ol")).toBeNull();
-    expect(button("check status")).toBeTruthy();
+    expect(button("Check")).toBeTruthy();
+    // Task 2: the long label is gone — the button reads exactly "Check".
+    expect(button("Check")!.textContent).toBe("Check");
+    expect(text()).not.toContain("finished in the bot");
+    expect(text()).not.toContain("check status");
   });
 
   it("'Open bot chat again' does not exist in any bot-fallback state", async () => {
@@ -227,6 +232,50 @@ describe("Old Telegram client — bot fallback (single primary action)", () => {
     expect(open).not.toHaveBeenCalled();
     expect(button("Open bot chat again")).toBeUndefined();
     open.mockRestore();
+  });
+
+  it("hands off with openTelegramLink ONLY: never close(), a minimize() method, or window.open", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    installTelegram({ supported: false });
+    const wa = (window as unknown as { Telegram: { WebApp: Record<string, unknown> } }).Telegram.WebApp;
+    wa.close = vi.fn();
+    wa.minimize = vi.fn(); // does not exist in Telegram's API — must never be called even if present
+    mockFetch({ "/api/channels/connect-bot-request": json(returning) });
+    await render(<Instructions />);
+    await click("Connect channel via bot");
+    expect(openTelegramLink).toHaveBeenCalledWith(CHAT_URL);
+    expect(wa.close).not.toHaveBeenCalled();
+    expect(wa.minimize).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    // The Mini App stays alive and pending so the user can come back and tap Check.
+    expect(container.querySelector("[data-testid=bot-waiting]")).toBeTruthy();
+    expect(button("Check")).toBeTruthy();
+    open.mockRestore();
+  });
+
+  it("a transient Telegram API failure (502) shows a retryable error and does NOT open any chat / start link", async () => {
+    installTelegram({ supported: false });
+    mockFetch({
+      "/api/channels/connect-bot-request": json({ error: "We couldn't reach Telegram right now. Please try again shortly.", reason: "telegram_api_error" }, 502),
+    });
+    await render(<Instructions />);
+    await click("Connect channel via bot");
+    expect(openTelegramLink).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-testid=bot-failed]")?.textContent).toContain("couldn't reach Telegram");
+    expect(button("Connect channel via bot")).toBeTruthy(); // same primary action retries
+  });
+
+  it("has no in-page back arrow; Telegram's native Back Button returns to the previous setup screen", async () => {
+    const tg = installTelegramBackButton({ requestChat: vi.fn(), isVersionAtLeast: () => false, openTelegramLink: vi.fn() });
+    mockFetch({});
+    const onBack = vi.fn();
+    await render(<BotConnectInstructions onBack={onBack} onSuccess={() => {}} />);
+    expect(container.querySelector("svg.lucide-arrow-left")).toBeNull();
+    expect(text()).not.toContain("Back to Channel Connect");
+    expect(tg.btn.isVisible).toBe(true);
+    expect(tg.listeners.size).toBe(1);
+    tg.press();
+    expect(onBack).toHaveBeenCalledTimes(1);
   });
 
   it("double tap creates only ONE request and opens only ONE chat", async () => {
@@ -414,7 +463,7 @@ describe("Haptic feedback", () => {
   });
 });
 
-describe("“I've finished in the bot — check status”", () => {
+describe("“Check” button (waiting screen)", () => {
   const returning = { token: "bot-tok", mode: "existing_chat", botUrl: CHAT_URL, botUsername: "ConfiguredOnfileBot" };
   let statusImpl: Handler;
 
@@ -443,7 +492,7 @@ describe("“I've finished in the bot — check status”", () => {
     await openWaiting(onSuccess);
 
     const before = statusCalls();
-    await click("check status");
+    await click("Check");
     expect(statusCalls()).toBe(before + 1);
     expect(button("Checking...")?.disabled).toBe(true); // loading, immediately
     expect(onSuccess).not.toHaveBeenCalled(); // never success before server verification
@@ -461,17 +510,17 @@ describe("“I've finished in the bot — check status”", () => {
   it("still pending → a short pending message, no success, polling continues, can check again", async () => {
     statusImpl = json({ status: "pending", stage: "awaiting_selection" });
     await openWaiting();
-    await click("check status");
+    await click("Check");
     expect(container.querySelector("[data-testid=bot-check-message]")?.textContent).toContain("Not connected yet");
     expect(notificationOccurred).not.toHaveBeenCalledWith("success");
-    expect(button("check status")).toBeTruthy();
+    expect(button("Check")).toBeTruthy();
     expect(window.localStorage.getItem(STORAGE_KEY)).not.toBeNull();
   });
 
   it("expired → expired state and a fresh attempt via the primary button", async () => {
     statusImpl = json({ status: "expired" }, 404);
     await openWaiting();
-    await click("check status");
+    await click("Check");
     expect(text()).toContain("expired");
     expect(button("Connect channel via bot")).toBeTruthy();
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
@@ -480,10 +529,10 @@ describe("“I've finished in the bot — check status”", () => {
   it("server error (non-JSON 500) → useful error and retry stays available", async () => {
     statusImpl = () => new Response("<html>Internal Server Error</html>", { status: 500 });
     await openWaiting();
-    await click("check status");
+    await click("Check");
     const msg = container.querySelector("[data-testid=bot-check-message]")?.textContent ?? "";
     expect(msg).toContain("Couldn't check the status");
-    expect(button("check status")).toBeTruthy();
+    expect(button("Check")).toBeTruthy();
     expect(button("Checking...")).toBeUndefined();
     expect(notificationOccurred).not.toHaveBeenCalledWith("success");
   });
@@ -491,15 +540,15 @@ describe("“I've finished in the bot — check status”", () => {
   it("network error → useful error and retry stays available", async () => {
     statusImpl = () => Promise.reject(new Error("offline"));
     await openWaiting();
-    await click("check status");
+    await click("Check");
     expect(container.querySelector("[data-testid=bot-check-message]")?.textContent).toContain("Couldn't check the status");
-    expect(button("check status")).toBeTruthy();
+    expect(button("Check")).toBeTruthy();
   });
 
   it("a failed verification reported by the server is shown (not success)", async () => {
     statusImpl = json({ status: "failed", reason: "channel_is_public", error: "Only private channels can be connected." });
     await openWaiting();
-    await click("check status");
+    await click("Check");
     expect(text()).toContain("Only private channels can be connected.");
     expect(notificationOccurred).not.toHaveBeenCalledWith("success");
   });
@@ -507,7 +556,7 @@ describe("“I've finished in the bot — check status”", () => {
   it("unauthorized (request belongs to another Telegram user) is never shown as success", async () => {
     statusImpl = json({ status: "unauthorized", error: "Please sign in with Telegram again before connecting a channel." }, 401);
     await openWaiting();
-    await click("check status");
+    await click("Check");
     expect(text()).toContain("sign in with Telegram again");
     expect(notificationOccurred).not.toHaveBeenCalledWith("success");
   });
@@ -517,7 +566,7 @@ describe("“I've finished in the bot — check status”", () => {
     statusImpl = () => new Promise<Response>((resolve) => (release = resolve));
     await openWaiting();
     const before = statusCalls();
-    const b = button("check status")!;
+    const b = button("Check")!;
     await act(async () => {
       b.click();
       b.click();
@@ -534,7 +583,7 @@ describe("“I've finished in the bot — check status”", () => {
     let release!: (r: Response) => void;
     statusImpl = () => new Promise<Response>((resolve) => (release = resolve));
     await openWaiting(onSuccess);
-    await click("check status");
+    await click("Check");
     await click("Cancel"); // abandons the request while the check is in flight
     await act(async () => {
       release(new Response(JSON.stringify({ status: "verified", channel: { id: 9, status: "verified" } }), { status: 200 }));

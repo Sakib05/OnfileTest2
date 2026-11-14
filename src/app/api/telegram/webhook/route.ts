@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { telegramUpdateLog } from "@/db/schema";
+import { channels, telegramUpdateLog } from "@/db/schema";
+import { and, eq } from "drizzle-orm";
 import { getOwnBotId, verifyChannelOwnershipAndBotAccess } from "@/lib/telegramBot";
-import { finalizeVerifiedChannelConnection } from "@/lib/channelConnection";
+import { CHANNEL_FAILURE_MESSAGES, finalizeVerifiedChannelConnection } from "@/lib/channelConnection";
+import { notifyUser } from "@/lib/notifications";
 import {
   claimPendingRequestForProcessing,
   connectMethodForRequestId,
@@ -266,6 +268,11 @@ async function handleMyChatMember(update: TelegramChatMemberUpdated, req: NextRe
     }
   }
 
+  // The bot lost admin rights in a channel: tell the owner of an active connection.
+  if (isChannel && update.new_chat_member.status !== "administrator") {
+    await notifyBotLostAccess(String(update.chat.id), update.new_chat_member.status, update.chat.title);
+  }
+
   // Fallback completion path for "Connect Channel via Bot": only relevant
   // when the bot just became an administrator of a channel.
   if (!isChannel || update.new_chat_member.status !== "administrator") {
@@ -345,6 +352,7 @@ async function resolvePendingAgainstChat(
       failureReason: verification.reason,
     });
     await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, verification.reason, observedChatId));
+    await notifyConnectionFailed(pending, verification.reason);
     return;
   }
 
@@ -362,6 +370,7 @@ async function resolvePendingAgainstChat(
       failureReason: "telegram_api_error",
     });
     await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, "telegram_api_error", observedChatId));
+    await notifyConnectionFailed(pending, finalized.status === 409 ? "channel_already_connected" : "telegram_api_error");
     return;
   }
 
@@ -377,6 +386,53 @@ async function resolvePendingAgainstChat(
     isNewAccount: finalized.result.isNewAccount,
   });
   await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName, observedChatId));
+}
+
+/**
+ * Genuine backend event: a verification the user started failed. Only an
+ * EXISTING account (a session user) has somewhere to receive an in-app
+ * notification; a brand-new Telegram identity has no account yet and sees the
+ * failure through the polling screen instead. Never throws.
+ */
+async function notifyConnectionFailed(pending: PendingChannelRequestRecord, reason: string) {
+  const userId = pending.identity.sessionUserId;
+  if (!userId) return;
+  await notifyUser({
+    userId,
+    type: "channel_connection_failed",
+    title: "Channel connection needs attention",
+    body: CHANNEL_FAILURE_MESSAGES[reason] ?? "We couldn't verify the channel you selected. Please try again.",
+    destination: { type: "channels" },
+    dedupeKey: `channel_connect_failed:${pending.id}`,
+  });
+}
+
+/**
+ * Genuine backend event: Telegram reports that the Onfile bot is no longer an
+ * administrator of a channel that is currently connected to an account
+ * (removed, kicked, or demoted). The connection will not work until the
+ * creator re-adds the bot, so the owner is told. Never throws.
+ */
+async function notifyBotLostAccess(telegramChatId: string, botStatus: string, channelTitle: string | undefined) {
+  try {
+    const [channel] = await db
+      .select()
+      .from(channels)
+      .where(and(eq(channels.telegramChannelId, telegramChatId), eq(channels.status, "verified")))
+      .limit(1);
+    if (!channel) return;
+    const name = channel.channelName?.trim() || channelTitle?.trim() || "Your channel";
+    await notifyUser({
+      userId: channel.userId,
+      type: "channel_attention",
+      title: "Channel needs attention",
+      body: `The Onfile bot is no longer an administrator of ${name}. Add it back as an admin so publishing keeps working.`,
+      destination: { type: "channels", ref: channel.id },
+      dedupeKey: `channel_attention:${channel.id}:${botStatus}:${Math.floor(Date.now() / 60_000)}`,
+    });
+  } catch (err) {
+    console.error("telegram_webhook_bot_lost_access_notify_failed", err instanceof Error ? err.message : "unknown_error");
+  }
 }
 
 /** Notification failures (e.g. user blocked the bot) must never affect the verified outcome. */

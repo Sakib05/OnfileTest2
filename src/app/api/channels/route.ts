@@ -15,6 +15,7 @@ import {
   resolveConnectingIdentity,
 } from "@/lib/channelConnection";
 import { SETUP_COOKIE_NAME } from "@/lib/setupToken";
+import { notifyUser } from "@/lib/notifications";
 
 /** Returns the current creator's connected channel(s), scoped to their session. */
 export async function GET(req: NextRequest) {
@@ -120,16 +121,10 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  let botRemoved = false;
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (botToken && existing.telegramChannelId) {
-    try {
-      botRemoved = await leaveChannel(botToken, existing.telegramChannelId);
-    } catch {
-      botRemoved = false;
-    }
-  }
-
+  // Mark the connection as disconnected FIRST, then ask Telegram to remove the
+  // bot. Reversed order would let the resulting `my_chat_member` webhook (bot
+  // left) arrive while the channel still looks connected and be mistaken for
+  // "the bot lost access" by the notification logic.
   const [updated] = await db
     .update(channels)
     .set({
@@ -148,5 +143,30 @@ export async function DELETE(req: NextRequest) {
   if (!updated) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+
+  let botRemoved = false;
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (botToken && existing.telegramChannelId) {
+    try {
+      botRemoved = await leaveChannel(botToken, existing.telegramChannelId);
+    } catch {
+      botRemoved = false;
+    }
+  }
+
+  // Genuine backend event: the creator disconnected a channel. If Telegram
+  // would not let the bot leave, say so — that part needs manual attention.
+  const name = updated.channelName?.trim() || "Your channel";
+  await notifyUser({
+    userId: user.id,
+    type: "channel_disconnected",
+    title: "Channel disconnected",
+    body: botRemoved
+      ? `${name} was disconnected from Onfile and the Onfile bot left the channel.`
+      : `${name} was disconnected from Onfile. The bot could not leave automatically — remove it from the channel's administrators yourself.`,
+    destination: { type: "channels", ref: updated.id },
+    dedupeKey: `channel_disconnected:${updated.id}:${Math.floor((updated.disconnectedAt ?? new Date()).getTime() / 1000)}`,
+  });
+
   return NextResponse.json({ channel: updated, botRemoved });
 }

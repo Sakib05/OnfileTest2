@@ -84,12 +84,15 @@ export default function BotFallbackPanel({
         )}
 
         <button
+          type="button"
           onClick={onRefresh}
           disabled={check.loading}
-          className="text-xs font-semibold text-brand text-center flex items-center justify-center gap-1.5 disabled:opacity-60"
+          aria-label={check.loading ? "Checking connection status" : "Check connection status"}
+          data-testid="bot-check"
+          className="h-9 min-w-[7rem] px-6 rounded-full border border-brand text-brand text-sm font-semibold flex items-center justify-center gap-1.5 active:scale-95 transition disabled:opacity-60"
         >
-          {check.loading && <Loader2 size={12} className="animate-spin" />}
-          {check.loading ? "Checking..." : "I've finished in the bot — check status"}
+          {check.loading && <Loader2 size={14} className="animate-spin" />}
+          {check.loading ? "Checking..." : "Check"}
         </button>
 
         {check.message && !check.loading && (
