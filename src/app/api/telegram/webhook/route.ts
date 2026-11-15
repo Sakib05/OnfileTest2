@@ -16,7 +16,7 @@ import {
   type PendingChannelRequestRecord,
 } from "@/lib/pendingChannelRequests";
 import { recordBotChannelAdminEvent } from "@/lib/botChannelEvents";
-import { markPrivateChatBlocked, recordPrivateChat } from "@/lib/botPrivateChats";
+import { getPrivateChat, markPrivateChatBlocked, recordPrivateChat } from "@/lib/botPrivateChats";
 import {
   handleBotTextMessage,
   notifyBotConnectionFailure,
@@ -157,7 +157,9 @@ export async function POST(req: NextRequest) {
     // Remember the verified private chat (user id → chat id) so the backend can
     // later message the user in their EXISTING conversation without a "/start".
     // Only trusted, secret-authenticated webhook updates reach this point.
-    if (update.message) await recordPrivateChatFromMessage(update.message);
+    // Whether this is the user's first contact is read BEFORE recording, so /start can tell new users
+    // (creator welcome) from returning users (no repeated onboarding).
+    const isFirstContact = update.message ? await recordPrivateChatFromMessage(update.message) : undefined;
 
     if (update.my_chat_member) {
       await handleMyChatMember(update.my_chat_member, req);
@@ -178,6 +180,7 @@ export async function POST(req: NextRequest) {
         chatType: update.message.chat.type,
         fromId: update.message.from.id,
         text: update.message.text,
+        isFirstContact,
       });
       return NextResponse.json({ ok: true });
     }
@@ -303,15 +306,26 @@ async function handleMyChatMember(update: TelegramChatMemberUpdated, req: NextRe
   await resolvePendingAgainstChat(pending, String(update.chat.id), actingUserId, req, "my_chat_member");
 }
 
-/** Records (user → private chat) from any update of a human user's message in a private chat. */
-async function recordPrivateChatFromMessage(message: NonNullable<TelegramUpdate["message"]>) {
-  if (message.chat.type !== "private" || !message.from?.id || message.from.is_bot) return;
+/**
+ * Records (user → private chat) from any update of a human user's message in a private chat.
+ * Returns true when no private chat was on file for this user before this update (first contact),
+ * false when one was, and undefined when that can't be determined (non-private chat, lookup error).
+ */
+async function recordPrivateChatFromMessage(message: NonNullable<TelegramUpdate["message"]>): Promise<boolean | undefined> {
+  if (message.chat.type !== "private" || !message.from?.id || message.from.is_bot) return undefined;
+  let isFirstContact: boolean | undefined;
+  try {
+    isFirstContact = (await getPrivateChat(message.from.id)) === null;
+  } catch (err) {
+    console.error("telegram_webhook_first_contact_lookup_failed", err instanceof Error ? err.message : "unknown_error");
+  }
   try {
     await recordPrivateChat(message.from.id, message.chat.id, "webhook");
   } catch (err) {
     // Never block processing of the update itself (e.g. table not migrated yet).
     console.error("telegram_webhook_record_private_chat_failed", err instanceof Error ? err.message : "unknown_error");
   }
+  return isFirstContact;
 }
 
 /** `my_chat_member` in a private chat: "kicked" = user blocked the bot; "member" = (re)started / unblocked. */
@@ -415,7 +429,7 @@ async function resolvePendingAgainstChat(
     resolvedUserId: finalized.result.userId,
     isNewAccount: finalized.result.isNewAccount,
   });
-  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName ?? verification.chat.title, observedChatId, {
+  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, verification.chat.title ?? finalized.result.channel.channelName, observedChatId, {
       id: pending.id,
       telegramRequestId: pending.telegramRequestId,
     })

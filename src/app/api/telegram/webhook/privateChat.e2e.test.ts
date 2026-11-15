@@ -141,7 +141,11 @@ describe("first-time user: signed Start flow", () => {
         text: `/start ${createBotStartPayload(created.telegramRequestId, USER)}`,
       },
     });
-    const msg = sentMessages()[0];
+    // First contact: creator welcome first, then the (unchanged) native channel picker.
+    expect(sentMessages()).toHaveLength(2);
+    expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.welcome);
+    expect(sentMessages()[0].body.reply_markup).toBeUndefined();
+    const msg = sentMessages()[1];
     expect(String(msg.body.chat_id)).toBe(String(PRIVATE_CHAT));
     const markup = msg.body.reply_markup as { keyboard: { text: string; request_chat: { request_id: number } }[][] };
     expect(markup.keyboard[0][0].text).toBe("Select channel to connect");
@@ -159,8 +163,9 @@ describe("first-time user: signed Start flow", () => {
         text: `/start ${createBotStartPayload(created.telegramRequestId, USER)}`,
       },
     });
-    expect(String(sentMessages()[0].body.text)).toBe(BOT_MESSAGES.invalidLink);
-    expect(JSON.stringify(sentMessages()[0].body.reply_markup ?? {})).not.toContain("request_chat");
+    // Brand-new Telegram user: welcome, then the neutral invalid-link reply — never a picker.
+    expect(String(sentMessages().at(-1)!.body.text)).toBe(BOT_MESSAGES.invalidLink);
+    expect(JSON.stringify(sentMessages().map((m) => m.body.reply_markup ?? {}))).not.toContain("request_chat");
   });
 
   it("after that first Start the user is a RETURNING user: the next connect uses the existing chat, no start link", async () => {
@@ -203,13 +208,79 @@ describe("confirmations use the stored chat id", () => {
     });
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     const note = sentMessages().at(-1)!;
-    expect(String(note.body.text)).toContain("Your channel has been successfully connected to your Onfile account.");
+    expect(String(note.body.text)).toBe(
+      "✅ Priv Channel is now connected to your Onfile account.\n\nYour channel is ready!\n\n" +
+        "Return to Onfile to automatically refresh and view your connection status."
+    );
     expect(String(note.body.chat_id)).toBe(String(PRIVATE_CHAT));
     expect(String(note.body.chat_id)).not.toBe(String(USER));
   });
 
-  it("a plain /start (no payload) still gets the neutral welcome — pre-existing behaviour preserved", async () => {
+  it("a first plain /start gets the creator welcome; a later plain /start does not repeat the onboarding", async () => {
     await webhook({ message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: "/start" } });
+    expect(sentMessages()).toHaveLength(1);
     expect(String(sentMessages()[0].body.text)).toBe(BOT_MESSAGES.welcome);
+
+    await webhook({ message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: "/start" } });
+    expect(sentMessages()).toHaveLength(2);
+    expect(String(sentMessages()[1].body.text)).toBe(BOT_MESSAGES.welcomeBack);
+  });
+
+  it("a user already on file (returning) never gets the creator welcome before the signed-Start picker", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
+    await beginBotConnect((await getPendingByToken(created.correlationToken))!.id);
+    await webhook({
+      message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: `/start ${createBotStartPayload(created.telegramRequestId, USER)}` },
+    });
+    expect(sentMessages()).toHaveLength(1);
+    expect(JSON.stringify(sentMessages()[0].body.reply_markup)).toContain("request_chat");
+  });
+
+  it("the Return to Onfile web_app button is attached to the success message and no second pending request is created", async () => {
+    process.env.MINI_APP_URL = "https://onfile.example.test";
+    try {
+      await recordPrivateChat(USER, PRIVATE_CHAT);
+      const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
+      await beginBotConnect((await getPendingByToken(created.correlationToken))!.id);
+      const before = await db.select().from(pendingChannelRequests).where(eq(pendingChannelRequests.telegramUserId, String(USER)));
+      await webhook({
+        message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, chat_shared: { request_id: created.telegramRequestId, chat_id: CHANNEL } },
+      });
+      const note = sentMessages().at(-1)!;
+      expect(String(note.body.text)).toContain("✅ Priv Channel is now connected to your Onfile account.");
+      expect(note.body.reply_markup).toEqual({
+        inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: `https://onfile.example.test/?connect=${created.telegramRequestId}` } }]],
+      });
+      const after = await db.select().from(pendingChannelRequests).where(eq(pendingChannelRequests.telegramUserId, String(USER)));
+      expect(after).toHaveLength(before.length);
+    } finally {
+      delete process.env.MINI_APP_URL;
+    }
+  });
+
+  it("no success message is sent when verification fails (title is never trusted from the update)", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
+    await beginBotConnect((await getPendingByToken(created.correlationToken))!.id);
+    const base = global.fetch;
+    global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = String(url).split("/").pop() as string;
+      if (method === "getChatMember") {
+        calls.push({ method, body: init?.body ? JSON.parse(init.body as string) : {} });
+        return new Response(JSON.stringify({ ok: true, result: { status: "member" } }), { status: 200 });
+      }
+      return base(url, init);
+    }) as unknown as typeof fetch;
+    await webhook({
+      message: {
+        chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER },
+        chat_shared: { request_id: created.telegramRequestId, chat_id: CHANNEL, title: "Spoofed Title" },
+      },
+    });
+    const texts = sentMessages().map((m) => String(m.body.text));
+    expect(texts.some((t) => t.includes("is now connected"))).toBe(false);
+    expect(texts.some((t) => t.includes("Spoofed Title"))).toBe(false);
+    expect((await getPendingByToken(created.correlationToken))?.status).toBe("failed");
   });
 });

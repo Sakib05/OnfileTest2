@@ -162,8 +162,8 @@ describe("bot fallback — chat_shared verification", () => {
     expect(sent.filter((c) => c.method === "getChatMember").length).toBe(2);
 
     const note = userMessages().at(-1)!;
-    expect(String(note.body.text)).toContain("🎉 Congratulations!");
-    expect(String(note.body.text)).toContain("Channel: My Private Channel");
+    expect(String(note.body.text)).toContain("✅ My Private Channel is now connected to your Onfile account.");
+    expect(String(note.body.text)).toContain("Your channel is ready!");
     // "Return to Onfile" re-opens the Mini App via a web_app button; the URL carries only the public request ref.
     const { telegramRequestId: ref } = await getRequestRowByToken(correlationToken);
     expect(note.body.reply_markup).toEqual({
@@ -341,12 +341,12 @@ describe("bot-guided flow — lifecycle, messages and idempotency", () => {
     expect(JSON.stringify(userMessages()[0].body.reply_markup ?? {})).not.toContain("request_chat");
   });
 
-  it("the Congratulations message is sent exactly once even when Telegram redelivers the selection under a new update_id", async () => {
+  it("the success message is sent exactly once even when Telegram redelivers the selection under a new update_id", async () => {
     const { telegramRequestId } = await newBotRequest();
     await chatShared(USER_A, telegramRequestId);
     await chatShared(USER_A, telegramRequestId);
     await chatShared(USER_A, telegramRequestId);
-    expect(userMessages().filter((m) => String(m.body.text).includes("Congratulations"))).toHaveLength(1);
+    expect(userMessages().filter((m) => String(m.body.text).includes("is now connected to your Onfile account"))).toHaveLength(1);
   });
 
   it("the return button URL holds only the public ref — no token, secret, user id or channel id", async () => {
@@ -366,7 +366,7 @@ describe("bot-guided flow — lifecycle, messages and idempotency", () => {
     const { telegramRequestId } = await newBotRequest();
     await chatShared(USER_A, telegramRequestId);
     const note = userMessages().at(-1)!.body;
-    expect(String(note.text)).toContain("Congratulations");
+    expect(String(note.text)).toContain("is now connected to your Onfile account");
     expect(note.reply_markup).toEqual({ remove_keyboard: true });
   });
 

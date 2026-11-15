@@ -250,10 +250,45 @@ describe("handleBotTextMessage — /start", () => {
     expect(sentMessages()[0].body.reply_markup).toBeUndefined();
   });
 
-  it("never-started user / plain /start gets an explanation of how to connect", async () => {
+  it("never-started user / plain /start gets the creator-focused welcome (no keyboard)", async () => {
     await start(USER_A, "/start");
+    expect(sentMessages()).toHaveLength(1);
     expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.welcome);
     expect(sentMessages()[0].body.reply_markup).toBeUndefined();
+    expect(sentMessages()[0].body.parse_mode).toBeUndefined();
+  });
+
+  it("returning user (isFirstContact=false) sending a plain /start does NOT get the full onboarding again", async () => {
+    await handleBotTextMessage({ chatId: USER_A, chatType: "private", fromId: USER_A, text: "/start", isFirstContact: false });
+    expect(sentMessages()).toHaveLength(1);
+    expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.welcomeBack);
+    expect(sentMessages()[0].body.text).not.toBe(BOT_MESSAGES.welcome);
+  });
+
+  it("first-time signed /start: creator welcome first, then the unchanged picker keyboard", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    await handleBotTextMessage({
+      chatId: USER_A, chatType: "private", fromId: USER_A, isFirstContact: true,
+      text: `/start ${createBotStartPayload(p.telegramRequestId, USER_A)}`,
+    });
+    const msgs = sentMessages();
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0].body.text).toBe(BOT_MESSAGES.welcome);
+    expect(msgs[0].body.reply_markup).toBeUndefined();
+    expect(String(msgs[1].body.text)).toContain("Please select the private Telegram channel");
+    expect(msgs[1].body.reply_markup).toEqual(buildChannelPickerKeyboard(p.telegramRequestId));
+  });
+
+  it("returning signed /start: only the picker, no welcome", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    await handleBotTextMessage({
+      chatId: USER_A, chatType: "private", fromId: USER_A, isFirstContact: false,
+      text: `/start ${createBotStartPayload(p.telegramRequestId, USER_A)}`,
+    });
+    expect(sentMessages()).toHaveLength(1);
+    expect(sentMessages()[0].body.reply_markup).toEqual(buildChannelPickerKeyboard(p.telegramRequestId));
   });
 
   it("garbage payloads get the invalid-link message", async () => {
@@ -320,12 +355,19 @@ describe("bot-guided flow copy and return link", () => {
     expect(channelConnectionWelcomeMessage(new Date(now + 30_000), now)).toContain("expire in 1 minute.");
   });
 
-  it("success message contains the actual channel name", () => {
-    const text = connectionSuccessMessage("My Private Channel");
-    expect(text).toContain("🎉 Congratulations!");
-    expect(text).toContain("Your channel has been successfully connected to your Onfile account.");
-    expect(text).toContain("Channel: My Private Channel");
-    expect(text).toContain("You can now return to Onfile and continue.");
+  it("success message is the specified text with the actual verified channel name", () => {
+    expect(connectionSuccessMessage("My Private Channel")).toBe(
+      "✅ My Private Channel is now connected to your Onfile account.\n\n" +
+        "Your channel is ready!\n\n" +
+        "Return to Onfile to automatically refresh and view your connection status."
+    );
+  });
+
+  it("success message never contains the old wording and only falls back to a neutral name when no title is known", () => {
+    const text = connectionSuccessMessage(undefined);
+    expect(text.startsWith("✅ Your channel is now connected to your Onfile account.")).toBe(true);
+    expect(text).not.toContain("Congratulations");
+    expect(text).not.toContain("{");
   });
 
   it("getMiniAppBaseUrl accepts only https and honours the documented env precedence", () => {
@@ -349,5 +391,80 @@ describe("bot-guided flow copy and return link", () => {
     await start(USER_A, `/start ${createBotStartPayload(p.telegramRequestId, USER_A)}`);
     expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.notConnecting);
     expect(sentMessages()[0].body.reply_markup).toBeUndefined();
+  });
+});
+
+describe("creator welcome copy", () => {
+  const text = BOT_MESSAGES.welcome;
+
+  it("is exactly the approved creator-focused message", () => {
+    expect(text).toBe(
+      "👋 Welcome to Onfile!\n\n" +
+        "Your Content. Your Audience. Your Earnings.\n\n" +
+        "You already create and share valuable content with your audience. Why not earn from it too?\n\n" +
+        "Onfile helps Telegram channel owners turn their files into an earning opportunity.\n\n" +
+        "💰 Monetize Your Content — Earn revenue from your shared files through Onfile's monetization system.\n\n" +
+        "📂 Share Without Limits — Share files with your audience through a seamless file-sharing experience.\n\n" +
+        "📈 Grow Your Earnings — Turn your audience's interest in your content into potential income.\n\n" +
+        "🎯 Stay in Control — Your channel, your content, your audience. You remain the owner.\n\n" +
+        "Don't just share files. Make your content work for you.\n\n" +
+        "Welcome to Onfile — where content creates opportunities."
+    );
+  });
+
+  it("explains Onfile's purpose and the earning opportunity", () => {
+    expect(text).toContain("Telegram channel owners");
+    expect(text).toContain("earning opportunity");
+    expect(text).toContain("Monetize Your Content");
+  });
+
+  it("contains no setup / connection / permission / button instructions", () => {
+    for (const forbidden of [
+      /\bconnect/i, /\bstart\b/i, /select channel/i, /administrator/i, /\badmin\b/i, /permission/i,
+      /picker/i, /\btap\b/i, /\bpress\b/i, /\bclick\b/i, /private channel/i, /open onfile/i,
+    ]) {
+      expect(text).not.toMatch(forbidden);
+    }
+  });
+
+  it("promises no guaranteed or specific income", () => {
+    expect(text).not.toMatch(/guarantee/i);
+    expect(text).not.toMatch(/[$€£]\s?\d|\d+\s?(usd|dollars|%)/i);
+    expect(text).toContain("potential income");
+  });
+
+  it("is valid plain Telegram text: within the 4096 limit, no markup characters that would need parse_mode", () => {
+    expect(text.length).toBeGreaterThan(0);
+    expect(text.length).toBeLessThanOrEqual(4096);
+    expect(text).not.toMatch(/[<>*_`\[\]]/);
+  });
+
+  it("the returning-user reply is short and carries no setup instructions", () => {
+    expect(BOT_MESSAGES.welcomeBack.length).toBeLessThan(200);
+    expect(BOT_MESSAGES.welcomeBack).not.toMatch(/connect|start|select|administrator/i);
+  });
+});
+
+describe("channel picker placement (Telegram Bot API constraint)", () => {
+  it("is a native ReplyKeyboardMarkup request_chat button — NOT an inline keyboard", () => {
+    const kb = buildChannelPickerKeyboard(1_073_741_900) as unknown as Record<string, unknown>;
+    expect(kb.inline_keyboard).toBeUndefined();
+    expect(Array.isArray(kb.keyboard)).toBe(true);
+    const btn = (kb.keyboard as { text: string; request_chat: Record<string, unknown> }[][])[0][0];
+    expect(btn.text).toBe("Select channel to connect");
+    expect(btn.request_chat).toMatchObject({
+      request_id: 1_073_741_900, chat_is_channel: true, chat_has_username: false, request_title: true,
+    });
+    expect(btn).not.toHaveProperty("url");
+    expect(btn).not.toHaveProperty("callback_data");
+  });
+
+  it("the picker message is sent with the reply keyboard (never an inline_keyboard request_chat)", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    await start(USER_A, `/start ${createBotStartPayload(p.telegramRequestId, USER_A)}`);
+    const markup = JSON.stringify(sentMessages().at(-1)!.body.reply_markup);
+    expect(markup).toContain("request_chat");
+    expect(markup).not.toContain("inline_keyboard");
   });
 });

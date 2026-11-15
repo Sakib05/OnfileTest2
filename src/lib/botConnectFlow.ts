@@ -113,13 +113,31 @@ export function buildBotDeepLink(botUsername: string, payload: string): string {
 
 // ─── Bot chat copy ──────────────────────────────────────────────────────────
 
+const CREATOR_WELCOME_MESSAGE =
+  "👋 Welcome to Onfile!\n\n" +
+  "Your Content. Your Audience. Your Earnings.\n\n" +
+  "You already create and share valuable content with your audience. Why not earn from it too?\n\n" +
+  "Onfile helps Telegram channel owners turn their files into an earning opportunity.\n\n" +
+  "💰 Monetize Your Content — Earn revenue from your shared files through Onfile's monetization system.\n\n" +
+  "📂 Share Without Limits — Share files with your audience through a seamless file-sharing experience.\n\n" +
+  "📈 Grow Your Earnings — Turn your audience's interest in your content into potential income.\n\n" +
+  "🎯 Stay in Control — Your channel, your content, your audience. You remain the owner.\n\n" +
+  "Don't just share files. Make your content work for you.\n\n" +
+  "Welcome to Onfile — where content creates opportunities.";
+
 const RETRY_HINT = "Return to Onfile and tap “Start”, then “Connect” to try again.";
 
 export const BOT_MESSAGES = {
-  welcome:
-    "Welcome to Onfile Bot.\n\nTo connect your private Telegram channel:\n" +
-    "1. Open Onfile\n2. Open “Connect channel via bot” and tap “Start”, then “Connect”\n3. Come back here and tap “Select channel to connect”\n\n" +
-    "I’ll only ask for permission to post messages in your private channel.",
+  /**
+   * Creator-focused introduction shown to NEW users. Deliberately contains no setup / connection /
+   * permission instructions and no mention of any button. Plain text (sent without `parse_mode`),
+   * so there is no markup to get wrong and nothing user-controlled to escape.
+   * Copy is the exact text approved by the product owner — see docs/BOT_WELCOME_AND_CONFIRMATION.md
+   * for the product-claims audit of the benefits listed here.
+   */
+  welcome: CREATOR_WELCOME_MESSAGE,
+  /** Short reply for a RETURNING user who sends a plain /start — never the full onboarding again. */
+  welcomeBack: "👋 Welcome back to Onfile!\n\nOpen the Onfile app any time to pick up where you left off.",
   noActiveRequest:
     "I don’t have an active channel connection request for you. Open Onfile, open “Connect channel via bot” and tap “Start”, then “Connect”.",
   notConnecting:
@@ -278,6 +296,12 @@ export interface BotTextMessage {
   chatType: string;
   fromId: number;
   text: string;
+  /**
+   * Set by the webhook, BEFORE it records the private chat: true = Telegram user had no private chat
+   * with the bot on file (first contact), false = returning user, undefined = unknown (lookup failed
+   * or caller doesn't track it). Only ever derived server-side from the authenticated webhook.
+   */
+  isFirstContact?: boolean;
 }
 
 /** Parses "/cmd", "/cmd arg" and "/cmd@BotName arg". */
@@ -302,8 +326,16 @@ export async function handleBotTextMessage(msg: BotTextMessage): Promise<boolean
     // Only payloads of our own shape are ours; anything else (no payload, or
     // some other deep-link feature) gets the neutral welcome.
     if (!parsed.arg || !parsed.arg.startsWith("c1_")) {
-      await sendBotMessage(msg.chatId, BOT_MESSAGES.welcome);
+      // New (or unknown) users get the creator introduction; a returning user is not shown the
+      // full onboarding again.
+      await sendBotMessage(msg.chatId, msg.isFirstContact === false ? BOT_MESSAGES.welcomeBack : BOT_MESSAGES.welcome);
       return true;
+    }
+
+    // First-time activation through the signed Start link: introduce Onfile first, then continue
+    // with the unchanged connection flow below. A failed welcome never blocks the picker.
+    if (msg.isFirstContact === true) {
+      await sendBotMessage(msg.chatId, BOT_MESSAGES.welcome);
     }
 
     const verified = verifyBotStartPayload(parsed.arg, msg.fromId);
@@ -427,19 +459,19 @@ export function buildReturnToOnfileKeyboard(telegramRequestId: number, env: Node
 }
 
 export function connectionSuccessMessage(channelTitle?: string | null): string {
-  const name = channelTitle?.trim() || "your channel";
+  // `channelTitle` is the title Telegram returned during live verification (never client-supplied).
+  const name = channelTitle?.trim() || "Your channel";
   return (
-    "🎉 Congratulations!\n\n" +
-    "Your channel has been successfully connected to your Onfile account.\n\n" +
-    `Channel: ${name}\n\n` +
-    "You can now return to Onfile and continue."
+    `✅ ${name} is now connected to your Onfile account.\n\n` +
+    "Your channel is ready!\n\n" +
+    "Return to Onfile to automatically refresh and view your connection status."
   );
 }
 
 /**
  * Second bot message. Sent at most ONCE per request (atomic
  * `confirmation_sent_at` reservation), so a retried / duplicated webhook can
- * never produce a second "Congratulations". Plain text: the channel title is
+ * never produce a second confirmation. Plain text: the channel title is
  * user-controlled and must never be parsed as markup.
  */
 export async function notifyBotConnectionSuccess(

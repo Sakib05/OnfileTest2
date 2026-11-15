@@ -32,7 +32,7 @@ Mini App                                   Backend                              
                                              connecting ✔ · not expired ✔ · atomic claim ✔ · live getChat/getChatMember ✔
                                              private ✔ · user admin ✔ · bot admin + can_post_messages ✔ · not owned by another account ✔
                                              channels row written ONLY now; request → verified
-                                             sendMessage("🎉 Congratulations! … Channel: <name>",
+                                             sendMessage("✅ <verified channel title> is now connected …",
                                                          web_app button "Return to Onfile") ───────▶ confirmation (sent once)
 [Return to Onfile] ◀───────────────────── Mini App opens at  <MINI_APP_URL>/?connect=<public ref>
    resumes automatically ───────────────▶ GET /api/channels/connect-status?token=… | ?ref=…
