@@ -1,3 +1,7 @@
+> **Superseded in part:** the "Connect channel via bot" flow described below was replaced by the bot-guided
+> Start → Connect → bot chat → Return to Onfile flow — see `docs/BOT_GUIDED_CONNECT.md`. The pending-request, webhook,
+> signed-start-payload and `bot_private_chats` mechanics below are still accurate and reused.
+
 # Channel connection — Direct Picker + "Connect channel via bot" fallback
 
 Onfile connects a creator's **private** Telegram channel in one of two ways. The

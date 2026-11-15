@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { channels, telegramUpdateLog } from "@/db/schema";
@@ -22,6 +23,13 @@ import {
   notifyBotConnectionSuccess,
   notifyBotRequestExpired,
 } from "@/lib/botConnectFlow";
+
+/** Constant-time comparison of the webhook secret header. */
+function secretsMatch(provided: string, expected: string): boolean {
+  const a = crypto.createHash("sha256").update(provided).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
 
 interface TelegramChatShared {
   request_id: number;
@@ -104,11 +112,16 @@ interface TelegramUpdate {
 export async function POST(req: NextRequest) {
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (expectedSecret) {
-    const providedSecret = req.headers.get("x-telegram-bot-api-secret-token");
-    if (providedSecret !== expectedSecret) {
+    const providedSecret = req.headers.get("x-telegram-bot-api-secret-token") ?? "";
+    if (!secretsMatch(providedSecret, expectedSecret)) {
       console.error("telegram_webhook_rejected", { reason: "bad_secret_token" });
       return NextResponse.json({ ok: false }, { status: 401 });
     }
+  } else if (process.env.NODE_ENV === "production") {
+    // Behaviour is unchanged (so a live bot keeps working), but this is the ONE thing that
+    // proves an update really comes from Telegram: set TELEGRAM_WEBHOOK_SECRET and re-run
+    // scripts/configure-telegram-webhook.mjs.
+    console.error("telegram_webhook_unauthenticated", { reason: "TELEGRAM_WEBHOOK_SECRET_not_configured" });
   }
 
   let update: TelegramUpdate;
@@ -337,6 +350,21 @@ async function resolvePendingAgainstChat(
     return;
   }
 
+  // Bot-guided requests are only valid between "Connect" (which starts the 10-minute
+  // window) and expiry. A request that was merely prepared ("Start") must never be
+  // completed — and the expiry is re-checked here against the server clock.
+  if (connectMethodForRequestId(pending.telegramRequestId) === "bot") {
+    if (!pending.connectStartedAt) {
+      console.log("telegram_webhook_bot_request_not_connecting", { pendingId: pending.id, source });
+      return;
+    }
+    if (pending.expiresAt.getTime() <= Date.now()) {
+      console.log("telegram_webhook_bot_request_expired", { pendingId: pending.id, source });
+      await notifyIfBotMethod(pending, () => notifyBotRequestExpired(telegramUserId, observedChatId));
+      return;
+    }
+  }
+
   const claimed = await claimPendingRequestForProcessing(pending.id);
   if (!claimed) {
     console.log("telegram_webhook_pending_claim_lost", { pendingId: pending.id, source });
@@ -365,12 +393,14 @@ async function resolvePendingAgainstChat(
   });
   if (!finalized.ok) {
     console.error("telegram_webhook_finalize_failed", { pendingId: pending.id, error: finalized.error, source });
+    // 409 = this channel is already connected to an Onfile account: say so (not "couldn't reach Telegram").
+    const reason = finalized.status === 409 ? "channel_already_connected" : "telegram_api_error";
     await updatePendingChannelRequestById(pending.id, {
       status: "failed",
-      failureReason: "telegram_api_error",
+      failureReason: reason,
     });
-    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, "telegram_api_error", observedChatId));
-    await notifyConnectionFailed(pending, finalized.status === 409 ? "channel_already_connected" : "telegram_api_error");
+    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, reason, observedChatId));
+    await notifyConnectionFailed(pending, reason);
     return;
   }
 
@@ -385,7 +415,11 @@ async function resolvePendingAgainstChat(
     resolvedUserId: finalized.result.userId,
     isNewAccount: finalized.result.isNewAccount,
   });
-  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName, observedChatId));
+  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, finalized.result.channel.channelName ?? verification.chat.title, observedChatId, {
+      id: pending.id,
+      telegramRequestId: pending.telegramRequestId,
+    })
+  );
 }
 
 /**

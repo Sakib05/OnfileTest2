@@ -6,7 +6,7 @@ import { channels, pendingChannelRequests, telegramUpdateLog, users } from "@/db
 import { POST } from "./route";
 import { createBotStartPayload } from "@/lib/botConnectFlow";
 import { CHANNEL_FAILURE_MESSAGES } from "@/lib/channelConnection";
-import { createPendingChannelRequest, getPendingByToken } from "@/lib/pendingChannelRequests";
+import { beginBotConnect, createPendingChannelRequest, getPendingByToken } from "@/lib/pendingChannelRequests";
 
 /**
  * End-to-end tests of the "Connect channel via bot" fallback through the real
@@ -69,15 +69,25 @@ const chatShared = (fromId: number, requestId: number, chatId = CHAT_ID) =>
     message: { chat: { id: fromId, type: "private" }, from: { id: fromId }, chat_shared: { request_id: requestId, chat_id: chatId } },
   });
 
+async function getRequestRowByToken(token: string) {
+  const pending = (await getPendingByToken(token))!;
+  return { telegramRequestId: pending.telegramRequestId };
+}
+
 const userMessages = () => sent.filter((c) => c.method === "sendMessage");
 const connectedRows = () => db.select().from(channels).where(eq(channels.telegramChannelId, String(CHAT_ID)));
 
-async function newBotRequest(method: "bot" | "direct" = "bot") {
+/** A request that is already "connecting" (Start + Connect done) — the state in which the bot may act. */
+async function newBotRequest(method: "bot" | "direct" = "bot", opts: { connect?: boolean } = {}) {
   const created = await createPendingChannelRequest(
     { telegramUserId: USER_A, sessionUserId: accountA, telegramProfile: null },
     { method }
   );
-  const pending = (await getPendingByToken(created.correlationToken))!;
+  let pending = (await getPendingByToken(created.correlationToken))!;
+  if (method === "bot" && opts.connect !== false) {
+    await beginBotConnect(pending.id);
+    pending = (await getPendingByToken(created.correlationToken))!;
+  }
   return { ...created, pending };
 }
 
@@ -90,6 +100,7 @@ async function cleanup() {
 
 beforeEach(async () => {
   process.env.TELEGRAM_BOT_TOKEN = "test-token-bot-fallback-e2e";
+  process.env.MINI_APP_URL = "https://onfile.example.test";
   delete process.env.TELEGRAM_WEBHOOK_SECRET;
   scenario = privateChannel();
   installTelegramMock();
@@ -151,8 +162,13 @@ describe("bot fallback — chat_shared verification", () => {
     expect(sent.filter((c) => c.method === "getChatMember").length).toBe(2);
 
     const note = userMessages().at(-1)!;
-    expect(String(note.body.text)).toContain("is now connected");
-    expect(note.body.reply_markup).toEqual({ remove_keyboard: true });
+    expect(String(note.body.text)).toContain("🎉 Congratulations!");
+    expect(String(note.body.text)).toContain("Channel: My Private Channel");
+    // "Return to Onfile" re-opens the Mini App via a web_app button; the URL carries only the public request ref.
+    const { telegramRequestId: ref } = await getRequestRowByToken(correlationToken);
+    expect(note.body.reply_markup).toEqual({
+      inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: `https://onfile.example.test/?connect=${ref}` } }]],
+    });
     // Confirmation goes to the verified private chat id (stored as a string), not a user-id assumption.
     expect(String(note.body.chat_id)).toBe(String(USER_A));
   });
@@ -280,5 +296,99 @@ describe("regression — Direct Picker requests are unaffected by the bot fallba
     await chatShared(USER_A, telegramRequestId);
     expect((await getPendingByToken(correlationToken))?.failureReason).toBe("channel_is_public");
     expect(userMessages()).toHaveLength(0);
+  });
+});
+
+describe("bot-guided flow — lifecycle, messages and idempotency", () => {
+  const start = (requestId: number, fromId = USER_A) =>
+    webhook({
+      message: { chat: { id: fromId, type: "private" }, from: { id: fromId }, text: `/start ${createBotStartPayload(requestId, fromId)}` },
+    });
+
+  it("first-time activation: /start <signed payload> sends the welcome text + native picker bound to THIS request, once Connect was tapped", async () => {
+    const { telegramRequestId, correlationToken } = await newBotRequest();
+    await start(telegramRequestId);
+    const msg = userMessages()[0].body;
+    expect(String(msg.text)).toContain("Welcome to Onfile Channel Connection!");
+    expect(String(msg.text)).toContain("Make sure the Onfile bot has the required administrator permissions in your channel.");
+    expect(String(msg.text)).toContain("expire in 10 minutes");
+    const markup = msg.reply_markup as { keyboard: { text: string; request_chat: { request_id: number } }[][] };
+    expect(markup.keyboard[0][0].request_chat.request_id).toBe(telegramRequestId);
+    expect((await getPendingByToken(correlationToken))?.lifecycle).toBe("awaiting_channel_selection");
+  });
+
+  it("a request that was only prepared (Start, no Connect) gets NO picker from /start — the user is told to tap Connect", async () => {
+    const { telegramRequestId } = await newBotRequest("bot", { connect: false });
+    await start(telegramRequestId);
+    expect(userMessages()).toHaveLength(1);
+    expect(String(userMessages()[0].body.text)).toContain("tap “Connect”");
+    expect(JSON.stringify(userMessages()[0].body.reply_markup ?? {})).not.toContain("request_chat");
+  });
+
+  it("a chat_shared for a merely-prepared request is ignored (nothing connected, nothing sent)", async () => {
+    const { telegramRequestId, correlationToken } = await newBotRequest("bot", { connect: false });
+    await chatShared(USER_A, telegramRequestId);
+    expect(await connectedRows()).toHaveLength(0);
+    expect((await getPendingByToken(correlationToken))?.status).toBe("pending");
+    expect(userMessages()).toHaveLength(0);
+  });
+
+  it("an expired request is refused at /start too", async () => {
+    const { telegramRequestId, pending } = await newBotRequest();
+    await db.update(pendingChannelRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(pendingChannelRequests.id, pending.id));
+    await start(telegramRequestId);
+    expect(String(userMessages()[0].body.text)).toContain("expired");
+    expect(JSON.stringify(userMessages()[0].body.reply_markup ?? {})).not.toContain("request_chat");
+  });
+
+  it("the Congratulations message is sent exactly once even when Telegram redelivers the selection under a new update_id", async () => {
+    const { telegramRequestId } = await newBotRequest();
+    await chatShared(USER_A, telegramRequestId);
+    await chatShared(USER_A, telegramRequestId);
+    await chatShared(USER_A, telegramRequestId);
+    expect(userMessages().filter((m) => String(m.body.text).includes("Congratulations"))).toHaveLength(1);
+  });
+
+  it("the return button URL holds only the public ref — no token, secret, user id or channel id", async () => {
+    const { telegramRequestId, correlationToken } = await newBotRequest();
+    await chatShared(USER_A, telegramRequestId);
+    const markup = JSON.stringify(userMessages().at(-1)!.body.reply_markup);
+    expect(markup).toContain(`?connect=${telegramRequestId}`);
+    expect(markup).not.toContain(correlationToken);
+    expect(markup).not.toContain(String(USER_A));
+    expect(markup).not.toContain(String(CHAT_ID));
+    expect(markup).not.toContain("test-token-bot-fallback-e2e");
+  });
+
+  it("without an https Mini App URL the confirmation is still sent (no broken button)", async () => {
+    delete process.env.MINI_APP_URL;
+    for (const k of ["NEXT_PUBLIC_APP_URL", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"]) delete process.env[k];
+    const { telegramRequestId } = await newBotRequest();
+    await chatShared(USER_A, telegramRequestId);
+    const note = userMessages().at(-1)!.body;
+    expect(String(note.text)).toContain("Congratulations");
+    expect(note.reply_markup).toEqual({ remove_keyboard: true });
+  });
+
+  it("a channel already connected to another account is refused with the right explanation", async () => {
+    const [other] = await db.insert(users).values({ telegramId: String(USER_B), referralCode: "E2EBOT02" }).onConflictDoUpdate({ target: users.telegramId, set: { updatedAt: new Date() } }).returning();
+    await db.insert(channels).values({ userId: other.id, telegramChannelId: String(CHAT_ID), channelName: "Taken", status: "verified", isVerified: true, botIsAdmin: true });
+    const { telegramRequestId, correlationToken } = await newBotRequest();
+    await chatShared(USER_A, telegramRequestId);
+    const after = await getPendingByToken(correlationToken);
+    expect(after?.status).toBe("failed");
+    expect(after?.failureReason).toBe("channel_already_connected");
+    expect(String(userMessages().at(-1)!.body.text)).toContain(CHANNEL_FAILURE_MESSAGES.channel_already_connected);
+    expect((await connectedRows()).every((r) => r.userId === other.id)).toBe(true);
+    await db.delete(channels).where(eq(channels.telegramChannelId, String(CHAT_ID)));
+    await db.delete(users).where(eq(users.id, other.id));
+  });
+
+  it("an unsupported selection (user picks a group) is refused and explained; nothing is connected", async () => {
+    scenario.chat = { id: CHAT_ID, type: "group", title: "A group" };
+    const { telegramRequestId } = await newBotRequest();
+    await chatShared(USER_A, telegramRequestId);
+    expect(await connectedRows()).toHaveLength(0);
+    expect(String(userMessages().at(-1)!.body.text)).toContain(CHANNEL_FAILURE_MESSAGES.not_a_channel);
   });
 });

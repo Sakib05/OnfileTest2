@@ -39,6 +39,7 @@ export const CHANNEL_FAILURE_MESSAGES: Record<string, string> = {
   telegram_api_error: "We couldn't reach Telegram right now. Please try again shortly.",
   channel_already_connected: "This channel is already connected to another Onfile account.",
   cancelled: "Channel selection was cancelled. Please try again.",
+  verification_mismatch: "We couldn't confirm that the channel is connected to your account. Please start again.",
 };
 
 /** Human-facing title shown alongside `CHANNEL_FAILURE_MESSAGES.channel_is_public`. */

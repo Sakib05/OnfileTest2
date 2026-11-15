@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import {
+  claimConfirmationDelivery,
   getLatestPendingBotRequestForUser,
   lookupPendingForBotStart,
+  markPickerSent,
   type PendingChannelRequestRecord,
 } from "@/lib/pendingChannelRequests";
 import { buildChannelPickerKeyboard, probePrivateChat, sendBotMessage, type SendBotMessageResult } from "@/lib/telegramBot";
@@ -111,15 +113,17 @@ export function buildBotDeepLink(botUsername: string, payload: string): string {
 
 // ─── Bot chat copy ──────────────────────────────────────────────────────────
 
-const RETRY_HINT = "Return to Onfile and tap “Connect channel via bot” to try again.";
+const RETRY_HINT = "Return to Onfile and tap “Start”, then “Connect” to try again.";
 
 export const BOT_MESSAGES = {
   welcome:
     "Welcome to Onfile Bot.\n\nTo connect your private Telegram channel:\n" +
-    "1. Open Onfile\n2. Tap “Connect channel via bot”\n3. Come back here and tap “Select channel to connect”\n\n" +
+    "1. Open Onfile\n2. Open “Connect channel via bot” and tap “Start”, then “Connect”\n3. Come back here and tap “Select channel to connect”\n\n" +
     "I’ll only ask for permission to post messages in your private channel.",
   noActiveRequest:
-    "I don’t have an active channel connection request for you. Open Onfile and tap “Connect channel via bot” to start one.",
+    "I don’t have an active channel connection request for you. Open Onfile, open “Connect channel via bot” and tap “Start”, then “Connect”.",
+  notConnecting:
+    "Almost there! Return to Onfile and tap “Connect” first — then this chat will show the channel selection button.",
   invalidLink: "This connection link isn’t valid for your account. " + RETRY_HINT,
   expired: "This connection request has expired. " + RETRY_HINT,
   alreadyUsed: "This connection request was already used. If you still need to connect a channel, open Onfile and start again.",
@@ -127,18 +131,31 @@ export const BOT_MESSAGES = {
     "That channel selection arrived after the request expired, so nothing was connected. " + RETRY_HINT,
 } as const;
 
-function readyMessage(pending: PendingChannelRequestRecord): string {
-  const minutes = Math.max(1, Math.round((pending.expiresAt.getTime() - Date.now()) / 60_000));
+/** Minutes left in the server-side window, as shown in the bot message (never below 1). */
+export function minutesLeft(expiresAt: Date, now: number = Date.now()): number {
+  return Math.max(1, Math.round((expiresAt.getTime() - now) / 60_000));
+}
+
+/** First bot message of the guided flow: instructions + (attached separately) the native channel picker. */
+export function channelConnectionWelcomeMessage(expiresAt: Date, now: number = Date.now()): string {
+  const minutes = minutesLeft(expiresAt, now);
   return (
-    "Ready to connect your channel.\n\n" +
-    "Tap “Select channel to connect” below and choose your private channel. " +
-    "Telegram may ask you to add Onfile Bot as an administrator with permission to post messages — that’s the only permission needed.\n\n" +
-    `This request expires in about ${minutes} min.`
+    "Welcome to Onfile Channel Connection!\n\n" +
+    "Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
+    "Make sure the Onfile bot has the required administrator permissions in your channel.\n\n" +
+    `Your connection request will expire in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`
   );
 }
 
 async function sendPickerKeyboard(chatId: number | string, pending: PendingChannelRequestRecord) {
-  const res = await sendBotMessage(chatId, readyMessage(pending), buildChannelPickerKeyboard(pending.telegramRequestId));
+  // Native picker: a ReplyKeyboardMarkup `request_chat` button whose request_id is THIS request's
+  // Telegram request id — Telegram echoes it back in `chat_shared`, which the webhook matches on
+  // (authenticated Telegram user id, request id).
+  const res = await sendBotMessage(
+    chatId,
+    channelConnectionWelcomeMessage(pending.expiresAt),
+    buildChannelPickerKeyboard(pending.telegramRequestId)
+  );
   if (!res.ok) {
     console.error("bot_connect_send_keyboard_failed", { description: res.description, errorCode: res.errorCode });
   }
@@ -298,8 +315,13 @@ export async function handleBotTextMessage(msg: BotTextMessage): Promise<boolean
 
     const lookup = await lookupPendingForBotStart(msg.fromId, verified.requestId);
     switch (lookup.kind) {
-      case "ok":
-        await sendPickerKeyboard(msg.chatId, lookup.pending);
+      case "ok": {
+        const sent = await sendPickerKeyboard(msg.chatId, lookup.pending);
+        if (sent.ok) await markPickerSent(lookup.pending.id);
+        break;
+      }
+      case "not_connecting":
+        await sendBotMessage(msg.chatId, BOT_MESSAGES.notConnecting);
         break;
       case "expired":
         await sendBotMessage(msg.chatId, BOT_MESSAGES.expired);
@@ -359,17 +381,88 @@ async function notify(telegramUserId: number, observedChatId: number | string | 
   }
 }
 
+// ─── "Return to Onfile" (second bot message) ─────────────────────────────────
+
+/**
+ * Public https base URL of the Mini App, used ONLY to build the `web_app`
+ * button. Read from server env (first match wins): MINI_APP_URL,
+ * NEXT_PUBLIC_APP_URL, VERCEL_PROJECT_PRODUCTION_URL, VERCEL_URL. Telegram
+ * only accepts https URLs for `web_app` buttons; anything else yields null
+ * and the message is sent without the button (the user can still open Onfile
+ * from the bot's menu / chat list).
+ */
+export function getMiniAppBaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const candidates = [env.MINI_APP_URL, env.NEXT_PUBLIC_APP_URL, env.VERCEL_PROJECT_PRODUCTION_URL, env.VERCEL_URL];
+  for (const raw of candidates) {
+    const value = raw?.trim();
+    if (!value) continue;
+    const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+    try {
+      const url = new URL(withScheme);
+      if (url.protocol !== "https:") continue;
+      return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * The URL behind "Return to Onfile". It carries ONLY the public request
+ * reference (`connect=<Telegram request id>`): no token, no secret, no
+ * Telegram/chat/channel id. The Mini App resolves it server-side against the
+ * authenticated Telegram user, so the ref is meaningless to anyone else.
+ */
+export function buildReturnToOnfileUrl(telegramRequestId: number, env: NodeJS.ProcessEnv = process.env): string | null {
+  const base = getMiniAppBaseUrl(env);
+  if (!base) return null;
+  return `${base}/?connect=${telegramRequestId}`;
+}
+
+export function buildReturnToOnfileKeyboard(telegramRequestId: number, env: NodeJS.ProcessEnv = process.env) {
+  const url = buildReturnToOnfileUrl(telegramRequestId, env);
+  if (!url) return undefined;
+  return { inline_keyboard: [[{ text: "Return to Onfile", web_app: { url } }]] };
+}
+
+export function connectionSuccessMessage(channelTitle?: string | null): string {
+  const name = channelTitle?.trim() || "your channel";
+  return (
+    "🎉 Congratulations!\n\n" +
+    "Your channel has been successfully connected to your Onfile account.\n\n" +
+    `Channel: ${name}\n\n` +
+    "You can now return to Onfile and continue."
+  );
+}
+
+/**
+ * Second bot message. Sent at most ONCE per request (atomic
+ * `confirmation_sent_at` reservation), so a retried / duplicated webhook can
+ * never produce a second "Congratulations". Plain text: the channel title is
+ * user-controlled and must never be parsed as markup.
+ */
 export async function notifyBotConnectionSuccess(
   telegramUserId: number,
   channelTitle?: string | null,
-  observedChatId?: number | string | null
+  observedChatId?: number | string | null,
+  pending?: { id: number; telegramRequestId: number }
 ) {
-  const name = channelTitle ? `“${channelTitle}”` : "Your channel";
-  await notify(
-    telegramUserId,
-    observedChatId,
-    `✅ ${name} is now connected to your Onfile account.\n\nReturn to Onfile — it updates automatically.`
-  );
+  if (pending && !(await claimConfirmationDelivery(pending.id))) {
+    console.log("bot_connect_confirmation_duplicate_skipped", { pendingId: pending.id });
+    return;
+  }
+  const chatId = await resolveNotifyChatId(telegramUserId, observedChatId);
+  if (!chatId) {
+    console.log("bot_connect_notify_skipped", { reason: "no_private_chat" });
+    return;
+  }
+  const keyboard = pending ? buildReturnToOnfileKeyboard(pending.telegramRequestId) : undefined;
+  if (pending && !keyboard) console.error("bot_connect_return_button_unavailable", { reason: "no_https_mini_app_url" });
+  const res = await sendBotMessage(chatId, connectionSuccessMessage(channelTitle), keyboard ?? REMOVE_KEYBOARD);
+  if (!res.ok && classifySendFailure(res) === "bot_blocked") {
+    await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, chatId));
+  }
 }
 
 export async function notifyBotConnectionFailure(telegramUserId: number, reason: string, observedChatId?: number | string | null) {

@@ -3,14 +3,16 @@ import { NextRequest } from "next/server";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { botPrivateChats, pendingChannelRequests } from "@/db/schema";
-import { POST } from "./route";
+import { POST as START } from "../connect-bot-request/route";
+import { POST as CONNECT } from "./route";
 import { createSetupToken, SETUP_COOKIE_NAME } from "@/lib/setupToken";
 import { verifyBotStartPayload } from "@/lib/botConnectFlow";
 import { getPrivateChat, recordPrivateChat } from "@/lib/botPrivateChats";
 import { connectMethodForRequestId, getPendingByToken } from "@/lib/pendingChannelRequests";
 
 /**
- * Returning-user flow: POST /api/channels/connect-bot-request sends the
+ * Returning-user flow: "Start" (POST /api/channels/connect-bot-request) prepares the request, then
+ * "Connect" (POST /api/channels/connect-bot-start) sends the welcome message with the
  * "Select channel to connect" keyboard into the user's EXISTING private chat
  * (verified chat id from our store) and answers with the plain bot link — no
  * "?start=" — so Telegram posts no new "/start". Only the Telegram Bot API is
@@ -62,6 +64,29 @@ function req(init: { body?: unknown; query?: string } = {}) {
     },
     ...(init.body ? { body: JSON.stringify(init.body) } : {}),
   });
+}
+
+/**
+ * Start + Connect, as the Mini App does it. Resolves with the Connect response, plus the
+ * request's token so assertions can look the request up.
+ */
+async function POST(r: NextRequest): Promise<Response> {
+  const startRes = await START(r);
+  if (startRes.status !== 200) return startRes;
+  const started = await startRes.json();
+  const connectReq = new NextRequest("http://localhost/api/channels/connect-bot-start", {
+    method: "POST",
+    headers: {
+      host: "localhost",
+      "x-forwarded-for": `10.32.0.${++ip}`,
+      "content-type": "application/json",
+      cookie: `${SETUP_COOKIE_NAME}=${createSetupToken({ id: TG_USER, first_name: "Tester" })}`,
+    },
+    body: JSON.stringify({ token: started.token }),
+  });
+  const res = await CONNECT(connectReq);
+  const data = await res.json();
+  return new Response(JSON.stringify({ ...data, token: started.token }), { status: res.status });
 }
 
 async function cleanup() {
@@ -186,74 +211,20 @@ describe("returning user (verified private chat on file)", () => {
     expect(await getPrivateChat(TG_USER)).toBeNull();
   });
 
-  it("a transient Telegram error → 502, request cancelled, NO start-link fallback (it would cause a /start)", async () => {
+  it("a transient Telegram error → 502, NO start-link fallback (it would cause a /start); the request is rolled back to 'prepared' so Connect can be retried", async () => {
     replies.sendMessage = { ok: false, error_code: 500, description: "Internal Server Error" };
     const res = await POST(req());
     expect(res.status).toBe(502);
     const data = await res.json();
     expect(data.reason).toBe("telegram_api_error");
     expect(data.botUrl).toBeUndefined();
-    expect(data.token).toBeUndefined();
-    const live = await db
-      .select()
-      .from(pendingChannelRequests)
-      .where(and(eq(pendingChannelRequests.telegramUserId, String(TG_USER)), eq(pendingChannelRequests.status, "pending")));
-    expect(live).toHaveLength(0);
+    const rows = await db.select().from(pendingChannelRequests).where(eq(pendingChannelRequests.telegramUserId, String(TG_USER)));
+    expect(rows).toHaveLength(1);
+    // Rolled back: no countdown running, nothing marked as delivered.
+    expect(rows[0].connectStartedAt).toBeNull();
+    expect(rows[0].pickerSentAt).toBeNull();
+    expect((await getPendingByToken(data.token ?? ""))?.status ?? "pending").toBe("pending");
     // The association is untouched by a transient error.
     expect((await getPrivateChat(TG_USER))?.status).toBe("active");
-  });
-});
-
-describe("user without a stored private chat", () => {
-  it("asks Telegram (getChat); a confirmed private chat is used, recorded, and the keyboard is sent there", async () => {
-    replies.getChat = { ok: true, result: { id: PRIVATE_CHAT, type: "private", first_name: "T" } };
-    const data = await (await POST(req())).json();
-    expect(calls.filter((c) => c.method === "getChat")).toHaveLength(1);
-    expect(data.mode).toBe("existing_chat");
-    expect(data.botUrl).toBe("https://t.me/ConfiguredOnfileBot");
-    expect(String(sentMessages()[0].body.chat_id)).toBe(String(PRIVATE_CHAT));
-    expect(await getPrivateChat(TG_USER)).toMatchObject({ chatId: String(PRIVATE_CHAT), source: "get_chat", status: "active" });
-  });
-
-  it("first-time user (Telegram has no chat) → signed Start flow, nothing is sent", async () => {
-    replies.getChat = { ok: false, error_code: 400, description: "Bad Request: chat not found" };
-    const data = await (await POST(req())).json();
-    expect(data.mode).toBe("start_link");
-    expect(data.fallbackReason).toBe("no_chat");
-    expect(data.botUrl).toMatch(/^https:\/\/t\.me\/ConfiguredOnfileBot\?start=c1_[0-9a-z]+_[0-9a-f]{24}$/);
-    expect(sentMessages()).toHaveLength(0);
-
-    const payload = new URL(data.botUrl).searchParams.get("start")!;
-    const verified = verifyBotStartPayload(payload, TG_USER);
-    expect(verified.ok).toBe(true);
-    expect(verifyBotStartPayload(payload, TG_USER + 1).ok).toBe(false); // user-bound HMAC
-    const pending = await getPendingByToken(data.token);
-    expect(verified.ok && verified.requestId).toBe(pending!.telegramRequestId);
-    expect(pending?.status).toBe("pending");
-  });
-
-  it("a getChat answer that is not a private chat is never trusted", async () => {
-    replies.getChat = { ok: true, result: { id: -100123, type: "channel" } };
-    const data = await (await POST(req())).json();
-    expect(data.mode).toBe("start_link");
-    expect(await getPrivateChat(TG_USER)).toBeNull();
-    expect(sentMessages()).toHaveLength(0);
-  });
-
-  it("Telegram unreachable during the probe → retryable 502, not a silent start-link fallback", async () => {
-    replies.getChat = { ok: false, error_code: 502, description: "Bad Gateway" };
-    const res = await POST(req());
-    expect(res.status).toBe(502);
-    expect((await res.json()).botUrl).toBeUndefined();
-  });
-
-  it("first-time requests still never create more than one live request", async () => {
-    await POST(req());
-    await POST(req());
-    const live = await db
-      .select()
-      .from(pendingChannelRequests)
-      .where(and(eq(pendingChannelRequests.telegramUserId, String(TG_USER)), eq(pendingChannelRequests.status, "pending")));
-    expect(live).toHaveLength(1);
   });
 });

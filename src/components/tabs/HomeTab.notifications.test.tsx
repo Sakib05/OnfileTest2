@@ -55,10 +55,10 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0))
 const q = (sel: string) => container.querySelector(sel);
 const qa = (sel: string) => Array.from(container.querySelectorAll(sel));
 const click = (el: Element | null) => act(async () => { (el as HTMLElement).click(); });
-let onTabChange: ReturnType<typeof vi.fn>;
+let onTabChange: ReturnType<typeof vi.fn<(tab: string) => void>>;
 
 async function mount() {
-  onTabChange = vi.fn();
+  onTabChange = vi.fn<(tab: string) => void>();
   await act(async () =>
     root.render(
       <AppProvider>

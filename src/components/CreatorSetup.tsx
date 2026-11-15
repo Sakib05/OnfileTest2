@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Loader2, ShieldCheck, AlertCircle } from "lucide-react";
 import { useApp } from "@/contexts/AppContext";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
+import { getLaunchConnectRef } from "@/lib/botConnectClient";
 import type { ConnectedChannel } from "@/lib/useChannelConnect";
 import TelegramUserInfoScreen from "@/components/setup/TelegramUserInfoScreen";
 import ChannelConnectScreen from "@/components/setup/ChannelConnectScreen";
@@ -60,8 +61,15 @@ export default function CreatorSetup() {
     // returning accounts (who have already seen it before) go straight to
     // Channel Connect — never repeating a step unnecessarily.
     if (initializedStep.current) return;
-    if (authStatus === "setup_required") {
+    // Returning from the bot ("Return to Onfile" → `/?connect=<ref>`): go straight back to the
+    // bot connection page, which resumes and automatically verifies the request.
+    if ((authStatus === "setup_required" || authStatus === "authenticated") && getLaunchConnectRef() !== null) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
+      setStep("bot_instructions");
+      initializedStep.current = true;
+      return;
+    }
+    if (authStatus === "setup_required") {
       setStep("telegram_info");
       initializedStep.current = true;
     } else if (authStatus === "authenticated") {

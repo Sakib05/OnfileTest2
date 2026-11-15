@@ -1,7 +1,6 @@
 "use client";
 import React from "react";
 import {
-  Loader2,
   MousePointerClick,
   RefreshCw,
   ShieldCheck,
@@ -9,7 +8,7 @@ import {
   XCircle,
 } from "lucide-react";
 import BotFallbackPanel, { BotConnectFailure, isBotFallbackPhase } from "@/components/setup/BotFallbackPanel";
-import { isRequestChatSupported, isRunningInsideTelegram } from "@/lib/telegramWebApp";
+import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { useChannelConnect, type ConnectedChannel } from "@/lib/useChannelConnect";
 
@@ -20,11 +19,10 @@ interface InstructionStepData {
 }
 
 /**
- * The five required steps for "Connect Channel via Bot" (Part B of the
- * channel connection system). These describe exactly what happens with the
- * direct native picker flow: tapping "Connect Channel" below calls
- * `Telegram.WebApp.requestChat` immediately — there is no bot chat to open
- * and no second button to tap inside it.
+ * The five instruction steps of "Connect channel via bot". Kept exactly as they
+ * were; the action area below them is now the bot-guided flow
+ * (Start → Connect → Onfile Bot chat → Return to Onfile — see
+ * docs/BOT_GUIDED_CONNECT.md).
  */
 const STEPS: InstructionStepData[] = [
   {
@@ -67,14 +65,12 @@ export default function BotConnectInstructions({
   onBack: () => void;
   onSuccess: (channel: ConnectedChannel) => void;
 }) {
-  const { state, check, start, startViaBot, refresh, reset } = useChannelConnect(onSuccess);
+  const { state, check, start, connect, refresh, reset } = useChannelConnect(onSuccess);
 
   // Telegram's native Back Button is the only back control: it returns to the Channel Connect screen.
   useTelegramBackButton(onBack);
 
   const insideTelegram = isRunningInsideTelegram();
-  // Clients without the Direct Picker only have the bot option: retry with that same primary action.
-  const botOnly = insideTelegram && !isRequestChatSupported();
 
   return (
     <div className="flex flex-col gap-5 w-full max-w-sm">
@@ -93,62 +89,18 @@ export default function BotConnectInstructions({
         </div>
       ) : (
         <>
-          {state.phase === "idle" && (
-            <button onClick={start} className="btn-primary w-full py-3.5 text-sm font-semibold">
-              Connect Channel
-            </button>
-          )}
-
-          {state.phase === "starting" && (
-            <button disabled className="btn-primary w-full py-3.5 text-sm font-semibold flex items-center justify-center gap-2 opacity-70">
-              <Loader2 size={16} className="animate-spin" />
-              Starting...
-            </button>
-          )}
-
-          {state.phase === "waiting" && (
-            <div className="flex flex-col gap-3">
-              <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
-                <Loader2 size={14} className="mt-0.5 flex-shrink-0 animate-spin text-brand" />
-                <div>
-                  <p className="font-semibold text-primary text-xs">
-                    {state.stage === "verifying" ? "Channel selected — verifying…" : "Waiting for channel selection…"}
-                  </p>
-                  <p className="mt-0.5">This page updates automatically. Please wait.</p>
-                </div>
-              </div>
-              <button onClick={reset} className="text-xs font-semibold text-secondary text-center">
-                Cancel
-              </button>
-            </div>
-          )}
-
           {isBotFallbackPhase(state) && (
             <BotFallbackPanel
               state={state}
               check={check}
-              onConnectViaBot={startViaBot}
+              onStart={start}
+              onConnect={connect}
               onRefresh={refresh}
               onCancel={reset}
             />
           )}
 
-          {state.phase === "failed" &&
-            (botOnly ? (
-              <div className="flex flex-col gap-3">
-                <BotConnectFailure message={state.message} onRetry={startViaBot} />
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-start gap-2 text-left text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl p-3">
-                  <XCircle size={14} className="mt-0.5 flex-shrink-0" />
-                  <span>{state.message}</span>
-                </div>
-                <button onClick={reset} className="btn-primary w-full py-3.5 text-sm font-semibold">
-                  Try Again
-                </button>
-              </div>
-            ))}
+          {state.phase === "failed" && <BotConnectFailure message={state.message} onRetry={start} />}
         </>
       )}
 

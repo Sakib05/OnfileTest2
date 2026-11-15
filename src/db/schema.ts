@@ -219,6 +219,20 @@ export const pendingChannelRequests = pgTable(
     // right to verify + persist a given pending request, even across
     // separate serverless instances.
     claimedAt: timestamp("claimed_at"),
+    // ── Bot-guided connection flow (Start → Connect → bot chat → Return) ──
+    // All three are additive + nullable (migrations/bot_guided_connect). The
+    // lifecycle state (prepared / connecting / awaiting_channel_selection /
+    // verifying / connected / failed / expired / cancelled) is DERIVED from
+    // these columns + `status` + `expires_at` (see deriveLifecycleState in
+    // src/lib/pendingChannelRequests.ts) so there is one source of truth.
+    // Set (UTC) when the user taps "Connect"; that moment also (re)starts the
+    // authoritative 10-minute `expires_at` window.
+    connectStartedAt: timestamp("connect_started_at"),
+    // Set when the welcome + native channel-picker message was handed to Telegram.
+    pickerSentAt: timestamp("picker_sent_at"),
+    // Set (atomically, once) before the "Congratulations" bot message is sent,
+    // so a retried webhook can never produce a second confirmation message.
+    confirmationSentAt: timestamp("confirmation_sent_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
     expiresAt: timestamp("expires_at").notNull(),

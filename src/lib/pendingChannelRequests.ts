@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { and, desc, eq, gt, gte, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNotNull, isNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { channels, pendingChannelRequests } from "@/db/schema";
 import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
@@ -40,6 +40,49 @@ import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
 
 export type PendingChannelStatus = "pending" | "verified" | "failed";
 
+/**
+ * Lifecycle of a bot-guided connection request (Start → Connect → bot chat →
+ * Return to Onfile). DERIVED, never stored separately, from the row's `status`,
+ * `claimed_at`, `connect_started_at`, `picker_sent_at`, `failure_reason` and
+ * `expires_at` — see deriveLifecycleState.
+ *
+ *   prepared                    "Start" tapped: request exists, countdown NOT running yet
+ *   connecting                  "Connect" tapped: 10-min countdown running, bot message not delivered yet
+ *   awaiting_channel_selection  welcome + native channel picker delivered; waiting for the user
+ *   verifying                   a genuine `chat_shared` claimed the request; live Telegram checks running
+ *                               (covers both "channel_selected" and "verifying": the claim is atomic)
+ *   connected                   verified + channel persisted
+ *   failed                      verification failed (reason in `failureReason`)
+ *   cancelled                   user cancelled or a newer request superseded it
+ *   expired                     still pending but past the server-side `expires_at`
+ */
+export type ConnectLifecycleState =
+  | "prepared"
+  | "connecting"
+  | "awaiting_channel_selection"
+  | "verifying"
+  | "connected"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export function deriveLifecycleState(
+  row: Pick<
+    typeof pendingChannelRequests.$inferSelect,
+    "status" | "failureReason" | "claimedAt" | "connectStartedAt" | "pickerSentAt" | "expiresAt"
+  >,
+  now: Date = new Date()
+): ConnectLifecycleState {
+  if (row.status === "verified") return "connected";
+  if (row.status === "failed") return row.failureReason === "cancelled" ? "cancelled" : "failed";
+  // status === "pending": the server clock is the source of truth for expiry.
+  if (row.expiresAt.getTime() <= now.getTime()) return "expired";
+  if (row.claimedAt) return "verifying";
+  if (!row.connectStartedAt) return "prepared";
+  if (!row.pickerSentAt) return "connecting";
+  return "awaiting_channel_selection";
+}
+
 export interface PendingChannelRequestRecord {
   id: number;
   telegramRequestId: number;
@@ -52,6 +95,13 @@ export interface PendingChannelRequestRecord {
   /** True once a webhook delivery has claimed the request and is verifying it. */
   claimed: boolean;
   expiresAt: Date;
+  createdAt: Date;
+  /** UTC instant the user tapped "Connect" (null while only "prepared"). */
+  connectStartedAt: Date | null;
+  pickerSentAt: Date | null;
+  confirmationSentAt: Date | null;
+  /** Derived server-side lifecycle (expiry evaluated against the server clock). */
+  lifecycle: ConnectLifecycleState;
 }
 
 /**
@@ -122,6 +172,11 @@ function rowToRecord(row: typeof pendingChannelRequests.$inferSelect): PendingCh
     isNewAccount: row.isNewAccount,
     claimed: row.claimedAt !== null && row.claimedAt !== undefined,
     expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+    connectStartedAt: row.connectStartedAt ?? null,
+    pickerSentAt: row.pickerSentAt ?? null,
+    confirmationSentAt: row.confirmationSentAt ?? null,
+    lifecycle: deriveLifecycleState(row),
   };
 }
 
@@ -270,7 +325,9 @@ export async function claimPendingRequestForProcessing(id: number): Promise<bool
       and(
         eq(pendingChannelRequests.id, id),
         eq(pendingChannelRequests.status, "pending"),
-        isNull(pendingChannelRequests.claimedAt)
+        isNull(pendingChannelRequests.claimedAt),
+        // An expired request can never be claimed, even by a webhook that raced the clock.
+        gt(pendingChannelRequests.expiresAt, new Date())
       )
     )
     .returning({ id: pendingChannelRequests.id });
@@ -330,6 +387,7 @@ export async function cancelOpenBotRequestsForUser(telegramUserId: number): Prom
 
 export type StartLookupResult =
   | { kind: "ok"; pending: PendingChannelRequestRecord }
+  | { kind: "not_connecting" }
   | { kind: "wrong_user" }
   | { kind: "expired" }
   | { kind: "already_used"; status: PendingChannelStatus }
@@ -365,6 +423,9 @@ export async function lookupPendingForBotStart(
   const record = rowToRecord(mine);
   if (mine.status !== "pending" || mine.claimedAt) return { kind: "already_used", status: mine.status };
   if (mine.expiresAt.getTime() <= Date.now()) return { kind: "expired" };
+  // Bot-guided flow: the picker is only ever delivered after the user tapped
+  // "Connect" in the Mini App (that is what starts the 10-minute window).
+  if (!mine.connectStartedAt) return { kind: "not_connecting" };
   return { kind: "ok", pending: record };
 }
 
@@ -384,6 +445,7 @@ export async function getLatestPendingBotRequestForUser(
         eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
         eq(pendingChannelRequests.status, "pending"),
         isNull(pendingChannelRequests.claimedAt),
+        isNotNull(pendingChannelRequests.connectStartedAt),
         gt(pendingChannelRequests.expiresAt, new Date())
       )
     )
@@ -391,4 +453,158 @@ export async function getLatestPendingBotRequestForUser(
     .limit(10);
   const row = rows.find((r) => connectMethodForRequestId(r.telegramRequestId) === "bot");
   return row ? rowToRecord(row) : undefined;
+}
+
+// ─── Bot-guided connection flow: lifecycle helpers ──────────────────────────
+
+/** Authoritative length of the connection window, started by "Connect". */
+export const CONNECT_WINDOW_MS = TTL_MS;
+
+async function selectRequestRow(where: ReturnType<typeof and>) {
+  const [row] = await db.select().from(pendingChannelRequests).where(where).orderBy(desc(pendingChannelRequests.createdAt)).limit(1);
+  if (!row) return undefined;
+  const record = rowToRecord(row);
+  if (row.resolvedChannelId) {
+    const [channel] = await db.select().from(channels).where(eq(channels.id, row.resolvedChannelId)).limit(1);
+    record.channel = channel;
+  }
+  return record;
+}
+
+/**
+ * Reads a request by the browser's opaque bearer token INCLUDING expired and
+ * resolved rows (unlike getPendingByToken), so the API can answer "expired" /
+ * "connected" / "failed" explicitly instead of "not found". Rows are retained
+ * 24h. The caller must still compare `identity.telegramUserId` with the
+ * authenticated user.
+ */
+export async function getRequestByToken(token: string): Promise<PendingChannelRequestRecord | undefined> {
+  return selectRequestRow(eq(pendingChannelRequests.tokenHash, hashToken(token)));
+}
+
+/**
+ * Reads a request by (authenticated Telegram user, public request ref). The
+ * ref is the Telegram-facing `request_id` carried by the "Return to Onfile"
+ * link — NOT a secret and NOT proof of anything: the lookup is scoped to the
+ * server-side authenticated user, so another user's ref finds nothing.
+ * Bot-method requests only.
+ */
+export async function getRequestByRef(
+  telegramUserId: number,
+  ref: number
+): Promise<PendingChannelRequestRecord | undefined> {
+  if (!Number.isInteger(ref) || connectMethodForRequestId(ref) !== "bot") return undefined;
+  return selectRequestRow(
+    and(eq(pendingChannelRequests.telegramUserId, String(telegramUserId)), eq(pendingChannelRequests.telegramRequestId, ref))
+  );
+}
+
+/** The authenticated user's most recent bot-method request (any state, within retention). */
+export async function getLatestBotRequestForUser(telegramUserId: number): Promise<PendingChannelRequestRecord | undefined> {
+  return selectRequestRow(
+    and(
+      eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+      gte(pendingChannelRequests.telegramRequestId, BOT_REQUEST_ID_MIN)
+    )
+  );
+}
+
+export type BeginConnectResult =
+  | { kind: "started"; pending: PendingChannelRequestRecord }
+  /** Already started earlier (retry / double tap): idempotent, the window is NOT extended. */
+  | { kind: "already_started"; pending: PendingChannelRequestRecord }
+  | { kind: "not_startable"; lifecycle: ConnectLifecycleState };
+
+/**
+ * "Connect": atomically starts the server-side 10-minute window. One
+ * `UPDATE ... WHERE status='pending' AND unclaimed AND not expired AND
+ * connect_started_at IS NULL`, so concurrent / repeated calls start the
+ * window exactly once and an expired request can never be started.
+ */
+export async function beginBotConnect(id: number): Promise<BeginConnectResult> {
+  const now = new Date();
+  const updated = await db
+    .update(pendingChannelRequests)
+    .set({ connectStartedAt: now, expiresAt: new Date(now.getTime() + CONNECT_WINDOW_MS), updatedAt: now })
+    .where(
+      and(
+        eq(pendingChannelRequests.id, id),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt),
+        isNull(pendingChannelRequests.connectStartedAt),
+        gt(pendingChannelRequests.expiresAt, now)
+      )
+    )
+    .returning({ id: pendingChannelRequests.id });
+
+  const current = await selectRequestRow(eq(pendingChannelRequests.id, id));
+  if (!current) return { kind: "not_startable", lifecycle: "expired" };
+  if (updated.length > 0) return { kind: "started", pending: current };
+  if (current.connectStartedAt && (current.lifecycle === "connecting" || current.lifecycle === "awaiting_channel_selection")) {
+    return { kind: "already_started", pending: current };
+  }
+  return { kind: "not_startable", lifecycle: current.lifecycle };
+}
+
+/** Puts a request back to "prepared" after the bot message could not be delivered (so "Connect" can be retried). */
+export async function revertBotConnectStart(id: number): Promise<void> {
+  await db
+    .update(pendingChannelRequests)
+    .set({ connectStartedAt: null, pickerSentAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(pendingChannelRequests.id, id),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt)
+      )
+    );
+}
+
+/**
+ * Atomically reserves the right to deliver the picker message for this
+ * request (`picker_sent_at IS NULL` → now). Returns false when someone else
+ * already did, so a retried "Connect" call can never send a second message.
+ */
+export async function claimPickerDelivery(id: number): Promise<boolean> {
+  const r = await db
+    .update(pendingChannelRequests)
+    .set({ pickerSentAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(pendingChannelRequests.id, id),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt),
+        isNull(pendingChannelRequests.pickerSentAt),
+        isNotNull(pendingChannelRequests.connectStartedAt),
+        gt(pendingChannelRequests.expiresAt, new Date())
+      )
+    )
+    .returning({ id: pendingChannelRequests.id });
+  return r.length > 0;
+}
+
+/** Gives the delivery reservation back after the send failed. */
+export async function releasePickerDelivery(id: number): Promise<void> {
+  await db
+    .update(pendingChannelRequests)
+    .set({ pickerSentAt: null, updatedAt: new Date() })
+    .where(and(eq(pendingChannelRequests.id, id), eq(pendingChannelRequests.status, "pending")));
+}
+
+/** Records (once) that the picker message reached the user via the webhook's /start path. */
+export async function markPickerSent(id: number): Promise<void> {
+  await db
+    .update(pendingChannelRequests)
+    .set({ pickerSentAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(pendingChannelRequests.id, id), isNull(pendingChannelRequests.pickerSentAt)));
+}
+
+/** Atomically reserves the one-and-only "Congratulations" message for a request. */
+export async function claimConfirmationDelivery(id: number): Promise<boolean> {
+  const r = await db
+    .update(pendingChannelRequests)
+    .set({ confirmationSentAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(pendingChannelRequests.id, id), isNull(pendingChannelRequests.confirmationSentAt)))
+    .returning({ id: pendingChannelRequests.id });
+  return r.length > 0;
 }

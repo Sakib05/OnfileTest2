@@ -5,9 +5,10 @@ import { db } from "@/db";
 import { botPrivateChats, channels, pendingChannelRequests, telegramUpdateLog, users } from "@/db/schema";
 import { POST } from "./route";
 import { POST as connectBotRequest } from "@/app/api/channels/connect-bot-request/route";
+import { POST as connectBotStart } from "@/app/api/channels/connect-bot-start/route";
 import { createBotStartPayload, BOT_MESSAGES } from "@/lib/botConnectFlow";
 import { getPrivateChat, recordPrivateChat } from "@/lib/botPrivateChats";
-import { createPendingChannelRequest, getPendingByToken } from "@/lib/pendingChannelRequests";
+import { beginBotConnect, createPendingChannelRequest, getPendingByToken } from "@/lib/pendingChannelRequests";
 import { createSetupToken, SETUP_COOKIE_NAME } from "@/lib/setupToken";
 
 /**
@@ -132,6 +133,7 @@ describe("recording the verified private chat from webhook updates", () => {
 describe("first-time user: signed Start flow", () => {
   it("/start <signed payload> sends the 'Select channel to connect' keyboard to the private chat and records it", async () => {
     const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
+    await beginBotConnect((await getPendingByToken(created.correlationToken))!.id); // "Connect" was tapped
     await webhook({
       message: {
         chat: { id: PRIVATE_CHAT, type: "private" },
@@ -149,6 +151,7 @@ describe("first-time user: signed Start flow", () => {
 
   it("a forged / other-user payload is rejected with the neutral invalid-link reply", async () => {
     const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
+    await beginBotConnect((await getPendingByToken(created.correlationToken))!.id); // "Connect" was tapped
     await webhook({
       message: {
         chat: { id: 700_600_002, type: "private" },
@@ -163,14 +166,20 @@ describe("first-time user: signed Start flow", () => {
   it("after that first Start the user is a RETURNING user: the next connect uses the existing chat, no start link", async () => {
     await webhook({ message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: "/start" } });
     calls = [];
-    const res = await connectBotRequest(
-      new NextRequest("http://localhost/api/channels/connect-bot-request", {
+    const cookie = `${SETUP_COOKIE_NAME}=${createSetupToken({ id: USER, first_name: "T" })}`;
+    const started = await (
+      await connectBotRequest(
+        new NextRequest("http://localhost/api/channels/connect-bot-request", {
+          method: "POST",
+          headers: { host: "localhost", "x-forwarded-for": `10.60.0.${++ip}`, cookie },
+        })
+      )
+    ).json();
+    const res = await connectBotStart(
+      new NextRequest("http://localhost/api/channels/connect-bot-start", {
         method: "POST",
-        headers: {
-          host: "localhost",
-          "x-forwarded-for": `10.60.0.${++ip}`,
-          cookie: `${SETUP_COOKIE_NAME}=${createSetupToken({ id: USER, first_name: "T" })}`,
-        },
+        headers: { host: "localhost", "content-type": "application/json", "x-forwarded-for": `10.60.0.${++ip}`, cookie },
+        body: JSON.stringify({ token: started.token }),
       })
     );
     const data = await res.json();
@@ -184,6 +193,7 @@ describe("confirmations use the stored chat id", () => {
   it("the success message after chat_shared goes to the stored private chat (not the user id) and the connection completes", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
+    await beginBotConnect((await getPendingByToken(created.correlationToken))!.id); // "Connect" was tapped
     await webhook({
       message: {
         chat: { id: PRIVATE_CHAT, type: "private" },
@@ -193,7 +203,7 @@ describe("confirmations use the stored chat id", () => {
     });
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     const note = sentMessages().at(-1)!;
-    expect(String(note.body.text)).toContain("is now connected to your Onfile account");
+    expect(String(note.body.text)).toContain("Your channel has been successfully connected to your Onfile account.");
     expect(String(note.body.chat_id)).toBe(String(PRIVATE_CHAT));
     expect(String(note.body.chat_id)).not.toBe(String(USER));
   });

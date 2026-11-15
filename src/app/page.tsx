@@ -9,13 +9,24 @@ import CreateTab from "@/components/tabs/CreateTab";
 import WalletTab from "@/components/tabs/WalletTab";
 import ProfileTab from "@/components/tabs/ProfileTab";
 import { useApp } from "@/contexts/AppContext";
+import { getLaunchConnectRef } from "@/lib/botConnectClient";
 
 export default function HomePage() {
-  const { activeTab, setActiveTab, authStatus, channelStatus } = useApp();
+  const { activeTab, setActiveTab, setProfileEntry, authStatus, channelStatus } = useApp();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingChecked, setOnboardingChecked] = useState(false);
 
   useEffect(() => {
+    // Launched by the bot's "Return to Onfile" button (`/?connect=<ref>`): the user is mid-way
+    // through connecting a channel, so never interrupt them with onboarding (the Mini App may
+    // be running with fresh browser storage), and — for an existing creator — land on the
+    // channel connection screen instead of the dashboard. It only picks the SCREEN; the
+    // request itself is verified server-side against the authenticated Telegram user.
+    if (getLaunchConnectRef() !== null) {
+      localStorage.setItem("onfile_onboarding_done", "1");
+      setProfileEntry("channel");
+      setActiveTab("profile");
+    }
     const done = localStorage.getItem("onfile_onboarding_done");
     // One-time mount check reading a browser-only API (localStorage);
     // cannot be computed during render/SSR. This only gates which screen we
@@ -27,6 +38,8 @@ export default function HomePage() {
       setShowOnboarding(true);
     }
     setOnboardingChecked(true);
+    // Mount-only: reads browser-only state exactly once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const completeOnboarding = () => {

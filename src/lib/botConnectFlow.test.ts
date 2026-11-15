@@ -6,8 +6,12 @@ import {
   BOT_MESSAGES,
   buildBotChatLink,
   buildBotDeepLink,
+  buildReturnToOnfileKeyboard,
+  channelConnectionWelcomeMessage,
   classifySendFailure,
+  connectionSuccessMessage,
   createBotStartPayload,
+  getMiniAppBaseUrl,
   handleBotTextMessage,
   parseBotCommand,
   verifyBotStartPayload,
@@ -20,6 +24,7 @@ import {
   REQUIRED_USER_ADMIN_RIGHTS,
 } from "@/lib/telegramBot";
 import {
+  beginBotConnect,
   connectMethodForRequestId,
   createPendingChannelRequest,
   getPendingByToken,
@@ -50,6 +55,11 @@ function mockTelegram() {
       method === "savePreparedKeyboardButton" ? { id: "prepared-1" } : method === "getMe" ? { id: 999, username: "TestOnfileBot" } : true;
     return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
   }) as unknown as typeof fetch;
+}
+
+/** "Connect" was tapped: the 10-minute window runs and the bot may deliver the picker. */
+async function connecting(p: { correlationToken: string }) {
+  await beginBotConnect((await getPendingByToken(p.correlationToken))!.id);
 }
 
 async function cleanup() {
@@ -165,6 +175,7 @@ describe("request id ranges (connection method tagging)", () => {
 describe("handleBotTextMessage — /start", () => {
   it("valid payload: replies with the request_chat keyboard bound to THE pending request", async () => {
     const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
     const payload = createBotStartPayload(p.telegramRequestId, USER_A);
 
     expect(await start(USER_A, `/start ${payload}`)).toBe(true);
@@ -182,6 +193,7 @@ describe("handleBotTextMessage — /start", () => {
 
   it("works when pressed again (already-started user / re-tapped link) while still pending", async () => {
     const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
     const payload = createBotStartPayload(p.telegramRequestId, USER_A);
     await start(USER_A, `/start ${payload}`);
     await start(USER_A, `/start ${payload}`);
@@ -259,6 +271,7 @@ describe("handleBotTextMessage — /start", () => {
 describe("handleBotTextMessage — /connect", () => {
   it("re-sends the keyboard for the latest active bot request", async () => {
     const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
     await start(USER_A, "/connect");
     const markup = sentMessages()[0].body.reply_markup as ReturnType<typeof buildChannelPickerKeyboard>;
     expect(markup.keyboard[0][0].request_chat.request_id).toBe(p.telegramRequestId);
@@ -291,5 +304,50 @@ describe("returning-user helpers", () => {
     expect(f(500, "Internal Server Error")).toBe("telegram_api_error");
     expect(f(undefined, "request_timed_out")).toBe("telegram_api_error");
     expect(f(400, "Bad Request: USER_RIGHTS_MISSING")).toBe("telegram_api_error");
+  });
+});
+
+describe("bot-guided flow copy and return link", () => {
+  it("welcome message is the specified text with the live number of minutes left", () => {
+    const now = Date.now();
+    const text = channelConnectionWelcomeMessage(new Date(now + 10 * 60_000), now);
+    expect(text).toBe(
+      "Welcome to Onfile Channel Connection!\n\n" +
+        "Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
+        "Make sure the Onfile bot has the required administrator permissions in your channel.\n\n" +
+        "Your connection request will expire in 10 minutes."
+    );
+    expect(channelConnectionWelcomeMessage(new Date(now + 30_000), now)).toContain("expire in 1 minute.");
+  });
+
+  it("success message contains the actual channel name", () => {
+    const text = connectionSuccessMessage("My Private Channel");
+    expect(text).toContain("🎉 Congratulations!");
+    expect(text).toContain("Your channel has been successfully connected to your Onfile account.");
+    expect(text).toContain("Channel: My Private Channel");
+    expect(text).toContain("You can now return to Onfile and continue.");
+  });
+
+  it("getMiniAppBaseUrl accepts only https and honours the documented env precedence", () => {
+    expect(getMiniAppBaseUrl({ MINI_APP_URL: "https://onfile-app.example/" } as unknown as NodeJS.ProcessEnv)).toBe("https://onfile-app.example");
+    expect(getMiniAppBaseUrl({ VERCEL_URL: "my-app.vercel.app" } as unknown as NodeJS.ProcessEnv)).toBe("https://my-app.vercel.app");
+    expect(getMiniAppBaseUrl({ MINI_APP_URL: "http://insecure.example", NEXT_PUBLIC_APP_URL: "https://ok.example" } as unknown as NodeJS.ProcessEnv)).toBe("https://ok.example");
+    expect(getMiniAppBaseUrl({} as unknown as NodeJS.ProcessEnv)).toBeNull();
+    expect(getMiniAppBaseUrl({ MINI_APP_URL: "javascript:alert(1)" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it("the Return to Onfile keyboard is a web_app button carrying only the public ref", () => {
+    const env = { MINI_APP_URL: "https://onfile-app.example" } as unknown as NodeJS.ProcessEnv;
+    expect(buildReturnToOnfileKeyboard(1_073_741_900, env)).toEqual({
+      inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: "https://onfile-app.example/?connect=1073741900" } }]],
+    });
+    expect(buildReturnToOnfileKeyboard(5, {} as unknown as NodeJS.ProcessEnv)).toBeUndefined();
+  });
+
+  it("/start for a prepared-only request explains that Connect must be tapped first (no picker)", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await start(USER_A, `/start ${createBotStartPayload(p.telegramRequestId, USER_A)}`);
+    expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.notConnecting);
+    expect(sentMessages()[0].body.reply_markup).toBeUndefined();
   });
 });

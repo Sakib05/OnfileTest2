@@ -4,47 +4,30 @@ import { resolveConnectingIdentity } from "@/lib/channelConnection";
 import { getBotUsername } from "@/lib/telegramBot";
 import {
   cancelOpenBotRequestsForUser,
-  cancelPendingByToken,
   createPendingChannelRequest,
-  getPendingByToken,
+  getRequestByToken,
 } from "@/lib/pendingChannelRequests";
-import {
-  buildBotChatLink,
-  buildBotDeepLink,
-  createBotStartPayload,
-  deliverPickerKeyboardToExistingChat,
-} from "@/lib/botConnectFlow";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 
 /**
- * Step 1 of the "Connect channel via bot" fallback (for Telegram clients
- * that cannot use the Mini App Direct Channel Picker). Creates ONE pending
- * channel request bound to the authenticated Telegram user (superseding any
- * earlier still-open bot request of theirs, so no duplicates pile up) and
- * decides HOW the user reaches the channel-selection keyboard:
+ * "Start" — step 1 of the bot-guided channel connection flow.
  *
- *   mode "existing_chat" — the user already has a verified private chat with
- *     the bot. The server sends the "Select channel to connect" keyboard
- *     itself (sendMessage to that stored chat id) and `botUrl` is the PLAIN
- *     chat link `https://t.me/<bot>` — NO `?start=`, so Telegram posts no new
- *     "/start". (Telegram only allows this once the user has started the bot.)
- *   mode "start_link" — the bot cannot message the user (never started it,
- *     blocked it, or the stored chat is invalid). `botUrl` is the signed
- *     `https://t.me/<bot>?start=<HMAC payload>` deep link; Telegram's required
- *     first-time Start delivers the payload and the webhook sends the keyboard.
- *     `fallbackReason` says why (no_chat | bot_blocked | chat_invalid | lookup_failed).
- *   A transient Telegram error answers 502 and cancels the request — it never
- *   silently degrades to the start link (which would cause a "/start").
+ * Creates ONE pending channel request (state `prepared`) bound to the
+ * authenticated Telegram user and returns its opaque polling `token`, the
+ * public request `ref` and the bot's real @username. It deliberately does NOT
+ * message the user and does NOT start the countdown: that is the job of
+ * "Connect" (POST /api/channels/connect-bot-start), which starts the
+ * authoritative 10-minute window and delivers the bot message.
  *
- * Response also carries `token`: the opaque polling bearer for
- * /api/channels/connect-status (same mechanism as the Direct Picker; only its
- * hash is stored). The signed payload contains no secret, is user-bound and
- * is only valid until the request expires (10 min) or is used.
+ * Duplicate handling: any earlier still-open (unclaimed) bot request of this
+ * user is superseded (state `cancelled`), so there is never more than one live
+ * request and a second session / double tap can never leave two valid pickers.
+ * A request that is already being verified (claimed) is never touched.
  *
- * The browser never supplies a Telegram user id or chat id: identity comes
- * from the session / signed setup cookie via resolveConnectingIdentity,
- * exactly like /api/channels/connect-request, and the chat id comes from our
- * own verified store (see src/lib/botPrivateChats.ts).
+ * Identity comes from the session / signed setup cookie
+ * (resolveConnectingIdentity) — the browser never supplies a Telegram user id,
+ * chat id or channel id. The raw token is only ever returned here; the database
+ * keeps its SHA-256 hash.
  */
 export async function POST(req: NextRequest) {
   if (!isSameOriginRequest(req)) {
@@ -70,7 +53,8 @@ export async function POST(req: NextRequest) {
     }
     const identity = identityResult.identity;
 
-    // The configured bot's real @username (from getMe) — never hardcoded.
+    // The configured bot's real @username (from getMe) — never hardcoded. Resolving it here
+    // surfaces a misconfigured / unreachable bot at "Start" instead of after "Connect".
     const botUsername = await getBotUsername(botToken);
     if (!botUsername) {
       console.error("connect_bot_request_failed", { stage: "bot_username_unresolved" });
@@ -80,42 +64,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Only the newest request may complete: supersede earlier open bot requests.
     await cancelOpenBotRequestsForUser(identity.telegramUserId);
     const created = await createPendingChannelRequest(identity, { method: "bot" });
-    const pending = await getPendingByToken(created.correlationToken);
+    const pending = await getRequestByToken(created.correlationToken);
     if (!pending) {
       console.error("connect_bot_request_failed", { stage: "pending_not_readable" });
       return NextResponse.json({ error: "Internal server error. Please try again shortly." }, { status: 500 });
     }
 
-    const delivery = await deliverPickerKeyboardToExistingChat(identity.telegramUserId, pending);
-
-    if (delivery.mode === "error") {
-      await cancelPendingByToken(created.correlationToken);
-      console.error("connect_bot_request_failed", { stage: "deliver_keyboard", reason: delivery.reason, detail: delivery.detail });
-      return NextResponse.json(
-        { error: "We couldn't reach Telegram right now. Please try again shortly.", reason: delivery.reason },
-        { status: 502 }
-      );
-    }
-
-    if (delivery.mode === "existing_chat") {
-      return NextResponse.json({
-        token: created.correlationToken,
-        mode: "existing_chat",
-        botUrl: buildBotChatLink(botUsername),
-        botUsername,
-      });
-    }
-
-    const payload = createBotStartPayload(created.telegramRequestId, identity.telegramUserId);
     return NextResponse.json({
       token: created.correlationToken,
-      mode: "start_link",
-      fallbackReason: delivery.reason,
-      botUrl: buildBotDeepLink(botUsername, payload),
+      ref: created.telegramRequestId,
+      state: pending.lifecycle, // "prepared"
       botUsername,
+      createdAt: pending.createdAt.toISOString(),
+      serverTime: new Date().toISOString(),
     });
   } catch (err) {
     console.error("connect_bot_request_failed", {
