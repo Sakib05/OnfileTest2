@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getTelegramWebApp, openTelegramBotLink, triggerHaptic } from "@/lib/telegramWebApp";
-import { BOT_NAVIGATION_DELAY_MS, clearLaunchConnectRef, getLaunchConnectRef, sleep } from "@/lib/botConnectClient";
+import { getTelegramWebApp, triggerHaptic } from "@/lib/telegramWebApp";
+import { clearLaunchConnectRef, getLaunchConnectRef } from "@/lib/botConnectClient";
+import { BOT_NAVIGATION_DELAY_MS, cancelBotNavigation, scheduleBotNavigation, type BotNavigationResult } from "@/lib/botNavigation";
 
 export interface ConnectedChannel {
   id: number;
@@ -42,22 +43,22 @@ type StatusOutcome =
   | { kind: "error" };
 
 /**
- * Phases of the bot-guided flow (Start → Connect → bot chat → Return to Onfile):
+ * Phases of the single-button bot-guided flow (Connect → bot chat → Return to Onfile):
  *
- *   idle        existing instructions + "Start"
- *   preparing   "Start" tapped, request being created (no bot message, no countdown yet)
- *   prepared    request exists → "Connect"           (server state `prepared`)
- *   connecting  "Connect" tapped: countdown running, ~3 s before the bot chat opens
- *   waiting_bot bot chat opened; waiting for the channel selection / automatic verification
+ *   idle        existing instructions + the single primary "Connect" button
+ *   connecting  "Connect" tapped: the request is being prepared and the server-side window started
+ *               (no countdown yet — the countdown only exists once the BACKEND confirmed the window)
+ *   prepared    retry holder: the request was prepared but starting it failed transiently
+ *               (server state `prepared`). "Connect" reuses this token — never a second request
+ *   waiting_bot window running + countdown; the automatic hand-off to the bot chat happens ~3 s later
  *   resuming    Mini App reopened (e.g. "Return to Onfile"): reading the server-side status
  *   verified    server confirmed the connection
- *   failed      failure / expiry / cancellation (retry with "Start")
+ *   failed      failure / expiry / cancellation (retry with "Connect")
  */
 export type BotConnectState =
   | { phase: "idle" }
-  | { phase: "preparing" }
+  | { phase: "connecting" }
   | { phase: "prepared"; token: string; ref: number; botUsername?: string; error?: string }
-  | { phase: "connecting"; token: string; ref: number; botUsername?: string; clock: ServerClock }
   | {
       phase: "waiting_bot";
       token: string | null;
@@ -188,6 +189,10 @@ function interpretStatusResponse(res: Response, data: Record<string, unknown> | 
   return { kind: "error" };
 }
 
+function stateToken(state: BotConnectState): string | null {
+  return state.phase === "prepared" || state.phase === "waiting_bot" ? state.token : null;
+}
+
 /** What (if anything) a freshly mounted hook should resume: a "Return to Onfile" launch and/or a stored request. */
 function computeResumeTarget(): { token: string | null; ref: number | null; deadline: number } | null {
   const launchRef = getLaunchConnectRef();
@@ -203,20 +208,11 @@ function computeResumeTarget(): { token: string | null; ref: number | null; dead
 /**
  * Engine of the bot-guided channel connection ("Connect channel via bot").
  *
- *  1. `start()`   — "Start": POST /api/channels/connect-bot-request creates the secure,
- *                   user-bound request (state `prepared`). No bot message, no countdown.
- *  2. `connect()` — "Connect": POST /api/channels/connect-bot-start starts the server-side
- *                   10-minute window and has the backend deliver the welcome message with
- *                   Telegram's native channel picker. The UI shows the countdown at once, waits
- *                   ~3 s (BOT_NAVIGATION_DELAY_MS, measured from the tap, so a slow backend
- *                   doesn't add to it), then opens the bot chat with
- *                   `Telegram.WebApp.openTelegramLink(botUrl)` — the supported navigation API
- *                   (it does not require a user gesture and does NOT close the Mini App on
- *                   Bot API ≥ 7.0). We never call `close()`: it is not "minimise", and calling
- *                   it before knowing the navigation took effect could strand the user. If
- *                   Telegram refuses the call, or the Mini App is still in the foreground
- *                   a few seconds later, a plain "open the bot" link is shown.
- *  3. The Mini App keeps (or resumes) verifying automatically — a single de-duplicated status
+ *  1. `connect()` — the single "Connect" action (see its doc): prepares the secure request,
+ *                   starts the backend 10-minute window, shows the countdown and schedules the
+ *                   shared hand-off to the bot (`openTelegramLink` + explicit
+ *                   `Telegram.WebApp.close()`, ~3 s later — "@/lib/botNavigation").
+ *  2. The Mini App keeps (or resumes) verifying automatically — a single de-duplicated status
  *     check shared by the poll timer and by every "returned to the Mini App" signal
  *     (visibilitychange / focus / Telegram `activated` / a fresh launch from "Return to
  *     Onfile"). Success is only ever reported after the server says "verified"; the
@@ -250,7 +246,6 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
   const inFlight = useRef<{ key: string; promise: Promise<StatusOutcome> } | null>(null);
   /** Keys whose terminal outcome was already applied (no duplicate success/haptic/callback). */
   const finished = useRef<Set<string>>(new Set());
-  const starting = useRef(false);
   const connecting = useRef(false);
   const mounted = useRef(true);
 
@@ -284,6 +279,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
       finished.current.add(key);
       activeKey.current = null;
       activeToken.current = null;
+      cancelBotNavigation(key);
       stopPolling();
       clearHint();
       persist(null);
@@ -321,6 +317,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
             finished.current.add(key);
             activeKey.current = null;
             activeToken.current = null;
+            cancelBotNavigation(key);
             stopPolling();
             clearHint();
             persist(null);
@@ -365,6 +362,9 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
                   botUsername: saved?.botUsername,
                   clock: clock ?? null,
                   stage,
+                  // This Mini App is on screen and is NOT navigating (a reopened / returned Mini App):
+                  // offer the manual link right away.
+                  stillVisible: Boolean(saved?.botUrl),
                 };
               }
               if (prev.phase === "waiting_bot") {
@@ -450,62 +450,64 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** "Start": create the secure request (state `prepared`). Nothing is sent to the bot yet. */
-  const start = useCallback(async () => {
-    if (starting.current) return; // ignore double taps: never two requests
-    starting.current = true;
-    setCheck(IDLE_CHECK);
-    setState({ phase: "preparing" });
-    try {
-      let res: Response;
-      let data: Record<string, unknown>;
-      try {
-        res = await fetch("/api/channels/connect-bot-request", { method: "POST" });
-        data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      } catch {
-        triggerHaptic("error");
-        setState({ phase: "failed", message: "Network error. Please check your connection and try again." });
-        return;
-      }
-      if (!mounted.current) return;
-      if (!res.ok || typeof data.token !== "string" || typeof data.ref !== "number") {
-        triggerHaptic("error");
-        setState({
-          phase: "failed",
-          message: (typeof data.error === "string" && data.error) || "Could not prepare the connection. Please try again.",
-          reason: typeof data.reason === "string" ? data.reason : undefined,
-        });
-        return;
-      }
-      persist({
-        token: data.token,
-        ref: data.ref,
-        deadline: Date.now() + 10 * 60_000,
-        botUsername: typeof data.botUsername === "string" ? data.botUsername : undefined,
-      });
-      setState({
-        phase: "prepared",
-        token: data.token,
-        ref: data.ref,
-        botUsername: typeof data.botUsername === "string" ? data.botUsername : undefined,
-      });
-    } finally {
-      starting.current = false;
-    }
-  }, []);
-
-  /** "Connect": start the server-side countdown, deliver the bot message, open the bot chat. */
+  /**
+   * "Connect" — the ONE user action. Orchestrates, in order:
+   *   1. prepare the secure, user-bound pending request   POST /api/channels/connect-bot-request
+   *      (skipped when a prepared request from a failed earlier attempt is being retried —
+   *      its token is reused, so a retry never creates a second request),
+   *   2. start the backend-authoritative 10-minute window  POST /api/channels/connect-bot-start
+   *      (also delivers the picker message to returning users),
+   *   3. show the countdown + "Waiting for channel selection…",
+   *   4. schedule the shared automatic hand-off (open bot chat, then close the Mini App)
+   *      ~3 s later — see "@/lib/botNavigation".
+   */
   const connect = useCallback(async () => {
     if (connecting.current) return; // double tap: one request, one chat
     const current = stateRef.current;
-    if (current.phase !== "prepared") return;
+    if (current.phase !== "idle" && current.phase !== "prepared" && current.phase !== "failed") return;
     connecting.current = true;
-    const { token, ref, botUsername } = current;
-    const tappedAt = Date.now();
     setCheck(IDLE_CHECK);
-    // Countdown starts immediately (optimistic 10:00); re-synced to the server clock below.
-    setState({ phase: "connecting", token, ref, botUsername, clock: { expiresAt: tappedAt + 10 * 60_000, offset: 0 } });
+    setState({ phase: "connecting" });
+
     try {
+      // ── 1. Prepare (or reuse the already prepared request) ─────────────────────────
+      let token: string;
+      let ref: number;
+      let botUsername: string | undefined;
+      if (current.phase === "prepared") {
+        ({ token, ref, botUsername } = current);
+      } else {
+        let res: Response;
+        let data: Record<string, unknown>;
+        try {
+          res = await fetch("/api/channels/connect-bot-request", { method: "POST" });
+          data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        } catch {
+          triggerHaptic("error");
+          if (mounted.current) setState({ phase: "failed", message: "Network error. Please check your connection and try again." });
+          return;
+        }
+        if (!res.ok || typeof data.token !== "string" || typeof data.ref !== "number") {
+          triggerHaptic("error");
+          if (mounted.current) {
+            setState({
+              phase: "failed",
+              message: (typeof data.error === "string" && data.error) || "Could not prepare the connection. Please try again.",
+              reason: typeof data.reason === "string" ? data.reason : undefined,
+            });
+          }
+          return;
+        }
+        token = data.token;
+        ref = data.ref;
+        botUsername = typeof data.botUsername === "string" ? data.botUsername : undefined;
+        // Remember the prepared request so a reopened Mini App (or a retry) reuses it.
+        persist({ token, ref, deadline: Date.now() + 10 * 60_000, botUsername });
+        // Unmounted while preparing: nothing was started yet; the persisted request can be resumed.
+        if (!mounted.current) return;
+      }
+
+      // ── 2. Start the server-side window + deliver the bot message ──────────────────
       let res: Response;
       let data: Record<string, unknown>;
       try {
@@ -520,7 +522,6 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
         if (mounted.current) setState({ phase: "prepared", token, ref, botUsername, error: "Network error. Please check your connection and try again." });
         return;
       }
-      if (!mounted.current) return;
 
       if (!res.ok || typeof data.botUrl !== "string") {
         triggerHaptic("error");
@@ -528,42 +529,48 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
         const message = (typeof data.error === "string" && data.error) || "Could not open the Onfile Bot. Please try again.";
         if (terminal) {
           persist(null);
-          setState({ phase: "failed", message, reason: typeof data.state === "string" ? data.state : undefined });
-        } else {
-          // The server rolled the request back to `prepared`: "Connect" can simply be tapped again.
+          if (mounted.current) setState({ phase: "failed", message, reason: typeof data.state === "string" ? data.state : undefined });
+        } else if (mounted.current) {
+          // The server rolled the request back to `prepared`: "Connect" can simply be tapped again
+          // (it reuses this token — no second request).
           setState({ phase: "prepared", token, ref, botUsername, error: message });
         }
         return;
       }
 
+      // ── 3. Window started (backend clock): countdown + waiting state ───────────────
       const botUrl = data.botUrl;
       const mode: BotConnectMode = data.mode === "existing_chat" ? "existing_chat" : "start_link";
       const resolvedUsername = typeof data.botUsername === "string" ? data.botUsername : botUsername;
-      const clock = clockFrom(data) ?? { expiresAt: tappedAt + 10 * 60_000, offset: 0 };
-      setState({ phase: "connecting", token, ref, botUsername: resolvedUsername, clock });
+      const clock = clockFrom(data) ?? { expiresAt: Date.now() + 10 * 60_000, offset: 0 };
+      const deadline = clock.expiresAt - clock.offset + POLL_GRACE_MS;
+      persist({ token, ref, deadline, botUrl, mode, botUsername: resolvedUsername });
 
-      // ~3 s UX delay, measured from the tap.
-      await sleep(Math.max(0, BOT_NAVIGATION_DELAY_MS - (Date.now() - tappedAt)));
-      if (!mounted.current) return;
+      // ── 4. Automatic hand-off ~3 s later. Module-level timer: an unmounting component
+      //       does NOT cancel it (only Cancel / a finished request does). ────────────────
+      const onBefore = () => triggerHaptic("impact");
+      const onResult = (result: BotNavigationResult) => {
+        if (result.status === "unavailable") {
+          triggerHaptic("warning");
+          if (mounted.current) {
+            setState((prev) => (prev.phase === "waiting_bot" && prev.token === token ? { ...prev, openFailed: true } : prev));
+          }
+          return;
+        }
+        if (result.status !== "navigated" || !mounted.current) return;
+        clearHint();
+        hintTimer.current = setTimeout(() => {
+          hintTimer.current = null;
+          if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+          setState((prev) => (prev.phase === "waiting_bot" && prev.token === token ? { ...prev, stillVisible: true } : prev));
+        }, FOREGROUND_HINT_MS);
+      };
+      scheduleBotNavigation(token, botUrl, BOT_NAVIGATION_DELAY_MS, { onBefore, onResult });
 
-      persist({ token, ref, deadline: clock.expiresAt - clock.offset + POLL_GRACE_MS, botUrl, mode, botUsername: resolvedUsername });
-      setState({ phase: "waiting_bot", token, ref, botUrl, mode, botUsername: resolvedUsername, clock, stage: "awaiting_selection" });
-      startTracking({ token, ref }, clock.expiresAt - clock.offset + POLL_GRACE_MS);
-
-      // Subtle haptic, then navigate. The supported API is openTelegramLink; no close().
-      triggerHaptic("impact");
-      const opened = openTelegramBotLink(botUrl);
-      if (!opened) {
-        triggerHaptic("warning");
-        setState((prev) => (prev.phase === "waiting_bot" && prev.token === token ? { ...prev, openFailed: true } : prev));
-        return;
+      if (mounted.current) {
+        setState({ phase: "waiting_bot", token, ref, botUrl, mode, botUsername: resolvedUsername, clock, stage: "awaiting_selection" });
+        startTracking({ token, ref }, deadline);
       }
-      clearHint();
-      hintTimer.current = setTimeout(() => {
-        hintTimer.current = null;
-        if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-        setState((prev) => (prev.phase === "waiting_bot" && prev.token === token ? { ...prev, stillVisible: true } : prev));
-      }, FOREGROUND_HINT_MS);
     } finally {
       connecting.current = false;
     }
@@ -581,8 +588,11 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
 
   const reset = useCallback(() => {
     // Abandon a still-pending request on the server too, rather than leaving it claimable.
-    const token = activeToken.current ?? readPersisted()?.token ?? null;
-    if (token) notifyCancelled(token);
+    const token = activeToken.current ?? readPersisted()?.token ?? stateToken(stateRef.current);
+    if (token) {
+      cancelBotNavigation(token); // an explicit Cancel DOES cancel the pending automatic hand-off
+      notifyCancelled(token);
+    }
     stopPolling();
     clearHint();
     activeKey.current = null;
@@ -593,5 +603,5 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
     setState({ phase: "idle" });
   }, [stopPolling, clearHint]);
 
-  return { state, check, start, connect, refresh, reset };
+  return { state, check, connect, refresh, reset };
 }

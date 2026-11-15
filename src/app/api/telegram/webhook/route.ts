@@ -351,7 +351,7 @@ async function resolvePendingAgainstChat(
   }
 
   // Bot-guided requests are only valid between "Connect" (which starts the 10-minute
-  // window) and expiry. A request that was merely prepared ("Start") must never be
+  // window) and expiry. A request that was merely prepared (window not started) must never be
   // completed — and the expiry is re-checked here against the server clock.
   if (connectMethodForRequestId(pending.telegramRequestId) === "bot") {
     if (!pending.connectStartedAt) {

@@ -10,13 +10,16 @@ import {
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 
 /**
- * "Start" — step 1 of the bot-guided channel connection flow.
+ * Prepare — step 1 of the bot-guided channel connection flow, now run automatically by the
+ * single "Connect" button (the separate "Start" button no longer exists). The client calls
+ * this and then POST /api/channels/connect-bot-start from ONE user action; a retry after a
+ * transient failure of the second call reuses the prepared token instead of calling this again.
  *
  * Creates ONE pending channel request (state `prepared`) bound to the
  * authenticated Telegram user and returns its opaque polling `token`, the
  * public request `ref` and the bot's real @username. It deliberately does NOT
  * message the user and does NOT start the countdown: that is the job of
- * "Connect" (POST /api/channels/connect-bot-start), which starts the
+ * connect-bot-start, which starts the
  * authoritative 10-minute window and delivers the bot message.
  *
  * Duplicate handling: any earlier still-open (unclaimed) bot request of this
@@ -54,7 +57,7 @@ export async function POST(req: NextRequest) {
     const identity = identityResult.identity;
 
     // The configured bot's real @username (from getMe) — never hardcoded. Resolving it here
-    // surfaces a misconfigured / unreachable bot at "Start" instead of after "Connect".
+    // surfaces a misconfigured / unreachable bot before anything is created or started.
     const botUsername = await getBotUsername(botToken);
     if (!botUsername) {
       console.error("connect_bot_request_failed", { stage: "bot_username_unresolved" });

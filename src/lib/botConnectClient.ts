@@ -3,14 +3,9 @@
  * they are trivially unit-testable).
  */
 
-/**
- * Deliberate UX pause between tapping "Connect" and Telegram opening the bot chat
- * (the backend prepares the bot interaction meanwhile). Part of the requested
- * experience — it is NOT a workaround for an API restriction.
- */
-export const BOT_NAVIGATION_DELAY_MS = 3000;
-
-export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+// The ~3 s pause before the bot chat opens lives in "@/lib/botNavigation", together
+// with the shared navigation routine (open bot chat → Telegram.WebApp.close()).
+export { BOT_NAVIGATION_DELAY_MS } from "@/lib/botNavigation";
 
 /**
  * Reads the public request reference from the "Return to Onfile" launch URL

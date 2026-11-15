@@ -10,7 +10,7 @@ export type { ConnectedChannel } from "@/lib/useChannelConnect";
 
 /**
  * Channel Management's "Connect New Channel" action: the same bot-guided flow as
- * the onboarding screen — "Start" → "Connect" → Onfile Bot chat with Telegram's
+ * the onboarding screen — "Connect" → Onfile Bot chat with Telegram's
  * native channel picker → "Return to Onfile" → automatic verification. Everything
  * is driven by the shared `useChannelConnect` engine; this component only renders
  * its state. Nothing here is trusted: success is shown only once the backend has
@@ -21,7 +21,7 @@ export default function ChannelConnectFlow({
 }: {
   onConnected?: (channel: ConnectedChannel) => void;
 }) {
-  const { state, check, start, connect, refresh, reset } = useChannelConnect(onConnected);
+  const { state, check, connect, refresh, reset } = useChannelConnect(onConnected);
 
   if (!isRunningInsideTelegram()) {
     return (
@@ -35,12 +35,12 @@ export default function ChannelConnectFlow({
   return (
     <div className="flex flex-col gap-4 w-full">
       {isBotFallbackPhase(state) && (
-        <BotFallbackPanel state={state} check={check} onStart={start} onConnect={connect} onRefresh={refresh} onCancel={reset} />
+        <BotFallbackPanel state={state} check={check} onConnect={connect} onRefresh={refresh} onCancel={reset} />
       )}
 
       {state.phase === "verified" && <ConnectSuccessNotice channel={state.channel} />}
 
-      {state.phase === "failed" && <BotConnectFailure message={state.message} onRetry={start} />}
+      {state.phase === "failed" && <BotConnectFailure message={state.message} onRetry={connect} />}
 
       <div className="flex items-start gap-2 text-left text-[11px] text-muted">
         <ShieldCheck size={13} className="mt-0.5 flex-shrink-0" />

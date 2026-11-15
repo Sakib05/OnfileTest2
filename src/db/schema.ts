@@ -219,7 +219,7 @@ export const pendingChannelRequests = pgTable(
     // right to verify + persist a given pending request, even across
     // separate serverless instances.
     claimedAt: timestamp("claimed_at"),
-    // ── Bot-guided connection flow (Start → Connect → bot chat → Return) ──
+    // ── Bot-guided connection flow (Connect → bot chat → Return) ──
     // All three are additive + nullable (migrations/bot_guided_connect). The
     // lifecycle state (prepared / connecting / awaiting_channel_selection /
     // verifying / connected / failed / expired / cancelled) is DERIVED from

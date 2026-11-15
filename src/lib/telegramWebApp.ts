@@ -13,6 +13,8 @@ export interface TelegramWebApp {
   version?: string;
   ready: () => void;
   expand: () => void;
+  /** Closes the Mini App (https://core.telegram.org/bots/webapps#initializing-mini-apps). Not "minimise". */
+  close?: () => void;
   colorScheme?: "light" | "dark";
   /** Opens a t.me link. Does not close the Mini App (Bot API 7.0+). */
   openTelegramLink?: (url: string) => void;
@@ -162,6 +164,29 @@ export function openTelegramBotLink(url: string): boolean {
   if (!webApp || typeof webApp.openTelegramLink !== "function") return false;
   try {
     webApp.openTelegramLink(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Closes the Mini App with the official `Telegram.WebApp.close()`. Returns whether
+ * the bridge accepted the call; `false` (never a throw) outside Telegram or when
+ * the method is missing. Deliberately NOT `window.close()`, which does nothing
+ * useful inside a Telegram WebView.
+ *
+ * Why this exists: since Bot API 7.0 `openTelegramLink()` no longer closes the
+ * Mini App, so closing must be requested explicitly after the link was opened.
+ * There is no documented "minimise" API — `close()` is the only supported way
+ * to get the Mini App out of the user's way (state is restored on return via
+ * the persisted request + the "Return to Onfile" button).
+ */
+export function closeTelegramMiniApp(): boolean {
+  const webApp = getTelegramWebApp();
+  if (!webApp || typeof webApp.close !== "function") return false;
+  try {
+    webApp.close();
     return true;
   } catch {
     return false;

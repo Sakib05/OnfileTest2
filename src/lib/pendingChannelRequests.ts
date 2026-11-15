@@ -41,13 +41,14 @@ import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
 export type PendingChannelStatus = "pending" | "verified" | "failed";
 
 /**
- * Lifecycle of a bot-guided connection request (Start → Connect → bot chat →
+ * Lifecycle of a bot-guided connection request (single "Connect" button → bot chat →
  * Return to Onfile). DERIVED, never stored separately, from the row's `status`,
  * `claimed_at`, `connect_started_at`, `picker_sent_at`, `failure_reason` and
  * `expires_at` — see deriveLifecycleState.
  *
- *   prepared                    "Start" tapped: request exists, countdown NOT running yet
- *   connecting                  "Connect" tapped: 10-min countdown running, bot message not delivered yet
+ *   prepared                    request created by the first half of the single "Connect" action; countdown NOT running yet
+ *                               (a transient state — also what a failed start is rolled back to, so a retry reuses it)
+ *   connecting                  second half of "Connect": 10-min countdown running, bot message not delivered yet
  *   awaiting_channel_selection  welcome + native channel picker delivered; waiting for the user
  *   verifying                   a genuine `chat_shared` claimed the request; live Telegram checks running
  *                               (covers both "channel_selected" and "verifying": the claim is atomic)

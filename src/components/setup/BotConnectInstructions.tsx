@@ -21,7 +21,7 @@ interface InstructionStepData {
 /**
  * The five instruction steps of "Connect channel via bot". Kept exactly as they
  * were; the action area below them is now the bot-guided flow
- * (Start → Connect → Onfile Bot chat → Return to Onfile — see
+ * (Connect → Onfile Bot chat → Return to Onfile — see
  * docs/BOT_GUIDED_CONNECT.md).
  */
 const STEPS: InstructionStepData[] = [
@@ -65,7 +65,7 @@ export default function BotConnectInstructions({
   onBack: () => void;
   onSuccess: (channel: ConnectedChannel) => void;
 }) {
-  const { state, check, start, connect, refresh, reset } = useChannelConnect(onSuccess);
+  const { state, check, connect, refresh, reset } = useChannelConnect(onSuccess);
 
   // Telegram's native Back Button is the only back control: it returns to the Channel Connect screen.
   useTelegramBackButton(onBack);
@@ -93,14 +93,13 @@ export default function BotConnectInstructions({
             <BotFallbackPanel
               state={state}
               check={check}
-              onStart={start}
               onConnect={connect}
               onRefresh={refresh}
               onCancel={reset}
             />
           )}
 
-          {state.phase === "failed" && <BotConnectFailure message={state.message} onRetry={start} />}
+          {state.phase === "failed" && <BotConnectFailure message={state.message} onRetry={connect} />}
         </>
       )}
 
