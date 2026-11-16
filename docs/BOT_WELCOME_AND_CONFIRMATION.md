@@ -67,8 +67,20 @@ Return to Onfile to automatically refresh and view your connection status.
   (public request ref only; no token/secret/ids). The Mini App resumes from that ref
   (`useChannelConnect` → `startTracking`), polls the server-authoritative status and shows the success state
   without pressing Connect and **without creating another pending request**.
-* If no https Mini App URL is configured, the message is still sent (without a broken button) and an
-  error is logged (`bot_connect_return_button_unavailable`). Set `MINI_APP_URL` in the deployment.
+* **Mini App URL.** Required production variable: `MINI_APP_URL=https://onfile-app.vercel.app` (public https origin, no
+  secret). Accepted explicit fallbacks, in order: `NEXT_PUBLIC_APP_URL`, then `VERCEL_PROJECT_PRODUCTION_URL` (only when
+  `VERCEL_ENV=production`). `VERCEL_URL` is **not** used (per-deployment hostname, usually behind Deployment Protection).
+  http/non-URL values are rejected, never sent to Telegram.
+* If no https Mini App URL resolves, the message is still sent **without** a button (never an invented URL, never a plain
+  URL button) and an **error** is logged: `bot_connect_return_button_unavailable { requiredEnv: "MINI_APP_URL", invalid: [...] }`.
+* Delivery is never silent: `bot_connect_success_not_delivered` (no private chat could be located — not even via Telegram's
+  `getChat`; the confirmation is *not* consumed), `bot_connect_return_button_rejected` (Telegram answered 400 to the
+  keyboard → text-only message is sent), `bot_connect_success_send_failed` (Telegram refused the message). The webhook also
+  logs `telegram_webhook_success_notification { delivered, buttonAttached }` for every verified bot-guided request.
+* The chat is located from the stored private chat, else the private chat of the update, else Telegram's own `getChat(<user id>)`
+  answer (this matters when the `my_chat_member` update — sent when the picker promotes the bot — beats `chat_shared`).
+* Legacy Direct Picker requests (`request_id < 2^30`, not used by the current UI) never get an in-chat message
+  (`telegram_webhook_in_chat_notification_skipped`).
 * Sent only when verification succeeds; failures use the existing failure messages.
 
 ## Tests

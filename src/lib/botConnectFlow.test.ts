@@ -12,6 +12,7 @@ import {
   connectionSuccessMessage,
   createBotStartPayload,
   getMiniAppBaseUrl,
+  resolveMiniAppBaseUrl,
   handleBotTextMessage,
   parseBotCommand,
   verifyBotStartPayload,
@@ -372,10 +373,28 @@ describe("bot-guided flow copy and return link", () => {
 
   it("getMiniAppBaseUrl accepts only https and honours the documented env precedence", () => {
     expect(getMiniAppBaseUrl({ MINI_APP_URL: "https://onfile-app.example/" } as unknown as NodeJS.ProcessEnv)).toBe("https://onfile-app.example");
-    expect(getMiniAppBaseUrl({ VERCEL_URL: "my-app.vercel.app" } as unknown as NodeJS.ProcessEnv)).toBe("https://my-app.vercel.app");
+    // VERCEL_URL is the per-deployment hostname (often behind Deployment Protection): never used for the button.
+    expect(getMiniAppBaseUrl({ VERCEL_URL: "my-app-abc123.vercel.app" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    // Vercel's stable production domain is trusted only on production deployments.
+    expect(getMiniAppBaseUrl({ VERCEL_PROJECT_PRODUCTION_URL: "onfile-app.vercel.app", VERCEL_ENV: "production" } as unknown as NodeJS.ProcessEnv)).toBe("https://onfile-app.vercel.app");
+    expect(getMiniAppBaseUrl({ VERCEL_PROJECT_PRODUCTION_URL: "onfile-app.vercel.app", VERCEL_ENV: "preview" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    expect(getMiniAppBaseUrl({ VERCEL_PROJECT_PRODUCTION_URL: "onfile-app.vercel.app" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+    // MINI_APP_URL wins over every alternative.
+    expect(
+      getMiniAppBaseUrl({ MINI_APP_URL: "https://a.example", NEXT_PUBLIC_APP_URL: "https://b.example", VERCEL_PROJECT_PRODUCTION_URL: "c.example", VERCEL_ENV: "production" } as unknown as NodeJS.ProcessEnv)
+    ).toBe("https://a.example");
+    expect(getMiniAppBaseUrl({ MINI_APP_URL: "https://user:pw@evil.example" } as unknown as NodeJS.ProcessEnv)).toBeNull();
     expect(getMiniAppBaseUrl({ MINI_APP_URL: "http://insecure.example", NEXT_PUBLIC_APP_URL: "https://ok.example" } as unknown as NodeJS.ProcessEnv)).toBe("https://ok.example");
     expect(getMiniAppBaseUrl({} as unknown as NodeJS.ProcessEnv)).toBeNull();
     expect(getMiniAppBaseUrl({ MINI_APP_URL: "javascript:alert(1)" } as unknown as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it("resolveMiniAppBaseUrl reports which variable it used, or exactly which ones were set but unusable", () => {
+    const env = (e: Record<string, string>) => e as unknown as NodeJS.ProcessEnv;
+    expect(resolveMiniAppBaseUrl(env({ MINI_APP_URL: "https://onfile-app.vercel.app" }))).toEqual({ ok: true, baseUrl: "https://onfile-app.vercel.app", source: "MINI_APP_URL" });
+    expect(resolveMiniAppBaseUrl(env({}))).toEqual({ ok: false, invalid: [] });
+    expect(resolveMiniAppBaseUrl(env({ MINI_APP_URL: "http://onfile-app.vercel.app" }))).toEqual({ ok: false, invalid: ["MINI_APP_URL"] });
+    expect(resolveMiniAppBaseUrl(env({ MINI_APP_URL: "ftp://x.example", NEXT_PUBLIC_APP_URL: "https://ok.example" }))).toEqual({ ok: true, baseUrl: "https://ok.example", source: "NEXT_PUBLIC_APP_URL" });
   });
 
   it("the Return to Onfile keyboard is a web_app button carrying only the public ref", () => {

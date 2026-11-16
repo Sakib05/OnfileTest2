@@ -362,7 +362,7 @@ describe("bot-guided flow — lifecycle, messages and idempotency", () => {
 
   it("without an https Mini App URL the confirmation is still sent (no broken button)", async () => {
     delete process.env.MINI_APP_URL;
-    for (const k of ["NEXT_PUBLIC_APP_URL", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"]) delete process.env[k];
+    for (const k of ["NEXT_PUBLIC_APP_URL", "VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL", "VERCEL_ENV"]) delete process.env[k];
     const { telegramRequestId } = await newBotRequest();
     await chatShared(USER_A, telegramRequestId);
     const note = userMessages().at(-1)!.body;

@@ -415,29 +415,53 @@ async function notify(telegramUserId: number, observedChatId: number | string | 
 
 // ─── "Return to Onfile" (second bot message) ─────────────────────────────────
 
+/** The one variable the operator must set. Everything else is a convenience fallback. */
+export const MINI_APP_URL_ENV = "MINI_APP_URL";
+
 /**
- * Public https base URL of the Mini App, used ONLY to build the `web_app`
- * button. Read from server env (first match wins): MINI_APP_URL,
- * NEXT_PUBLIC_APP_URL, VERCEL_PROJECT_PRODUCTION_URL, VERCEL_URL. Telegram
- * only accepts https URLs for `web_app` buttons; anything else yields null
- * and the message is sent without the button (the user can still open Onfile
- * from the bot's menu / chat list).
+ * Env sources for the Mini App origin, in precedence order. Only values an operator (or Vercel's stable
+ * PRODUCTION domain) put there on purpose are accepted:
+ *   - MINI_APP_URL                    explicit, preferred.
+ *   - NEXT_PUBLIC_APP_URL             explicit public app origin.
+ *   - VERCEL_PROJECT_PRODUCTION_URL   Vercel system variable; trusted ONLY when VERCEL_ENV === "production".
+ * `VERCEL_URL` is deliberately NOT used: it is the per-deployment hostname (not the Mini App URL registered with
+ * BotFather) and is usually behind Vercel Deployment Protection, so a button pointing at it would open a login wall.
  */
-export function getMiniAppBaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
-  const candidates = [env.MINI_APP_URL, env.NEXT_PUBLIC_APP_URL, env.VERCEL_PROJECT_PRODUCTION_URL, env.VERCEL_URL];
-  for (const raw of candidates) {
-    const value = raw?.trim();
+const MINI_APP_URL_SOURCES = ["MINI_APP_URL", "NEXT_PUBLIC_APP_URL", "VERCEL_PROJECT_PRODUCTION_URL"] as const;
+
+export type MiniAppUrlResolution =
+  | { ok: true; baseUrl: string; source: (typeof MINI_APP_URL_SOURCES)[number] }
+  | { ok: false; /** Variables that were set but unusable (not https / not a URL). */ invalid: string[] };
+
+/**
+ * Public https base URL of the Mini App, used ONLY to build the `web_app` button. Telegram only accepts https URLs
+ * for `web_app` buttons, so anything else is rejected (and reported in `invalid`) — never "fixed up" or guessed.
+ */
+export function resolveMiniAppBaseUrl(env: NodeJS.ProcessEnv = process.env): MiniAppUrlResolution {
+  const invalid: string[] = [];
+  for (const name of MINI_APP_URL_SOURCES) {
+    const value = env[name]?.trim();
     if (!value) continue;
-    const withScheme = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+    if (name === "VERCEL_PROJECT_PRODUCTION_URL" && env.VERCEL_ENV !== "production") continue;
+    // Vercel system variables hold a bare host (no scheme); an explicit scheme must be https.
+    const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`;
     try {
       const url = new URL(withScheme);
-      if (url.protocol !== "https:") continue;
-      return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+      if (url.protocol !== "https:" || url.username || url.password) {
+        invalid.push(name);
+        continue;
+      }
+      return { ok: true, baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, "")}`, source: name };
     } catch {
-      continue;
+      invalid.push(name);
     }
   }
-  return null;
+  return { ok: false, invalid };
+}
+
+export function getMiniAppBaseUrl(env: NodeJS.ProcessEnv = process.env): string | null {
+  const resolved = resolveMiniAppBaseUrl(env);
+  return resolved.ok ? resolved.baseUrl : null;
 }
 
 /**
@@ -468,34 +492,86 @@ export function connectionSuccessMessage(channelTitle?: string | null): string {
   );
 }
 
+export type SuccessNotificationResult =
+  | { delivered: true; buttonAttached: boolean }
+  | { delivered: false; reason: "no_private_chat" | "duplicate" | "send_failed" | "bot_blocked" };
+
 /**
- * Second bot message. Sent at most ONCE per request (atomic
- * `confirmation_sent_at` reservation), so a retried / duplicated webhook can
- * never produce a second confirmation. Plain text: the channel title is
- * user-controlled and must never be parsed as markup.
+ * Where to send the confirmation: the stored verified private chat, else the private chat the triggering update
+ * arrived in, else — for updates that carry no chat at all, e.g. the `my_chat_member` that Telegram sends when the
+ * native picker promotes the bot — whatever Telegram itself reports via `getChat(<user id>)` (nothing is guessed:
+ * the id is accepted only from a `type: "private"` answer, and then remembered).
+ */
+async function locateNotifyChatId(telegramUserId: number, observedChatId?: number | string | null): Promise<string | null> {
+  const known = await resolveNotifyChatId(telegramUserId, observedChatId);
+  if (known) return known;
+  const probe = await probePrivateChat(telegramUserId);
+  if (!probe.ok) return null;
+  await safely("bot_connect_chat_record_failed", () => recordPrivateChat(telegramUserId, probe.chatId, "get_chat"));
+  return probe.chatId;
+}
+
+/**
+ * Second bot message ("✅ <title> is now connected…" + inline `web_app` button "Return to Onfile").
+ * Sent at most ONCE per request (atomic `confirmation_sent_at` reservation), so a retried / duplicated webhook can
+ * never produce a second confirmation. Plain text (no parse_mode): the channel title is user-controlled and must
+ * never be parsed as markup. `channelTitle` must be the title from live verification.
+ *
+ * Nothing here fails silently:
+ *   - no chat can be located         → `bot_connect_success_not_delivered` (error), confirmation NOT consumed
+ *   - no https Mini App URL          → `bot_connect_return_button_unavailable` (error) naming the exact env variable;
+ *                                      the message is still sent, without a button (never a plain URL button)
+ *   - Telegram rejects the keyboard  → `bot_connect_return_button_rejected` (error) + the text-only message is sent
+ *                                      (only for HTTP 400: a deterministic rejection, so no duplicate is possible)
+ *   - Telegram rejects the message   → `bot_connect_success_send_failed` (error)
  */
 export async function notifyBotConnectionSuccess(
   telegramUserId: number,
   channelTitle?: string | null,
   observedChatId?: number | string | null,
   pending?: { id: number; telegramRequestId: number }
-) {
-  if (pending && !(await claimConfirmationDelivery(pending.id))) {
-    console.log("bot_connect_confirmation_duplicate_skipped", { pendingId: pending.id });
-    return;
-  }
-  const chatId = await resolveNotifyChatId(telegramUserId, observedChatId);
+): Promise<SuccessNotificationResult> {
+  const pendingId = pending?.id;
+  const chatId = await locateNotifyChatId(telegramUserId, observedChatId);
   if (!chatId) {
-    console.log("bot_connect_notify_skipped", { reason: "no_private_chat" });
-    return;
+    console.error("bot_connect_success_not_delivered", { reason: "no_private_chat", pendingId });
+    return { delivered: false, reason: "no_private_chat" };
   }
+  if (pending && !(await claimConfirmationDelivery(pending.id))) {
+    console.log("bot_connect_confirmation_duplicate_skipped", { pendingId });
+    return { delivered: false, reason: "duplicate" };
+  }
+
   const keyboard = pending ? buildReturnToOnfileKeyboard(pending.telegramRequestId) : undefined;
-  if (pending && !keyboard) console.error("bot_connect_return_button_unavailable", { reason: "no_https_mini_app_url" });
-  const res = await sendBotMessage(chatId, connectionSuccessMessage(channelTitle), keyboard ?? REMOVE_KEYBOARD);
-  if (!res.ok && classifySendFailure(res) === "bot_blocked") {
-    await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, chatId));
+  if (pending && !keyboard) {
+    const resolution = resolveMiniAppBaseUrl();
+    console.error("bot_connect_return_button_unavailable", {
+      pendingId,
+      requiredEnv: MINI_APP_URL_ENV,
+      example: `${MINI_APP_URL_ENV}=https://onfile-app.vercel.app`,
+      acceptedAlternatives: MINI_APP_URL_SOURCES.filter((n) => n !== MINI_APP_URL_ENV),
+      invalid: resolution.ok ? [] : resolution.invalid,
+      reason: "no_https_mini_app_url",
+    });
   }
+
+  const text = connectionSuccessMessage(channelTitle);
+  let res = await sendBotMessage(chatId, text, keyboard ?? REMOVE_KEYBOARD);
+  let buttonAttached = Boolean(keyboard) && res.ok;
+  if (!res.ok && keyboard && res.errorCode === 400) {
+    console.error("bot_connect_return_button_rejected", { pendingId, description: res.description, errorCode: res.errorCode });
+    res = await sendBotMessage(chatId, text, REMOVE_KEYBOARD);
+    buttonAttached = false;
+  }
+  if (!res.ok) {
+    const blocked = classifySendFailure(res) === "bot_blocked";
+    console.error("bot_connect_success_send_failed", { pendingId, description: res.description, errorCode: res.errorCode });
+    if (blocked) await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, chatId));
+    return { delivered: false, reason: blocked ? "bot_blocked" : "send_failed" };
+  }
+  return { delivered: true, buttonAttached };
 }
+
 
 export async function notifyBotConnectionFailure(telegramUserId: number, reason: string, observedChatId?: number | string | null) {
   const detail = CHANNEL_FAILURE_MESSAGES[reason] ?? "We couldn’t connect that channel.";

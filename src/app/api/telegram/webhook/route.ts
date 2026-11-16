@@ -429,11 +429,15 @@ async function resolvePendingAgainstChat(
     resolvedUserId: finalized.result.userId,
     isNewAccount: finalized.result.isNewAccount,
   });
-  await notifyIfBotMethod(pending, () => notifyBotConnectionSuccess(telegramUserId, verification.chat.title ?? finalized.result.channel.channelName, observedChatId, {
+  // The title is the one Telegram returned during live verification (getChat) — never `chat_shared.title`
+  // or the title carried by the update itself.
+  await notifyIfBotMethod(pending, async () => {
+    const outcome = await notifyBotConnectionSuccess(telegramUserId, verification.chat.title ?? finalized.result.channel.channelName, observedChatId, {
       id: pending.id,
       telegramRequestId: pending.telegramRequestId,
-    })
-  );
+    });
+    console.log("telegram_webhook_success_notification", { pendingId: pending.id, source, ...outcome });
+  });
 }
 
 /**
@@ -484,7 +488,7 @@ async function notifyBotLostAccess(telegramChatId: string, botStatus: string, ch
 }
 
 /** Notification failures (e.g. user blocked the bot) must never affect the verified outcome. */
-async function safeNotify(fn: () => Promise<void>) {
+async function safeNotify(fn: () => Promise<unknown>) {
   try {
     await fn();
   } catch (err) {
@@ -493,7 +497,11 @@ async function safeNotify(fn: () => Promise<void>) {
 }
 
 /** In-chat confirmation is sent ONLY for bot-chat fallback requests; Direct Picker requests are untouched. */
-async function notifyIfBotMethod(pending: PendingChannelRequestRecord, fn: () => Promise<void>) {
-  if (connectMethodForRequestId(pending.telegramRequestId) !== "bot") return;
+async function notifyIfBotMethod(pending: PendingChannelRequestRecord, fn: () => Promise<unknown>) {
+  if (connectMethodForRequestId(pending.telegramRequestId) !== "bot") {
+    // Visible in logs so "why no message?" is answerable: legacy Direct Picker requests never get one.
+    console.log("telegram_webhook_in_chat_notification_skipped", { pendingId: pending.id, reason: "direct_picker_request" });
+    return;
+  }
   await safeNotify(fn);
 }

@@ -136,7 +136,7 @@ Run it on Preview/staging first; production only with explicit approval. No data
 ## Manual setup required
 
 1. Apply the migration above.
-2. Set `MINI_APP_URL` (public https origin of the Mini App; or rely on `VERCEL_PROJECT_PRODUCTION_URL`). No BotFather "Main Mini App"
+2. Set `MINI_APP_URL=https://onfile-app.vercel.app` (public https origin of the Mini App; fallbacks: `NEXT_PUBLIC_APP_URL`, then `VERCEL_PROJECT_PRODUCTION_URL` on production deployments only — never `VERCEL_URL`). No BotFather "Main Mini App"
    is needed: the button is an inline `web_app` button, which Telegram allows in private chats with the bot.
 3. `TELEGRAM_WEBHOOK_SECRET` **should** be set and the webhook registered with it (`scripts/configure-telegram-webhook.mjs`,
    `allowed_updates` ⊇ `message`, `my_chat_member`). Without it the webhook cannot prove updates come from Telegram; the
