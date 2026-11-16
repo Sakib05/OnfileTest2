@@ -1,3 +1,5 @@
+> **Update:** the channel is no longer verified/connected by the `chat_shared` webhook. The webhook only stores the selection and immediately sends the Channel Verification message; verification and connection happen when the user taps **Verify** (Mini App → `POST /api/channels/connect-verify`). The Channel Selection / Verification message copy and the removed 3 s navigation delay are described in [CHANNEL_VERIFY_FLOW.md](CHANNEL_VERIFY_FLOW.md); where this document says otherwise, that one wins.
+
 # Bot-guided channel connection (Connect → bot chat → Verify → Dashboard)
 
 > **Update:** the separate **Start** button/step was removed. A single **Connect** button now prepares the request,

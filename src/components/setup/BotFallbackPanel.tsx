@@ -77,7 +77,8 @@ export function Countdown({ clock, onZero }: { clock: ServerClock; onZero?: () =
  * panel only owns the action area below it:
  *
  *   "Connect"  →  countdown + "Waiting for channel selection…" (the hand-off to the
- *   bot chat happens automatically ~3 s later)  →  "Verifying your connection…"
+ *   bot chat happens automatically, immediately)  →  "Channel selected — tap Verify in the bot chat…"
+ *   (the connection is verified by the bot's Verify button, which opens the Mini App)
  *
  * Deliberately minimal — no extra cards or navigation buttons. Failures and
  * expiry are shown by the parent (BotConnectFailure) and retried with "Connect".
@@ -146,12 +147,15 @@ export default function BotFallbackPanel({
 
   if (state.phase === "waiting_bot") {
     const verifying = state.stage === "verifying";
+    const selected = state.stage === "channel_selected";
     const botHandle = state.botUsername ? `@${state.botUsername}` : "the Onfile Bot";
     const statusText = check.loading
       ? "Verifying your connection..."
       : verifying
         ? "Channel selected — verifying..."
-        : "Waiting for channel selection...";
+        : selected
+          ? "Channel selected — tap Verify in the bot chat..."
+          : "Waiting for channel selection...";
     return (
       <div className="flex flex-col items-center gap-3 py-1" data-testid="bot-waiting">
         {state.clock && <Countdown clock={state.clock} onZero={onRefresh} />}

@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { and, desc, eq, gt, gte, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { db } from "@/db";
 import { channels, pendingChannelRequests } from "@/db/schema";
 import type { ResolvedConnectingIdentity } from "@/lib/channelConnection";
@@ -50,8 +50,9 @@ export type PendingChannelStatus = "pending" | "verified" | "failed";
  *                               (a transient state — also what a failed start is rolled back to, so a retry reuses it)
  *   connecting                  second half of "Connect": 10-min countdown running, bot message not delivered yet
  *   awaiting_channel_selection  welcome + native channel picker delivered; waiting for the user
- *   verifying                   a genuine `chat_shared` claimed the request; live Telegram checks running
- *                               (covers both "channel_selected" and "verifying": the claim is atomic)
+ *   channel_selected            a genuine `chat_shared` stored the chosen channel (NOT verified, NOT connected);
+ *                               waiting for the user to tap Verify in the Mini App
+ *   verifying                   the Mini App's Verify action claimed the request; live Telegram checks running
  *   connected                   verified + channel persisted
  *   failed                      verification failed (reason in `failureReason`)
  *   cancelled                   user cancelled or a newer request superseded it
@@ -61,6 +62,7 @@ export type ConnectLifecycleState =
   | "prepared"
   | "connecting"
   | "awaiting_channel_selection"
+  | "channel_selected"
   | "verifying"
   | "connected"
   | "failed"
@@ -71,7 +73,8 @@ export function deriveLifecycleState(
   row: Pick<
     typeof pendingChannelRequests.$inferSelect,
     "status" | "failureReason" | "claimedAt" | "connectStartedAt" | "pickerSentAt" | "expiresAt"
-  >,
+  > &
+    Partial<Pick<typeof pendingChannelRequests.$inferSelect, "selectedChatId">>,
   now: Date = new Date()
 ): ConnectLifecycleState {
   if (row.status === "verified") return "connected";
@@ -79,6 +82,7 @@ export function deriveLifecycleState(
   // status === "pending": the server clock is the source of truth for expiry.
   if (row.expiresAt.getTime() <= now.getTime()) return "expired";
   if (row.claimedAt) return "verifying";
+  if (row.selectedChatId) return "channel_selected";
   if (!row.connectStartedAt) return "prepared";
   if (!row.pickerSentAt) return "connecting";
   return "awaiting_channel_selection";
@@ -93,8 +97,10 @@ export interface PendingChannelRequestRecord {
   channel?: typeof channels.$inferSelect;
   resolvedUserId: number | null;
   isNewAccount: boolean;
-  /** True once a webhook delivery has claimed the request and is verifying it. */
+  /** True once the Mini App's Verify action has claimed the request and is verifying it. */
   claimed: boolean;
+  /** The channel Telegram reported in `chat_shared` (stored, NOT yet verified). Null until selected. */
+  selectedChatId: string | null;
   expiresAt: Date;
   createdAt: Date;
   /** UTC instant the user tapped "Connect" (null while only "prepared"). */
@@ -172,6 +178,7 @@ function rowToRecord(row: typeof pendingChannelRequests.$inferSelect): PendingCh
     resolvedUserId: row.resolvedUserId,
     isNewAccount: row.isNewAccount,
     claimed: row.claimedAt !== null && row.claimedAt !== undefined,
+    selectedChatId: row.selectedChatId ?? null,
     expiresAt: row.expiresAt,
     createdAt: row.createdAt,
     connectStartedAt: row.connectStartedAt ?? null,
@@ -305,21 +312,55 @@ export async function getLatestPendingByTelegramUser(
 }
 
 /**
- * Atomically "claims" a pending request for verification/finalization.
- * Returns `true` only for the single caller that wins the race — every
- * other concurrent/duplicate attempt (e.g. a `chat_shared` message AND a
- * `my_chat_member` update both arriving for the same request, or Telegram
- * redelivering the same update) gets `false` and must not proceed. This is
- * what actually prevents a duplicate Telegram update from creating a
- * duplicate connection, on top of the final `status` check.
+ * Stores the channel Telegram reported in `chat_shared` for the ONE request identified by
+ * (Telegram user id, Telegram request id) — and nothing else. This is the webhook's only write for a
+ * channel selection: it does NOT verify the channel, does NOT touch `channels` and does NOT resolve the
+ * request. The user's Verify tap in the Mini App later reads the stored id (see
+ * claimSelectedChannelForVerification), so the client never supplies a channel id.
  *
- * Safe under concurrency: a single `UPDATE ... WHERE status = 'pending' AND
- * claimed_at IS NULL` is evaluated and applied atomically per row by
- * Postgres, so two simultaneous callers can never both see zero rows
- * affected as a false negative, nor both succeed.
+ * One atomic `UPDATE ... WHERE ... RETURNING` both validates and persists, in a single round trip:
+ *   - the row belongs to this Telegram user and this request id;
+ *   - it is still `pending`, not yet claimed for verification, and not expired (server clock);
+ *   - bot-method requests must have been started by "Connect" (`connect_started_at`), exactly as before.
+ * Re-sharing a (different) channel before Verify simply replaces the stored one — the request still
+ * resolves to at most ONE channel, once. Returns the updated record, or undefined when nothing matched.
  */
-export async function claimPendingRequestForProcessing(id: number): Promise<boolean> {
-  const result = await db
+export async function recordChannelSelection(
+  telegramUserId: number,
+  telegramRequestId: number,
+  chatId: string
+): Promise<PendingChannelRequestRecord | undefined> {
+  const now = new Date();
+  const [row] = await db
+    .update(pendingChannelRequests)
+    .set({ selectedChatId: chatId, selectedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+        eq(pendingChannelRequests.telegramRequestId, telegramRequestId),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt),
+        gt(pendingChannelRequests.expiresAt, now),
+        or(lt(pendingChannelRequests.telegramRequestId, BOT_REQUEST_ID_MIN), isNotNull(pendingChannelRequests.connectStartedAt))
+      )
+    )
+    .returning();
+  return row ? rowToRecord(row) : undefined;
+}
+
+/**
+ * Atomically "claims" a pending request for verification/finalization and returns the channel id that
+ * was stored by the webhook (or null when the caller did not win). Only the Mini App's Verify action
+ * calls this. Returns a value for the single caller that wins the race — every other concurrent/repeated
+ * attempt (double tap, two devices, a refresh mid-verification) gets null and must not proceed. This is
+ * what prevents a request from being finalized twice.
+ *
+ * Safe under concurrency: a single `UPDATE ... WHERE status = 'pending' AND claimed_at IS NULL AND
+ * selected_chat_id IS NOT NULL` is evaluated and applied atomically per row by Postgres, so two
+ * simultaneous callers can never both succeed.
+ */
+export async function claimSelectedChannelForVerification(id: number): Promise<string | null> {
+  const [row] = await db
     .update(pendingChannelRequests)
     .set({ claimedAt: new Date(), updatedAt: new Date() })
     .where(
@@ -327,12 +368,24 @@ export async function claimPendingRequestForProcessing(id: number): Promise<bool
         eq(pendingChannelRequests.id, id),
         eq(pendingChannelRequests.status, "pending"),
         isNull(pendingChannelRequests.claimedAt),
-        // An expired request can never be claimed, even by a webhook that raced the clock.
+        isNotNull(pendingChannelRequests.selectedChatId),
+        // An expired request can never be claimed, even by a call that raced the clock.
         gt(pendingChannelRequests.expiresAt, new Date())
       )
     )
-    .returning({ id: pendingChannelRequests.id });
-  return result.length > 0;
+    .returning({ selectedChatId: pendingChannelRequests.selectedChatId });
+  return row?.selectedChatId ?? null;
+}
+
+/**
+ * Gives the verification claim back after a TRANSIENT failure (Telegram unreachable) so the user can tap
+ * Verify again. Only valid while the request is still `pending`; a resolved request is never reopened.
+ */
+export async function releaseVerificationClaim(id: number): Promise<void> {
+  await db
+    .update(pendingChannelRequests)
+    .set({ claimedAt: null, updatedAt: new Date() })
+    .where(and(eq(pendingChannelRequests.id, id), eq(pendingChannelRequests.status, "pending")));
 }
 
 /**
@@ -600,7 +653,7 @@ export async function markPickerSent(id: number): Promise<void> {
     .where(and(eq(pendingChannelRequests.id, id), isNull(pendingChannelRequests.pickerSentAt)));
 }
 
-/** Atomically reserves the one-and-only "Congratulations" message for a request. */
+/** Atomically reserves the one-and-only "Channel Verification" (Verify button) message for a request. */
 export async function claimConfirmationDelivery(id: number): Promise<boolean> {
   const r = await db
     .update(pendingChannelRequests)
@@ -608,4 +661,12 @@ export async function claimConfirmationDelivery(id: number): Promise<boolean> {
     .where(and(eq(pendingChannelRequests.id, id), isNull(pendingChannelRequests.confirmationSentAt)))
     .returning({ id: pendingChannelRequests.id });
   return r.length > 0;
+}
+
+/** Gives the reservation back when Telegram DEFINITIVELY rejected the message, so a re-selection can retry it. */
+export async function releaseConfirmationDelivery(id: number): Promise<void> {
+  await db
+    .update(pendingChannelRequests)
+    .set({ confirmationSentAt: null, updatedAt: new Date() })
+    .where(and(eq(pendingChannelRequests.id, id), eq(pendingChannelRequests.status, "pending")));
 }

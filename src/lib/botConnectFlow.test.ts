@@ -8,8 +8,9 @@ import {
   buildBotDeepLink,
   buildVerifyKeyboard,
   buildVerifyUrl,
+  CHANNEL_SELECTION_MESSAGE,
   CHANNEL_VERIFICATION_MESSAGE,
-  channelConnectionWelcomeMessage,
+  channelSelectionMessage,
   classifySendFailure,
   channelVerificationMessage,
   createBotStartPayload,
@@ -17,6 +18,7 @@ import {
   resolveMiniAppBaseUrl,
   handleBotTextMessage,
   parseBotCommand,
+  sendChannelVerificationPrompt,
   verifyBotStartPayload,
 } from "@/lib/botConnectFlow";
 import {
@@ -346,23 +348,42 @@ describe("returning-user helpers", () => {
 });
 
 describe("bot-guided flow copy and return link", () => {
-  it("welcome message is the specified text with the live number of minutes left", () => {
-    const now = Date.now();
-    const text = channelConnectionWelcomeMessage(new Date(now + 10 * 60_000), now);
-    expect(text).toBe(
-      "Welcome to Onfile Channel Connection!\n\n" +
-        "Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
-        "Make sure the Onfile bot has the required administrator permissions in your channel.\n\n" +
-        "Your connection request will expire in 10 minutes."
+  it("Channel Selection message is EXACTLY the approved copy (not the general welcome message)", () => {
+    const EXACT =
+      "📢 Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
+      "Tap the button below to select your channel 👇";
+    expect(channelSelectionMessage()).toBe(EXACT);
+    expect(CHANNEL_SELECTION_MESSAGE).toBe(EXACT);
+    expect(channelSelectionMessage.length).toBe(0); // static: nothing (not even an expiry) is interpolated
+  });
+
+  it("Channel Selection message no longer contains the old wording or the expiry sentence", () => {
+    const text = channelSelectionMessage();
+    expect(text).not.toContain("Welcome to Onfile Channel Connection");
+    expect(text).not.toContain("administrator permissions");
+    expect(text).not.toMatch(/expire/i);
+    expect(text).not.toMatch(/minute/i);
+  });
+
+  it("the Channel Selection message is what the native picker button is sent with, and the 10-minute window stays server-side", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    const row = (await getPendingByToken(p.correlationToken))!;
+    // Backend expiry logic is untouched even though the text no longer mentions it.
+    const windowMs = row.expiresAt.getTime() - Date.now();
+    expect(windowMs).toBeGreaterThan(9 * 60_000);
+    expect(windowMs).toBeLessThanOrEqual(10 * 60_000);
+
+    await start(USER_A, `/start ${createBotStartPayload(p.telegramRequestId, USER_A)}`);
+    const picker = sentMessages().find((m) => (m.body.reply_markup as Record<string, unknown> | undefined)?.keyboard);
+    expect(picker?.body.text).toBe(CHANNEL_SELECTION_MESSAGE);
+    expect((picker?.body.reply_markup as { keyboard: { request_chat: { request_id: number } }[][] }).keyboard[0][0].request_chat.request_id).toBe(
+      p.telegramRequestId
     );
-    expect(channelConnectionWelcomeMessage(new Date(now + 30_000), now)).toContain("expire in 1 minute.");
   });
 
   it("verification message is exactly the approved copy", () => {
-    const EXACT =
-      "🔐 Channel Verification\n\n" +
-      "Your channel connection is ready.\n\n" +
-      "Tap the button below to verify your connection and continue to your Onfile dashboard.";
+    const EXACT = "🔐 Channel Verification\n\n" + "🚀 Tap the button below to verify your connection.";
     expect(channelVerificationMessage()).toBe(EXACT);
     expect(CHANNEL_VERIFICATION_MESSAGE).toBe(EXACT);
   });
@@ -370,6 +391,8 @@ describe("bot-guided flow copy and return link", () => {
   it("verification message never contains the old wording, a placeholder or any channel title", () => {
     const text = channelVerificationMessage();
     expect(text).not.toContain("Congratulations");
+    expect(text).not.toContain("Your channel connection is ready");
+    expect(text).not.toContain("dashboard");
     expect(text).not.toContain("is now connected");
     expect(text).not.toContain("Return to Onfile");
     expect(text).not.toContain("{");
@@ -493,5 +516,70 @@ describe("channel picker placement (Telegram Bot API constraint)", () => {
     const markup = JSON.stringify(sentMessages().at(-1)!.body.reply_markup);
     expect(markup).toContain("request_chat");
     expect(markup).not.toContain("inline_keyboard");
+  });
+});
+
+describe("sendChannelVerificationPrompt — immediate Verify message", () => {
+  beforeEach(() => {
+    process.env.MINI_APP_URL = "https://onfile.example.test";
+  });
+
+  it("sends exactly one sendMessage straight to the given chat: exact text + Verify web_app button, no other Bot API call", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    const row = (await getPendingByToken(p.correlationToken))!;
+    const res = await sendChannelVerificationPrompt(USER_A, 4242, { id: row.id, telegramRequestId: row.telegramRequestId });
+    expect(res).toEqual({ delivered: true, buttonAttached: true });
+    // No getChat / getChatMember / getMe before the message: nothing is verified or looked up first.
+    expect(calls.map((c) => c.method)).toEqual(["sendMessage"]);
+    expect(calls[0].body).toEqual({
+      chat_id: 4242,
+      text: "🔐 Channel Verification\n\n🚀 Tap the button below to verify your connection.",
+      reply_markup: {
+        inline_keyboard: [[{ text: "Verify", web_app: { url: `https://onfile.example.test/?connect=${row.telegramRequestId}` } }]],
+      },
+    });
+  });
+
+  it("is sent at most once per request (a duplicate delivery is skipped without calling Telegram)", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    const row = (await getPendingByToken(p.correlationToken))!;
+    const ref = { id: row.id, telegramRequestId: row.telegramRequestId };
+    const results = await Promise.all([
+      sendChannelVerificationPrompt(USER_A, 4242, ref),
+      sendChannelVerificationPrompt(USER_A, 4242, ref),
+      sendChannelVerificationPrompt(USER_A, 4242, ref),
+    ]);
+    expect(results.filter((r) => r.delivered)).toHaveLength(1);
+    expect(results.filter((r) => !r.delivered && r.reason === "duplicate")).toHaveLength(2);
+    expect(sentMessages()).toHaveLength(1);
+  });
+
+  it("when Telegram definitively rejects the message the reservation is released so a re-selection can retry", async () => {
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    const row = (await getPendingByToken(p.correlationToken))!;
+    const ref = { id: row.id, telegramRequestId: row.telegramRequestId };
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: false, error_code: 500, description: "Internal Server Error" }), { status: 500 })
+    ) as unknown as typeof fetch;
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await sendChannelVerificationPrompt(USER_A, 4242, ref)).toEqual({ delivered: false, reason: "send_failed" });
+    expect(errSpy).toHaveBeenCalledWith("bot_connect_verification_prompt_failed", expect.objectContaining({ pendingId: row.id }));
+    mockTelegram();
+    expect(await sendChannelVerificationPrompt(USER_A, 4242, ref)).toEqual({ delivered: true, buttonAttached: true });
+  });
+
+  it("without an https Mini App URL the failure is logged loudly naming MINI_APP_URL and the text-only message is still sent", async () => {
+    delete process.env.MINI_APP_URL;
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    const p = await createPendingChannelRequest(identity(USER_A), { method: "bot" });
+    await connecting(p);
+    const row = (await getPendingByToken(p.correlationToken))!;
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await sendChannelVerificationPrompt(USER_A, 4242, { id: row.id, telegramRequestId: row.telegramRequestId });
+    expect(res).toEqual({ delivered: true, buttonAttached: false });
+    expect(errSpy).toHaveBeenCalledWith("bot_connect_verify_button_unavailable", expect.objectContaining({ requiredEnv: "MINI_APP_URL" }));
   });
 });

@@ -4,6 +4,7 @@ import {
   getLatestPendingBotRequestForUser,
   lookupPendingForBotStart,
   markPickerSent,
+  releaseConfirmationDelivery,
   type PendingChannelRequestRecord,
 } from "@/lib/pendingChannelRequests";
 import { buildChannelPickerKeyboard, probePrivateChat, sendBotMessage, type SendBotMessageResult } from "@/lib/telegramBot";
@@ -40,9 +41,15 @@ import {
  *      (KeyboardButtonRequestChat) button — the only Bot API mechanism that
  *      opens Telegram's native channel picker from a bot chat. The criteria
  *      are the exact same ones the Direct Picker uses.
- *   4. Telegram posts a `chat_shared` service message; the existing webhook
- *      pipeline (claim → live Bot API re-verification → finalize) completes
- *      the connection, and this module tells the user the result in chat.
+ *   4. Telegram posts its own "You shared … with Onfile" service message, and the
+ *      `chat_shared` update reaches the webhook. The webhook ONLY stores the selected channel
+ *      against the pending request and immediately sends the "Channel Verification" message
+ *      with the Verify button (sendChannelVerificationPrompt). It performs NO channel
+ *      verification and connects nothing.
+ *   5. The Verify button opens the Mini App, whose Verify action calls
+ *      POST /api/channels/connect-verify — the ONLY place where the live Bot API
+ *      verification (privacy, owner/admin rights, bot admin + permissions) runs and the
+ *      connection is finalized (src/lib/connectVerification.ts).
  */
 
 // ─── Signed start payload ───────────────────────────────────────────────────
@@ -149,20 +156,17 @@ export const BOT_MESSAGES = {
     "That channel selection arrived after the request expired, so nothing was connected. " + RETRY_HINT,
 } as const;
 
-/** Minutes left in the server-side window, as shown in the bot message (never below 1). */
-export function minutesLeft(expiresAt: Date, now: number = Date.now()): number {
-  return Math.max(1, Math.round((expiresAt.getTime() - now) / 60_000));
-}
+/**
+ * Exact, product-approved copy of the Channel Selection message (the message that carries the native
+ * channel picker button). NOT the general welcome message. The 10-minute window is still enforced by the
+ * backend (`expires_at`); it is simply no longer announced here. Static, plain text (no parse_mode).
+ */
+export const CHANNEL_SELECTION_MESSAGE =
+  "📢 Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
+  "Tap the button below to select your channel 👇";
 
-/** First bot message of the guided flow: instructions + (attached separately) the native channel picker. */
-export function channelConnectionWelcomeMessage(expiresAt: Date, now: number = Date.now()): string {
-  const minutes = minutesLeft(expiresAt, now);
-  return (
-    "Welcome to Onfile Channel Connection!\n\n" +
-    "Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
-    "Make sure the Onfile bot has the required administrator permissions in your channel.\n\n" +
-    `Your connection request will expire in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`
-  );
+export function channelSelectionMessage(): string {
+  return CHANNEL_SELECTION_MESSAGE;
 }
 
 async function sendPickerKeyboard(chatId: number | string, pending: PendingChannelRequestRecord) {
@@ -171,7 +175,7 @@ async function sendPickerKeyboard(chatId: number | string, pending: PendingChann
   // (authenticated Telegram user id, request id).
   const res = await sendBotMessage(
     chatId,
-    channelConnectionWelcomeMessage(pending.expiresAt),
+    channelSelectionMessage(),
     buildChannelPickerKeyboard(pending.telegramRequestId)
   );
   if (!res.ok) {
@@ -314,8 +318,8 @@ export function parseBotCommand(text: string): { command: string; arg: string } 
 /**
  * Handles `/start [payload]` and `/connect` in a private chat with the bot.
  * Returns true if the message was a command this handler owns. All replies
- * are plain text; nothing here touches the `channels` table — connection is
- * only ever finalized by the `chat_shared` pipeline after live verification.
+ * are plain text; nothing here touches the `channels` table — a connection is
+ * only ever finalized by the Mini App's Verify action (connectVerification.ts).
  */
 export async function handleBotTextMessage(msg: BotTextMessage): Promise<boolean> {
   if (msg.chatType !== "private") return false;
@@ -497,64 +501,46 @@ export function buildVerifyKeyboard(telegramRequestId: number, env: NodeJS.Proce
  */
 export const CHANNEL_VERIFICATION_MESSAGE =
   "🔐 Channel Verification\n\n" +
-  "Your channel connection is ready.\n\n" +
-  "Tap the button below to verify your connection and continue to your Onfile dashboard.";
+  "🚀 Tap the button below to verify your connection.";
 
 export function channelVerificationMessage(): string {
   return CHANNEL_VERIFICATION_MESSAGE;
 }
 
-export type SuccessNotificationResult =
+export type VerificationPromptResult =
   | { delivered: true; buttonAttached: boolean }
-  | { delivered: false; reason: "no_private_chat" | "duplicate" | "send_failed" | "bot_blocked" };
+  | { delivered: false; reason: "duplicate" | "send_failed" | "bot_blocked" };
 
 /**
- * Where to send the confirmation: the stored verified private chat, else the private chat the triggering update
- * arrived in, else — for updates that carry no chat at all, e.g. the `my_chat_member` that Telegram sends when the
- * native picker promotes the bot — whatever Telegram itself reports via `getChat(<user id>)` (nothing is guessed:
- * the id is accepted only from a `type: "private"` answer, and then remembered).
- */
-async function locateNotifyChatId(telegramUserId: number, observedChatId?: number | string | null): Promise<string | null> {
-  const known = await resolveNotifyChatId(telegramUserId, observedChatId);
-  if (known) return known;
-  const probe = await probePrivateChat(telegramUserId);
-  if (!probe.ok) return null;
-  await safely("bot_connect_chat_record_failed", () => recordPrivateChat(telegramUserId, probe.chatId, "get_chat"));
-  return probe.chatId;
-}
-
-/**
- * Second bot message ("🔐 Channel Verification…" + inline `web_app` button "Verify").
- * Sent at most ONCE per request (atomic `confirmation_sent_at` reservation), so a retried / duplicated webhook can
- * never produce a second message. Plain text (no parse_mode). It is only ever sent after the live Telegram
- * verification and the channel write succeeded; it names no channel (so no client-supplied title can reach it).
+ * Sends the "🔐 Channel Verification" message (+ inline `web_app` button "Verify") — IMMEDIATELY after the
+ * webhook stored the `chat_shared` selection. Nothing has been verified and nothing is connected at this
+ * point: the message only invites the user to open the Mini App, which performs the real verification.
+ *
+ * Speed: `chatId` is the private chat the `chat_shared` update itself arrived in, so there is no database
+ * lookup and no `getChat` probe before sending. The only work before the Bot API call is the single atomic
+ * `confirmation_sent_at` reservation.
+ *
+ * Sent at most ONCE per request (that atomic reservation), so a retried / duplicated webhook update can
+ * never produce a second message. Plain text (no parse_mode); it names no channel, so no user-controlled
+ * title can reach it.
  *
  * Nothing here fails silently:
- *   - no chat can be located         → `bot_connect_success_not_delivered` (error), confirmation NOT consumed
  *   - no https Mini App URL          → `bot_connect_verify_button_unavailable` (error) naming the exact env variable;
  *                                      the message is still sent, without a button (never a plain URL button)
  *   - Telegram rejects the keyboard  → `bot_connect_verify_button_rejected` (error) + the text-only message is sent
  *                                      (only for HTTP 400: a deterministic rejection, so no duplicate is possible)
- *   - Telegram rejects the message   → `bot_connect_success_send_failed` (error)
+ *   - Telegram rejects the message   → `bot_connect_verification_prompt_failed` (error); when Telegram DEFINITIVELY
+ *                                      answered with an error the reservation is released so a re-selection retries.
+ *                                      An ambiguous network failure keeps it (the message may have been delivered).
  */
-export async function notifyBotConnectionSuccess(
+export async function sendChannelVerificationPrompt(
   telegramUserId: number,
-  observedChatId?: number | string | null,
-  pending?: { id: number; telegramRequestId: number }
-): Promise<SuccessNotificationResult> {
-  const pendingId = pending?.id;
-  const chatId = await locateNotifyChatId(telegramUserId, observedChatId);
-  if (!chatId) {
-    console.error("bot_connect_success_not_delivered", { reason: "no_private_chat", pendingId });
-    return { delivered: false, reason: "no_private_chat" };
-  }
-  if (pending && !(await claimConfirmationDelivery(pending.id))) {
-    console.log("bot_connect_confirmation_duplicate_skipped", { pendingId });
-    return { delivered: false, reason: "duplicate" };
-  }
-
-  const keyboard = pending ? buildVerifyKeyboard(pending.telegramRequestId) : undefined;
-  if (pending && !keyboard) {
+  chatId: number | string,
+  pending: { id: number; telegramRequestId: number }
+): Promise<VerificationPromptResult> {
+  const pendingId = pending.id;
+  const keyboard = buildVerifyKeyboard(pending.telegramRequestId);
+  if (!keyboard) {
     const resolution = resolveMiniAppBaseUrl();
     console.error("bot_connect_verify_button_unavailable", {
       pendingId,
@@ -564,6 +550,11 @@ export async function notifyBotConnectionSuccess(
       invalid: resolution.ok ? [] : resolution.invalid,
       reason: "no_https_mini_app_url",
     });
+  }
+
+  if (!(await claimConfirmationDelivery(pendingId))) {
+    console.log("bot_connect_confirmation_duplicate_skipped", { pendingId });
+    return { delivered: false, reason: "duplicate" };
   }
 
   const text = channelVerificationMessage();
@@ -576,13 +567,13 @@ export async function notifyBotConnectionSuccess(
   }
   if (!res.ok) {
     const blocked = classifySendFailure(res) === "bot_blocked";
-    console.error("bot_connect_success_send_failed", { pendingId, description: res.description, errorCode: res.errorCode });
-    if (blocked) await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, chatId));
+    console.error("bot_connect_verification_prompt_failed", { pendingId, description: res.description, errorCode: res.errorCode });
+    if (res.errorCode !== undefined) await safely("bot_connect_confirmation_release_failed", () => releaseConfirmationDelivery(pendingId));
+    if (blocked) await safely("bot_connect_chat_mark_blocked_failed", () => markPrivateChatBlocked(telegramUserId, String(chatId)));
     return { delivered: false, reason: blocked ? "bot_blocked" : "send_failed" };
   }
   return { delivered: true, buttonAttached };
 }
-
 
 export async function notifyBotConnectionFailure(telegramUserId: number, reason: string, observedChatId?: number | string | null) {
   const detail = CHANNEL_FAILURE_MESSAGES[reason] ?? "We couldn’t connect that channel.";

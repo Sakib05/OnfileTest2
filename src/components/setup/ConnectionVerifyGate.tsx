@@ -8,11 +8,12 @@ import { isRunningInsideTelegram, triggerHaptic } from "@/lib/telegramWebApp";
 import {
   VERIFY_ERROR_COPY,
   fetchVerifyOutcome,
+  submitVerification,
   verifyFailureMessage,
   type VerifyOutcome,
 } from "@/lib/verifyLaunch";
 
-/** While the webhook is still verifying with Telegram, re-check the SAME request this often / this many times. */
+/** While a verification is still running with Telegram (another tap / device), re-check the SAME request this often / this many times. */
 const VERIFYING_POLL_MS = 2000;
 const VERIFYING_MAX_POLLS = 8;
 
@@ -20,14 +21,18 @@ type GatePhase = { phase: "verifying" } | { phase: "error"; message: string };
 
 /**
  * What the Mini App shows when it is opened by the bot's "Verify" button (`/?connect=<public request ref>`).
+ * Opening it IS the user's Verify action:
  *
  *   1. make sure the Telegram user is signed in (silent `initData` exchange, as everywhere else);
- *   2. ask the backend about the EXISTING request (read-only GET connect-status?ref=) — the server checks the
- *      request belongs to this Telegram user, has not expired and that the connected channel is verified and owned
- *      by the same account;
- *   3. only if the server says "verified": refresh the session user + connected channels and invalidate the
+ *   2. ask the backend to VERIFY the EXISTING request (POST connect-verify, `submitVerification`). The server does
+ *      all the checking: the request belongs to this Telegram user and has not expired, the channel Telegram
+ *      reported is private, the user is its creator/administrator, the Onfile bot is an administrator with the
+ *      required permissions — and only then connects it, exactly once. Nothing (channel id, verdict) comes from
+ *      this client;
+ *   3. if another tap / device is already verifying, wait for that single verification with the read-only GET;
+ *   4. only if the server says "verified": refresh the session user + connected channels and invalidate the
  *      Dashboard's data (`refreshDashboard`), then hand over to the Dashboard (`onVerified`);
- *   4. in every other case show a clear error with a safe retry (re-checks the same request; never creates a new
+ *   5. in every other case show a clear error with a safe retry (re-submits the same request; never creates a new
  *      one) — the Dashboard is NEVER reached as if verification had succeeded.
  *
  * The Channel Management page is deliberately not a destination of this flow; "Connect a channel" is only offered
@@ -74,7 +79,7 @@ export default function ConnectionVerifyGate({
     try {
       if (mounted.current) setView({ phase: "verifying" });
 
-      let outcome: VerifyOutcome = await fetchVerifyOutcome(launchRef);
+      let outcome: VerifyOutcome = await submitVerification(launchRef);
       for (let i = 0; i < VERIFYING_MAX_POLLS && outcome.kind === "verifying"; i++) {
         await new Promise((r) => setTimeout(r, VERIFYING_POLL_MS));
         if (!mounted.current) return;

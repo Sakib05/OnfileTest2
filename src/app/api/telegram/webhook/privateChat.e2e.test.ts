@@ -195,7 +195,7 @@ describe("first-time user: signed Start flow", () => {
 });
 
 describe("confirmations use the stored chat id", () => {
-  it("the verification message after chat_shared goes to the stored private chat (not the user id) and the connection completes", async () => {
+  it("the verification message after chat_shared goes to the private chat the update arrived in (not the user id) and nothing is connected yet", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
     await beginBotConnect((await getPendingByToken(created.correlationToken))!.id); // "Connect" was tapped
@@ -206,12 +206,11 @@ describe("confirmations use the stored chat id", () => {
         chat_shared: { request_id: created.telegramRequestId, chat_id: CHANNEL },
       },
     });
-    expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
+    const after = (await getPendingByToken(created.correlationToken))!;
+    expect(after.status).toBe("pending"); // selected, NOT connected: the Mini App's Verify does that
+    expect(after.selectedChatId).toBe(String(CHANNEL));
     const note = sentMessages().at(-1)!;
-    expect(String(note.body.text)).toBe(
-      "🔐 Channel Verification\n\nYour channel connection is ready.\n\n" +
-        "Tap the button below to verify your connection and continue to your Onfile dashboard."
-    );
+    expect(String(note.body.text)).toBe("🔐 Channel Verification\n\n🚀 Tap the button below to verify your connection.");
     expect(String(note.body.chat_id)).toBe(String(PRIVATE_CHAT));
     expect(String(note.body.chat_id)).not.toBe(String(USER));
   });
@@ -248,9 +247,7 @@ describe("confirmations use the stored chat id", () => {
         message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, chat_shared: { request_id: created.telegramRequestId, chat_id: CHANNEL } },
       });
       const note = sentMessages().at(-1)!;
-      expect(String(note.body.text)).toBe(
-        "🔐 Channel Verification\n\nYour channel connection is ready.\n\nTap the button below to verify your connection and continue to your Onfile dashboard."
-      );
+      expect(String(note.body.text)).toBe("🔐 Channel Verification\n\n🚀 Tap the button below to verify your connection.");
       expect(note.body.reply_markup).toEqual({
         inline_keyboard: [[{ text: "Verify", web_app: { url: `https://onfile.example.test/?connect=${created.telegramRequestId}` } }]],
       });
@@ -261,19 +258,10 @@ describe("confirmations use the stored chat id", () => {
     }
   });
 
-  it("no success message is sent when verification fails (title is never trusted from the update)", async () => {
+  it("the message never contains a title taken from the update, and nothing is verified before it is sent", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
     await beginBotConnect((await getPendingByToken(created.correlationToken))!.id);
-    const base = global.fetch;
-    global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      const method = String(url).split("/").pop() as string;
-      if (method === "getChatMember") {
-        calls.push({ method, body: init?.body ? JSON.parse(init.body as string) : {} });
-        return new Response(JSON.stringify({ ok: true, result: { status: "member" } }), { status: 200 });
-      }
-      return base(url, init);
-    }) as unknown as typeof fetch;
     await webhook({
       message: {
         chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER },
@@ -281,8 +269,8 @@ describe("confirmations use the stored chat id", () => {
       },
     });
     const texts = sentMessages().map((m) => String(m.body.text));
-    expect(texts.some((t) => t.includes("Channel Verification"))).toBe(false);
     expect(texts.some((t) => t.includes("Spoofed Title"))).toBe(false);
-    expect((await getPendingByToken(created.correlationToken))?.status).toBe("failed");
+    expect(calls.filter((c) => ["getChat", "getChatMember"].includes(c.method))).toHaveLength(0);
+    expect((await getPendingByToken(created.correlationToken))?.status).toBe("pending");
   });
 });

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getTelegramWebApp, triggerHaptic } from "@/lib/telegramWebApp";
 import { clearLaunchConnectRef, getLaunchConnectRef } from "@/lib/botConnectClient";
-import { BOT_NAVIGATION_DELAY_MS, cancelBotNavigation, scheduleBotNavigation, type BotNavigationResult } from "@/lib/botNavigation";
+import { navigateToBotOnce, type BotNavigationResult } from "@/lib/botNavigation";
 
 export interface ConnectedChannel {
   id: number;
@@ -13,7 +13,7 @@ export interface ConnectedChannel {
 }
 
 /** Server-reported progress of a pending request (see /api/channels/connect-status). */
-export type ConnectStage = "awaiting_selection" | "verifying";
+export type ConnectStage = "awaiting_selection" | "channel_selected" | "verifying";
 
 /** How the bot chat is reached (see /api/channels/connect-bot-start). */
 export type BotConnectMode = "existing_chat" | "start_link";
@@ -50,7 +50,7 @@ type StatusOutcome =
  *               (no countdown yet — the countdown only exists once the BACKEND confirmed the window)
  *   prepared    retry holder: the request was prepared but starting it failed transiently
  *               (server state `prepared`). "Connect" reuses this token — never a second request
- *   waiting_bot window running + countdown; the automatic hand-off to the bot chat happens ~3 s later
+ *   waiting_bot window running + countdown; the hand-off to the bot chat happens immediately
  *   resuming    Mini App reopened (e.g. "Return to Onfile"): reading the server-side status
  *   verified    server confirmed the connection
  *   failed      failure / expiry / cancellation (retry with "Connect")
@@ -77,6 +77,15 @@ export type BotConnectState =
   | { phase: "verified"; channel: ConnectedChannel }
   | { phase: "failed"; message: string; reason?: string };
 
+/**
+ * Status poll period. NOT part of the removed navigation delay: this read-only GET is what lets a Mini App that
+ * is still on screen (desktop, or reopened) notice that the connection was verified / failed / expired — the
+ * verification itself runs in the Mini App instance opened by the bot's Verify button, so this instance can
+ * only learn the outcome by asking. Visibility / focus / `activated` signals already trigger an immediate extra
+ * check (see below), so the interval is only a safety net; 3 s keeps the load at ≤ 20 cheap indexed reads per
+ * minute per open connect screen and the polling stops as soon as the request concludes. Lowering it would only
+ * multiply requests.
+ */
 const POLL_INTERVAL_MS = 3000;
 /** Grace after the server-side expiry before the client stops polling on its own. */
 const POLL_GRACE_MS = 30_000;
@@ -167,7 +176,10 @@ function interpretStatusResponse(res: Response, data: Record<string, unknown> | 
   const status = data?.status;
   if (status === "verified" && res.ok && data?.channel) return { kind: "verified", channel: data.channel as ConnectedChannel };
   if (status === "pending") {
-    const stage = data?.stage === "verifying" || data?.stage === "awaiting_selection" ? (data.stage as ConnectStage) : undefined;
+    const stage =
+      data?.stage === "verifying" || data?.stage === "awaiting_selection" || data?.stage === "channel_selected"
+        ? (data.stage as ConnectStage)
+        : undefined;
     return {
       kind: "pending",
       stage,
@@ -216,12 +228,14 @@ function computeResumeTarget(): { token: string | null; ref: number | null; dead
  *  1. `connect()` — the single "Connect" action (see its doc): prepares the secure request,
  *                   starts the backend 10-minute window, shows the countdown and schedules the
  *                   shared hand-off to the bot (`openTelegramLink` + explicit
- *                   `Telegram.WebApp.close()`, ~3 s later — "@/lib/botNavigation").
- *  2. The Mini App keeps (or resumes) verifying automatically — a single de-duplicated status
+ *                   `Telegram.WebApp.close()`, immediately — "@/lib/botNavigation").
+ *  2. The Mini App keeps (or resumes) WATCHING the request — a single de-duplicated, READ-ONLY status
  *     check shared by the poll timer and by every "returned to the Mini App" signal
- *     (visibilitychange / focus / Telegram `activated` / a fresh launch from "Return to
- *     Onfile"). Success is only ever reported after the server says "verified"; the
- *     countdown is cosmetic and never overrides the server's verdict.
+ *     (visibilitychange / focus / Telegram `activated` / a fresh launch from the bot's
+ *     Verify button). It never starts verification: that is the Verify button's job
+ *     (POST /api/channels/connect-verify, see ConnectionVerifyGate). Success is only ever
+ *     reported after the server says "verified"; the countdown is cosmetic and never
+ *     overrides the server's verdict.
  *
  * Used by the onboarding screen (BotConnectInstructions) and by Channel Management
  * (ChannelConnectFlow) so the logic exists exactly once.
@@ -284,7 +298,6 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
       finished.current.add(key);
       activeKey.current = null;
       activeToken.current = null;
-      cancelBotNavigation(key);
       stopPolling();
       clearHint();
       persist(null);
@@ -322,7 +335,6 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
             finished.current.add(key);
             activeKey.current = null;
             activeToken.current = null;
-            cancelBotNavigation(key);
             stopPolling();
             clearHint();
             persist(null);
@@ -463,8 +475,8 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
    *   2. start the backend-authoritative 10-minute window  POST /api/channels/connect-bot-start
    *      (also delivers the picker message to returning users),
    *   3. show the countdown + "Waiting for channel selection…",
-   *   4. schedule the shared automatic hand-off (open bot chat, then close the Mini App)
-   *      ~3 s later — see "@/lib/botNavigation".
+   *   4. perform the shared automatic hand-off (open bot chat, then close the Mini App)
+   *      immediately — see "@/lib/botNavigation".
    */
   const connect = useCallback(async () => {
     if (connecting.current) return; // double tap: one request, one chat
@@ -551,8 +563,13 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
       const deadline = clock.expiresAt - clock.offset + POLL_GRACE_MS;
       persist({ token, ref, deadline, botUrl, mode, botUsername: resolvedUsername });
 
-      // ── 4. Automatic hand-off ~3 s later. Module-level timer: an unmounting component
-      //       does NOT cancel it (only Cancel / a finished request does). ────────────────
+      // ── 4. Show the waiting state + start tracking, THEN hand off to the bot chat at once. The state is
+      //       set first so the hand-off's result (e.g. "Telegram couldn't open the chat") can update it. ───
+      if (mounted.current) {
+        setState({ phase: "waiting_bot", token, ref, botUrl, mode, botUsername: resolvedUsername, clock, stage: "awaiting_selection" });
+        startTracking({ token, ref }, deadline);
+      }
+
       const onBefore = () => triggerHaptic("impact");
       const onResult = (result: BotNavigationResult) => {
         if (result.status === "unavailable") {
@@ -570,12 +587,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
           setState((prev) => (prev.phase === "waiting_bot" && prev.token === token ? { ...prev, stillVisible: true } : prev));
         }, FOREGROUND_HINT_MS);
       };
-      scheduleBotNavigation(token, botUrl, BOT_NAVIGATION_DELAY_MS, { onBefore, onResult });
-
-      if (mounted.current) {
-        setState({ phase: "waiting_bot", token, ref, botUrl, mode, botUsername: resolvedUsername, clock, stage: "awaiting_selection" });
-        startTracking({ token, ref }, deadline);
-      }
+      navigateToBotOnce(token, botUrl, { onBefore, onResult });
     } finally {
       connecting.current = false;
     }
@@ -595,7 +607,6 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
     // Abandon a still-pending request on the server too, rather than leaving it claimable.
     const token = activeToken.current ?? readPersisted()?.token ?? stateToken(stateRef.current);
     if (token) {
-      cancelBotNavigation(token); // an explicit Cancel DOES cancel the pending automatic hand-off
       notifyCancelled(token);
     }
     stopPolling();

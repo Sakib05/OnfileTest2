@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
- * Navigation after the bot's "Verify" button: Telegram → Verify → Mini App opens at `/?connect=<ref>` → the backend
- * verifies the EXISTING request → Dashboard data refreshes → Dashboard opens.
+ * Navigation after the bot's "Verify" button: Telegram → Verify → Mini App opens at `/?connect=<ref>` → the Mini App
+ * asks the backend to VERIFY the EXISTING request (POST /api/channels/connect-verify — the user's Verify action) →
+ * Dashboard data refreshes → Dashboard opens.
  *
  * The REAL HomePage + REAL AppProvider + REAL ConnectionVerifyGate run; only `fetch` (the backend) and the heavy tab
  * screens are test doubles. The doubles make the destination observable: `DASHBOARD` is HomeTab, `CHANNEL_MANAGEMENT`
@@ -57,7 +58,11 @@ let root: Root;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 interface Backend {
-  /** Successive answers of GET /api/channels/connect-status; the last one repeats. */
+  /**
+   * Successive answers of the verification endpoints; the last one repeats. The first call is the Verify action
+   * (POST /api/channels/connect-verify); any later GET /api/channels/connect-status is the read-only wait for a
+   * verification that is already running.
+   */
   status: Array<() => Response>;
   signedIn: boolean;
   channels: () => Response;
@@ -88,7 +93,7 @@ function installBackend(b: Partial<Backend> = {}) {
       return Promise.resolve(new Response(JSON.stringify({ status: "setup_required", profile: { firstName: "T" } }), { status: 200 }));
     }
     if (path === "/api/channels") return Promise.resolve(backend.channels());
-    if (path === "/api/channels/connect-status") {
+    if (path === "/api/channels/connect-status" || path === "/api/channels/connect-verify") {
       const answer = backend.status[Math.min(statusCalls, backend.status.length - 1)];
       statusCalls++;
       // A freshly verified brand-new account gets its session minted by this very response.
@@ -177,9 +182,12 @@ describe("Verify launch (/?connect=<ref>) — a verified connection goes straigh
     expect(renders.profile).toBe(0);
     expect(renders.creatorSetup).toBe(0);
     expect(testid("bottom-nav")).not.toBeNull();
-    // The backend was asked about THIS request ref (and only that).
-    expect(calls("/api/channels/connect-status").length).toBe(1);
-    expect(String(calls("/api/channels/connect-status")[0][0])).toBe(`/api/channels/connect-status?ref=${REF}`);
+    // The Verify action asked the backend to verify THIS request ref (and only that) — a POST, not a poll.
+    expect(calls("/api/channels/connect-verify").length).toBe(1);
+    const verifyCall = calls("/api/channels/connect-verify")[0];
+    expect((verifyCall[1] as RequestInit).method).toBe("POST");
+    expect(JSON.parse(String((verifyCall[1] as RequestInit).body))).toEqual({ ref: REF }); // nothing else: no channel id, no user id
+    expect(calls("/api/channels/connect-status").length).toBe(0);
   });
 
   it("brand-new creator (no account yet): signs in silently, verifies, refreshes, then lands on the Dashboard", async () => {
@@ -189,14 +197,14 @@ describe("Verify launch (/?connect=<ref>) — a verified connection goes straigh
     expect(renders.profile).toBe(0);
     expect(renders.creatorSetup).toBe(0);
     expect(calls("/api/auth/telegram").length).toBe(1);
-    expect(calls("/api/channels/connect-status").length).toBe(1);
+    expect(calls("/api/channels/connect-verify").length).toBe(1);
   });
 
   it("Dashboard data is refreshed BEFORE the Dashboard is displayed (user + channels re-read after verification)", async () => {
     await mount();
     await waitFor(() => testid("dashboard") !== null);
     const order = renders.order;
-    const verifyAt = order.indexOf("GET /api/channels/connect-status");
+    const verifyAt = order.indexOf("POST /api/channels/connect-verify");
     const dashboardAt = order.indexOf("dashboard-mounted");
     expect(verifyAt).toBeGreaterThanOrEqual(0);
     expect(dashboardAt).toBeGreaterThan(verifyAt);
@@ -222,21 +230,23 @@ describe("Verify launch (/?connect=<ref>) — a verified connection goes straigh
     expect(testid("onboarding")).toBeNull();
   });
 
-  it("never creates a connection request: only GETs to connect-status / user / channels / analytics (plus the silent sign-in for a new identity)", async () => {
+  it("never creates a connection request: the only POSTs are the silent sign-in (new identity) and the Verify action", async () => {
     installBackend({ signedIn: false });
     await mount();
     await waitFor(() => testid("dashboard") !== null);
     const forbidden = fetchMock.mock.calls.filter((c) => /\/api\/channels\/connect-(bot-start|bot-request|request|manual|cancel)/.test(String(c[0])));
     expect(forbidden).toHaveLength(0);
     const posts = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method?.toUpperCase() === "POST");
-    expect(posts.map((c) => String(c[0]))).toEqual(["/api/auth/telegram"]);
+    expect(posts.map((c) => String(c[0]))).toEqual(["/api/auth/telegram", "/api/channels/connect-verify"]);
   });
 
-  it("while the webhook is still verifying with Telegram, the same request is re-checked (no new request) until it is verified", async () => {
+  it("while another tap/device is still verifying with Telegram, the same request is re-checked read-only (no second Verify, no new request) until it is verified", async () => {
     installBackend({ status: [pending("verifying"), verified] });
     await mount();
     await waitFor(() => testid("dashboard") !== null, 8000);
-    expect(calls("/api/channels/connect-status").length).toBe(2);
+    expect(calls("/api/channels/connect-verify").length).toBe(1);
+    expect(calls("/api/channels/connect-status").length).toBe(1);
+    expect(String(calls("/api/channels/connect-status")[0][0])).toBe(`/api/channels/connect-status?ref=${REF}`);
     expect(testid("channel-management")).toBeNull();
   }, 12000);
 });
@@ -244,6 +254,8 @@ describe("Verify launch (/?connect=<ref>) — a verified connection goes straigh
 describe("Verify launch — anything that is not a verified connection never reaches the Dashboard", () => {
   const cases: Array<[string, () => Response, RegExp]> = [
     ["unverified (no channel selected yet)", pending("awaiting_selection"), /haven.t received your channel selection/],
+    ["channel selected but verification did not complete", pending("channel_selected"), /selected but couldn.t be verified yet/],
+    ["retryable Telegram outage (503)", json({ status: "failed", retryable: true, reason: "telegram_api_error", error: "We couldn't reach Telegram right now. Please try again shortly." }, 503), /couldn.t reach Telegram/],
     ["expired / invalid / another user's request (server answers 404 expired)", json({ status: "expired", state: "expired" }, 404), /expired or isn.t valid for your account/],
     ["failed verification", json({ status: "failed", error: "The Onfile bot is not an administrator of that channel.", reason: "bot_not_admin" }), /not an administrator/],
     ["unauthorized (no valid Telegram identity)", json({ status: "unauthorized", error: "Telegram identity could not be verified." }, 401), /Telegram identity could not be verified/],
@@ -269,7 +281,7 @@ describe("Verify launch — anything that is not a verified connection never rea
     installBackend();
     fetchMock.mockImplementation((input: string) => {
       const path = String(input).split("?")[0];
-      if (path === "/api/channels/connect-status") return Promise.reject(new TypeError("Failed to fetch"));
+      if (path === "/api/channels/connect-verify") return Promise.reject(new TypeError("Failed to fetch"));
       if (path === "/api/user/me") return Promise.resolve(new Response(JSON.stringify({ user: USER }), { status: 200 }));
       return Promise.resolve(channelsOk());
     });
@@ -292,13 +304,14 @@ describe("Verify launch — anything that is not a verified connection never rea
     await mount();
     await waitFor(() => testid("verify-error") !== null);
     expect(testid("verify-error")?.textContent).toMatch(/inside Telegram/);
+    expect(calls("/api/channels/connect-verify").length).toBe(0);
     expect(calls("/api/channels/connect-status").length).toBe(0);
     expect(renders.dashboard).toBe(0);
   });
 });
 
 describe("Verify launch — safe retry", () => {
-  it("'Try Again' re-checks the SAME request ref (read-only), never creates another request, and then reaches the Dashboard", async () => {
+  it("'Try Again' re-submits Verify for the SAME request ref, never creates another request, and then reaches the Dashboard", async () => {
     installBackend({ status: [pending("awaiting_selection"), verified] });
     await mount();
     await waitFor(() => testid("verify-error") !== null);
@@ -307,8 +320,8 @@ describe("Verify launch — safe retry", () => {
     await click("Try Again");
     await waitFor(() => testid("dashboard") !== null);
 
-    const statusUrls = calls("/api/channels/connect-status").map((c) => String(c[0]));
-    expect(statusUrls).toEqual([`/api/channels/connect-status?ref=${REF}`, `/api/channels/connect-status?ref=${REF}`]);
+    const verifyBodies = calls("/api/channels/connect-verify").map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+    expect(verifyBodies).toEqual([{ ref: REF }, { ref: REF }]);
     const creating = fetchMock.mock.calls.filter((c) => /connect-(bot-start|bot-request|request|manual)/.test(String(c[0])));
     expect(creating).toHaveLength(0);
     expect(renders.profile).toBe(0);
@@ -323,18 +336,18 @@ describe("Verify launch — safe retry", () => {
     // Make the next check slow, then tap twice.
     const base = fetchMock.getMockImplementation() as (i: string, init?: RequestInit) => Promise<Response>;
     fetchMock.mockImplementation((input: string, init?: RequestInit) => {
-      if (String(input).startsWith("/api/channels/connect-status")) {
+      if (String(input).startsWith("/api/channels/connect-verify")) {
         return new Promise<Response>((resolve) => {
           release = resolve;
         });
       }
       return base(input, init);
     });
-    const before = calls("/api/channels/connect-status").length;
+    const before = calls("/api/channels/connect-verify").length;
     await click("Try Again");
     // While verifying the button is gone, so a second tap is impossible; even a stray call is ignored.
     expect(testid("verify-progress")).not.toBeNull();
-    expect(calls("/api/channels/connect-status").length).toBe(before + 1);
+    expect(calls("/api/channels/connect-verify").length).toBe(before + 1);
     await act(async () => {
       release(pending("awaiting_selection")());
     });
@@ -354,12 +367,13 @@ describe("Verify launch — safe retry", () => {
 });
 
 describe("Normal launches are unchanged", () => {
-  it("opening Onfile without ?connect= shows the Dashboard directly and never calls connect-status", async () => {
+  it("opening Onfile without ?connect= shows the Dashboard directly and never calls connect-status / connect-verify", async () => {
     launch("");
     window.localStorage.setItem("onfile_onboarding_done", "1");
     await mount();
     await waitFor(() => testid("dashboard") !== null);
     expect(calls("/api/channels/connect-status").length).toBe(0);
+    expect(calls("/api/channels/connect-verify").length).toBe(0);
     expect(testid("connection-verify-gate")).toBeNull();
   });
 
@@ -369,5 +383,6 @@ describe("Normal launches are unchanged", () => {
     await mount();
     await waitFor(() => testid("dashboard") !== null);
     expect(calls("/api/channels/connect-status").length).toBe(0);
+    expect(calls("/api/channels/connect-verify").length).toBe(0);
   });
 });

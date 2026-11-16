@@ -105,9 +105,10 @@ describe("POST /api/channels/connect-bot-start", () => {
     expect(messages()).toHaveLength(1);
     const msg = messages()[0].body;
     expect(String(msg.chat_id)).toBe(String(PRIVATE_CHAT));
-    expect(String(msg.text)).toContain("Welcome to Onfile Channel Connection!");
-    expect(String(msg.text)).toContain("private Telegram channel");
-    expect(String(msg.text)).toContain("expire in 10 minutes");
+    expect(msg.text).toBe(
+      "📢 Please select the private Telegram channel you want to connect to your Onfile account.\n\n" +
+        "Tap the button below to select your channel 👇"
+    );
     const button = (msg.reply_markup as { keyboard: { request_chat: Record<string, unknown> }[][] }).keyboard[0][0].request_chat;
     expect(button.request_id).toBe(telegramRequestId);
     expect(button.chat_is_channel).toBe(true);

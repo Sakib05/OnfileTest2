@@ -2,8 +2,9 @@
  * Shared "go to the Onfile Bot" navigation for the bot-guided channel connection.
  *
  * ONE function (`navigateToBot`) performs the hand-off, and it is used by BOTH the
- * automatic redirect (`scheduleBotNavigation`, ~3 s after the connection window
- * started) and the manual fallback link ("Didn't switch to Telegram? Tap here…").
+ * automatic redirect (`navigateToBotOnce`, fired IMMEDIATELY once the backend has started the
+ * connection window and delivered the channel-selection message) and the manual fallback link
+ * ("Didn't switch to Telegram? Tap here…").
  *
  * Sequence (all official Telegram WebApp API, nothing undocumented):
  *   1. `Telegram.WebApp.openTelegramLink(botUrl)`  — opens the bot chat. Since Bot API 7.0
@@ -17,15 +18,11 @@
  * NOT closed — closing without having navigated would strand the user — and the caller
  * shows the manual link instead.
  *
- * The automatic redirect lives at MODULE level on purpose: a React component unmounting
- * (tab switch, re-render with a new key, parent state change) must not silently cancel a
- * hand-off the backend has already prepared. Only an explicit cancel
- * (`cancelBotNavigation`, called when the user presses Cancel / the request ends) does.
+ * There is deliberately NO delay between "the bot message is ready" and the hand-off: the former
+ * fixed 3 s pause added nothing (the server only answers after the picker message has been handed
+ * to Telegram) and made the user wait.
  */
 import { closeTelegramMiniApp, openTelegramBotLink } from "@/lib/telegramWebApp";
-
-/** Deliberate UX pause between the connection window starting and Telegram opening the bot chat. */
-export const BOT_NAVIGATION_DELAY_MS = 3000;
 
 /** Repeated taps / a tap right after the automatic redirect within this window are one navigation. */
 export const NAVIGATION_DEBOUNCE_MS = 1500;
@@ -54,58 +51,34 @@ export function navigateToBot(botUrl: string): BotNavigationResult {
   return { status: "navigated", closed };
 }
 
-interface ScheduledNavigation {
-  timer: ReturnType<typeof setTimeout>;
-}
-const scheduled = new Map<string, ScheduledNavigation>();
 const done = new Set<string>();
 
 /**
- * Schedules the automatic redirect for the request identified by `key` (its opaque token).
- * Idempotent: a second call for the same key while scheduled — or after it already ran —
- * does nothing, so retries / re-renders can never navigate twice.
- * Returns true when this call scheduled a new redirect.
+ * Performs the automatic redirect for the request identified by `key` (its opaque token) right away.
+ * Idempotent: a second call for the same key — retries, re-renders, a double tap — does nothing, so the
+ * hand-off can never run twice for one request. Returns true when this call performed the navigation attempt.
+ *
+ * Runs at MODULE level, independent of any React component's lifecycle.
  */
-export function scheduleBotNavigation(
+export function navigateToBotOnce(
   key: string,
   botUrl: string,
-  delayMs: number,
   hooks: { onBefore?: () => void; onResult?: (result: BotNavigationResult) => void } = {}
 ): boolean {
-  if (scheduled.has(key) || done.has(key)) return false;
-  const timer = setTimeout(() => {
-    scheduled.delete(key);
-    done.add(key);
-    try {
-      hooks.onBefore?.();
-    } catch {}
-    const result = navigateToBot(botUrl);
-    try {
-      hooks.onResult?.(result);
-    } catch {}
-  }, Math.max(0, delayMs));
-  scheduled.set(key, { timer });
+  if (done.has(key)) return false;
+  done.add(key);
+  try {
+    hooks.onBefore?.();
+  } catch {}
+  const result = navigateToBot(botUrl);
+  try {
+    hooks.onResult?.(result);
+  } catch {}
   return true;
-}
-
-/** Cancels a not-yet-fired automatic redirect (user pressed Cancel, request ended). */
-export function cancelBotNavigation(key: string | null | undefined): void {
-  if (!key) return;
-  const entry = scheduled.get(key);
-  if (entry) {
-    clearTimeout(entry.timer);
-    scheduled.delete(key);
-  }
-}
-
-export function hasScheduledBotNavigation(key: string): boolean {
-  return scheduled.has(key);
 }
 
 /** Test helper. */
 export function resetBotNavigationForTests(): void {
-  for (const { timer } of scheduled.values()) clearTimeout(timer);
-  scheduled.clear();
   done.clear();
   lastNavigationAt = 0;
 }

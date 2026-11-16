@@ -3,26 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { channels, telegramUpdateLog } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
-import { getOwnBotId, verifyChannelOwnershipAndBotAccess } from "@/lib/telegramBot";
-import { CHANNEL_FAILURE_MESSAGES, finalizeVerifiedChannelConnection } from "@/lib/channelConnection";
+import { getOwnBotId } from "@/lib/telegramBot";
 import { notifyUser } from "@/lib/notifications";
-import {
-  claimPendingRequestForProcessing,
-  connectMethodForRequestId,
-  getLatestPendingByTelegramUser,
-  getPendingByTelegramRequest,
-  lookupPendingForBotStart,
-  updatePendingChannelRequestById,
-  type PendingChannelRequestRecord,
-} from "@/lib/pendingChannelRequests";
+import { connectMethodForRequestId, lookupPendingForBotStart, recordChannelSelection } from "@/lib/pendingChannelRequests";
 import { recordBotChannelAdminEvent } from "@/lib/botChannelEvents";
 import { getPrivateChat, markPrivateChatBlocked, recordPrivateChat } from "@/lib/botPrivateChats";
-import {
-  handleBotTextMessage,
-  notifyBotConnectionFailure,
-  notifyBotConnectionSuccess,
-  notifyBotRequestExpired,
-} from "@/lib/botConnectFlow";
+import { handleBotTextMessage, notifyBotRequestExpired, sendChannelVerificationPrompt } from "@/lib/botConnectFlow";
 
 /** Constant-time comparison of the webhook secret header. */
 function secretsMatch(provided: string, expected: string): boolean {
@@ -71,43 +57,33 @@ interface TelegramUpdate {
 }
 
 /**
- * Receives Telegram Bot API updates for both Channel Connection flows:
+ * Receives Telegram Bot API updates for the Channel Connection flows:
  *
- *   - `chat_shared` (nested in `message`): Telegram's confirmation that a
- *     user picked a channel via the native `request_chat` picker ("Connect
- *     Channel via Bot" — see /api/channels/connect-request).
- *   - `my_chat_member`: fired whenever OUR BOT's own membership/admin status
- *     changes in any chat. This is required for two reasons:
- *       1. Manual Connect (see /api/channels/connect-manual) has no
- *          `request_chat` flow at all — the only way to discover which
- *          channel a user just added the bot to as administrator is this
- *          update. Previously this route silently dropped it entirely.
- *       2. As a resilience fallback for "Connect Channel via Bot": if
- *          `chat_shared` is ever delayed or not delivered for any reason,
- *          `my_chat_member` independently confirms the same fact (bot
- *          became administrator in channel X, added by Telegram user Y)
- *          and can complete the same pending request.
+ *   - `chat_shared` (nested in `message`): Telegram's confirmation that a user picked a channel via the native
+ *     `request_chat` picker. Telegram itself has just posted its own "You shared … with Onfile" service message.
+ *     This handler does the MINIMUM and returns promptly: it stores the shared channel id against the matching
+ *     pending request (one atomic, guarded UPDATE that also validates user / request id / expiry) and
+ *     immediately sends the "🔐 Channel Verification" message with the Verify button. It performs NO channel
+ *     verification (privacy, ownership, admin rights, bot permissions) and connects NOTHING.
+ *   - `my_chat_member`: fired whenever OUR BOT's own membership/admin status changes in any chat. Used to
+ *     record the latest known membership (Manual Connect's discovery lookup), keep the private user → chat
+ *     association current and tell owners the bot lost access. It never resolves or finalizes a pending request.
  *
- * Nothing from either update is trusted at face value: the bot's admin
- * status and the requesting user's admin status are independently
- * re-verified against the live Telegram Bot API before anything is
- * persisted (see verifyChannelOwnershipAndBotAccess). This endpoint is
- * idempotent at two layers:
- *   1. Telegram `update_id`s are logged in `telegram_update_log`; a redelivered
- *      update is detected and skipped before any processing happens.
- *   2. Each pending request can only be "claimed" for verification once
- *      (see claimPendingRequestForProcessing) — so even if `chat_shared` and
- *      `my_chat_member` both arrive for the same request, only one of them
- *      performs verification + persistence.
- * This route always responds 200 so Telegram does not endlessly retry
- * delivery for application-level failures that a retry can't fix.
+ * Verification and finalization happen ONLY when the user taps Verify and the Mini App calls
+ * POST /api/channels/connect-verify (src/lib/connectVerification.ts). No webhook path can connect a channel.
  *
- * Requires `TELEGRAM_WEBHOOK_SECRET` to be configured and the webhook to be
- * registered with Telegram (via `setWebhook`, including the matching
- * `secret_token` AND `allowed_updates` containing at least `"message"` and
- * `"my_chat_member"` — see scripts/configure-telegram-webhook.mjs) outside
- * of this code — that one-time setup is a deployment step, not something
- * this route can perform for itself.
+ * Idempotent at two layers:
+ *   1. Telegram `update_id`s are logged in `telegram_update_log`; a redelivered update is detected and skipped
+ *      before any processing happens.
+ *   2. The Verify message is reserved atomically per request (`confirmation_sent_at`), so even if the update
+ *      were processed twice (e.g. the log write failed) the user still gets exactly one message.
+ * This route always responds 200 so Telegram does not endlessly retry delivery for application-level failures
+ * that a retry can't fix.
+ *
+ * Requires `TELEGRAM_WEBHOOK_SECRET` to be configured and the webhook to be registered with Telegram (via
+ * `setWebhook`, including the matching `secret_token` AND `allowed_updates` containing at least `"message"` and
+ * `"my_chat_member"` — see scripts/configure-telegram-webhook.mjs) outside of this code — that one-time setup is
+ * a deployment step, not something this route can perform for itself.
  */
 export async function POST(req: NextRequest) {
   const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
@@ -154,22 +130,24 @@ export async function POST(req: NextRequest) {
     const updateType = update.my_chat_member ? "my_chat_member" : update.message?.chat_shared ? "chat_shared" : "unhandled";
     console.log("telegram_webhook_received", { updateId: update.update_id, updateType });
 
+    if (update.my_chat_member) {
+      await handleMyChatMember(update.my_chat_member);
+      return NextResponse.json({ ok: true });
+    }
+
+    // Fast path: the channel-sharing update. Nothing is read or written before the Verify message goes out
+    // except what is strictly needed (see handleChatShared); the private-chat bookkeeping runs alongside it.
+    if (update.message?.chat_shared && update.message.from?.id) {
+      await handleChatShared(update.message.chat_shared, update.message.from.id, update.message.chat, update.message);
+      return NextResponse.json({ ok: true });
+    }
+
     // Remember the verified private chat (user id → chat id) so the backend can
     // later message the user in their EXISTING conversation without a "/start".
     // Only trusted, secret-authenticated webhook updates reach this point.
     // Whether this is the user's first contact is read BEFORE recording, so /start can tell new users
     // (creator welcome) from returning users (no repeated onboarding).
     const isFirstContact = update.message ? await recordPrivateChatFromMessage(update.message) : undefined;
-
-    if (update.my_chat_member) {
-      await handleMyChatMember(update.my_chat_member, req);
-      return NextResponse.json({ ok: true });
-    }
-
-    if (update.message?.chat_shared && update.message.from?.id) {
-      await handleChatShared(update.message.chat_shared, update.message.from.id, req, update.message.chat);
-      return NextResponse.json({ ok: true });
-    }
 
     // Bot-chat fallback ("Connect channel via bot"): `/start <payload>` and
     // `/connect` in a private chat. Never touches `channels` directly — see
@@ -194,27 +172,44 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/** Handles the native chat-picker flow's confirmation message. */
+/**
+ * Handles Telegram's `chat_shared` confirmation: store the selection, then send the Verify message at once.
+ *
+ * Deliberately minimal — see the route doc. In order:
+ *   1. ONE atomic UPDATE (recordChannelSelection) finds the pending request for (this Telegram user, this
+ *      request id), checks it is still pending / unclaimed / unexpired / started, and saves the channel id.
+ *      That is the only validation needed to safely associate this update with that request; the channel itself
+ *      is NOT inspected here.
+ *   2. The Verify message is sent straight to the private chat the update arrived in (no lookup, no probe),
+ *      once per request. The private-chat bookkeeping runs concurrently with step 1 instead of before it.
+ * Never verifies, never writes to `channels`, never resolves the request.
+ */
 async function handleChatShared(
   chatShared: TelegramChatShared,
   telegramUserId: number,
-  req: NextRequest,
-  messageChat: { id: number; type: string }
+  messageChat: { id: number; type: string },
+  message: NonNullable<TelegramUpdate["message"]>
 ) {
-  // `chat_shared` is delivered inside the user's private chat with the bot —
-  // the chat Telegram says it came from is where confirmations are sent.
+  if (!Number.isInteger(chatShared.request_id) || typeof chatShared.chat_id !== "number" || !Number.isFinite(chatShared.chat_id)) {
+    console.log("telegram_webhook_chat_shared_malformed", { telegramUserId });
+    return;
+  }
+  // `chat_shared` is delivered inside the user's private chat with the bot — the chat Telegram says it came
+  // from is where the Verify message is sent.
   const observedChatId = messageChat.type === "private" ? messageChat.id : null;
-  const pending = await getPendingByTelegramRequest(telegramUserId, chatShared.request_id);
-  if (!pending) {
+
+  const [selected] = await Promise.all([
+    recordChannelSelection(telegramUserId, chatShared.request_id, String(chatShared.chat_id)),
+    recordPrivateChatQuietly(message),
+  ]);
+
+  if (!selected) {
     console.log("telegram_webhook_chat_shared_no_pending_request", {
       telegramUserId,
       requestId: chatShared.request_id,
     });
-    // Only for the bot-chat fallback: the user is looking at the bot chat, so
-    // tell them (rather than staying silent) that their request expired.
-    // getPendingByTelegramRequest already excludes expired rows, and the
-    // bot-range check keeps the Direct Picker's behavior unchanged.
-    // A selection from the wrong user, or for an unknown/already-resolved
+    // Only for the bot-chat flow: the user is looking at the bot chat, so tell them (rather than staying
+    // silent) that their request expired. A selection from the wrong user, or for an unknown/already-resolved
     // request, is ignored silently; only a genuine expiry is announced.
     if (connectMethodForRequestId(chatShared.request_id) === "bot") {
       const lookup = await lookupPendingForBotStart(telegramUserId, chatShared.request_id);
@@ -224,17 +219,36 @@ async function handleChatShared(
     }
     return;
   }
-  await resolvePendingAgainstChat(pending, String(chatShared.chat_id), telegramUserId, req, "chat_shared", observedChatId);
+
+  console.log("telegram_webhook_chat_shared_stored", { pendingId: selected.id });
+
+  // The Mini App's Verify action is bot-chat specific: a legacy Direct Picker request has the Mini App open
+  // in the foreground and verifies from there, so no chat message is sent for it.
+  if (connectMethodForRequestId(selected.telegramRequestId) !== "bot") {
+    console.log("telegram_webhook_in_chat_notification_skipped", { pendingId: selected.id, reason: "direct_picker_request" });
+    return;
+  }
+  if (observedChatId === null) {
+    console.error("telegram_webhook_chat_shared_no_private_chat", { pendingId: selected.id });
+    return;
+  }
+  await safeNotify(async () => {
+    const outcome = await sendChannelVerificationPrompt(telegramUserId, observedChatId, {
+      id: selected.id,
+      telegramRequestId: selected.telegramRequestId,
+    });
+    console.log("telegram_webhook_verification_prompt", { pendingId: selected.id, ...outcome });
+  });
 }
 
 /**
- * Handles a `my_chat_member` update about our own bot. Always records the
- * latest known membership state (used by Manual Connect's discovery lookup),
- * and — only when the bot was just promoted to administrator — attempts to
- * complete a matching pending "Connect Channel via Bot" request as a
- * resilience fallback to `chat_shared`.
+ * Handles a `my_chat_member` update about our own bot. Records the latest known membership state (used by
+ * Manual Connect's discovery lookup) and tells the owner of a connected channel when the bot lost access.
+ * It deliberately does NOT complete a pending "Connect channel via bot" request: the bot becoming an
+ * administrator is not the user tapping Verify, and a connection is only ever finalized by
+ * POST /api/channels/connect-verify.
  */
-async function handleMyChatMember(update: TelegramChatMemberUpdated, req: NextRequest) {
+async function handleMyChatMember(update: TelegramChatMemberUpdated) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
     console.error("telegram_webhook_my_chat_member_skipped", { reason: "missing_bot_token" });
@@ -288,22 +302,6 @@ async function handleMyChatMember(update: TelegramChatMemberUpdated, req: NextRe
   if (isChannel && update.new_chat_member.status !== "administrator") {
     await notifyBotLostAccess(String(update.chat.id), update.new_chat_member.status, update.chat.title);
   }
-
-  // Fallback completion path for "Connect Channel via Bot": only relevant
-  // when the bot just became an administrator of a channel.
-  if (!isChannel || update.new_chat_member.status !== "administrator") {
-    return;
-  }
-
-  const pending = await getLatestPendingByTelegramUser(actingUserId);
-  if (!pending) {
-    // No in-flight "Connect Channel via Bot" request for this user — most
-    // likely this is a Manual Connect admin event, which is fine; the
-    // discovery row recorded above is exactly what that flow needs.
-    return;
-  }
-
-  await resolvePendingAgainstChat(pending, String(update.chat.id), actingUserId, req, "my_chat_member");
 }
 
 /**
@@ -328,6 +326,16 @@ async function recordPrivateChatFromMessage(message: NonNullable<TelegramUpdate[
   return isFirstContact;
 }
 
+/** Same bookkeeping as recordPrivateChatFromMessage minus the first-contact read (not needed for `chat_shared`). */
+async function recordPrivateChatQuietly(message: NonNullable<TelegramUpdate["message"]>): Promise<void> {
+  if (message.chat.type !== "private" || !message.from?.id || message.from.is_bot) return;
+  try {
+    await recordPrivateChat(message.from.id, message.chat.id, "webhook");
+  } catch (err) {
+    console.error("telegram_webhook_record_private_chat_failed", err instanceof Error ? err.message : "unknown_error");
+  }
+}
+
 /** `my_chat_member` in a private chat: "kicked" = user blocked the bot; "member" = (re)started / unblocked. */
 async function handlePrivateChatMembership(update: TelegramChatMemberUpdated) {
   const userId = update.from?.id;
@@ -343,120 +351,6 @@ async function handlePrivateChatMembership(update: TelegramChatMemberUpdated) {
   } catch (err) {
     console.error("telegram_webhook_private_chat_membership_failed", err instanceof Error ? err.message : "unknown_error");
   }
-}
-
-/**
- * Shared "finish a pending request" step used by both update types. Claims
- * the pending request (idempotency layer 2), independently re-verifies the
- * channel + bot admin + requesting-user admin status live against Telegram,
- * and only then persists the connection.
- */
-async function resolvePendingAgainstChat(
-  pending: PendingChannelRequestRecord,
-  telegramChatId: string,
-  telegramUserId: number,
-  req: NextRequest,
-  source: "chat_shared" | "my_chat_member",
-  observedChatId: number | null = null
-) {
-  if (pending.status !== "pending") {
-    console.log("telegram_webhook_pending_already_resolved", { pendingId: pending.id, source });
-    return;
-  }
-
-  // Bot-guided requests are only valid between "Connect" (which starts the 10-minute
-  // window) and expiry. A request that was merely prepared (window not started) must never be
-  // completed — and the expiry is re-checked here against the server clock.
-  if (connectMethodForRequestId(pending.telegramRequestId) === "bot") {
-    if (!pending.connectStartedAt) {
-      console.log("telegram_webhook_bot_request_not_connecting", { pendingId: pending.id, source });
-      return;
-    }
-    if (pending.expiresAt.getTime() <= Date.now()) {
-      console.log("telegram_webhook_bot_request_expired", { pendingId: pending.id, source });
-      await notifyIfBotMethod(pending, () => notifyBotRequestExpired(telegramUserId, observedChatId));
-      return;
-    }
-  }
-
-  const claimed = await claimPendingRequestForProcessing(pending.id);
-  if (!claimed) {
-    console.log("telegram_webhook_pending_claim_lost", { pendingId: pending.id, source });
-    return;
-  }
-
-  console.log("telegram_webhook_verifying_channel", { pendingId: pending.id, source });
-  const verification = await verifyChannelOwnershipAndBotAccess(telegramChatId, telegramUserId);
-  if (!verification.ok) {
-    console.log("telegram_webhook_verification_failed", { pendingId: pending.id, reason: verification.reason, source });
-    await updatePendingChannelRequestById(pending.id, {
-      status: "failed",
-      failureReason: verification.reason,
-    });
-    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, verification.reason, observedChatId));
-    await notifyConnectionFailed(pending, verification.reason);
-    return;
-  }
-
-  // Session creation for brand-new accounts is deferred to
-  // /api/channels/connect-status, which is the only place that can
-  // actually deliver the resulting cookie to the browser — see
-  // FinalizeOptions in src/lib/channelConnection.ts for why.
-  const finalized = await finalizeVerifiedChannelConnection(verification, pending.identity, req.headers.get("user-agent"), {
-    createSessionForNewAccount: false,
-  });
-  if (!finalized.ok) {
-    console.error("telegram_webhook_finalize_failed", { pendingId: pending.id, error: finalized.error, source });
-    // 409 = this channel is already connected to an Onfile account: say so (not "couldn't reach Telegram").
-    const reason = finalized.status === 409 ? "channel_already_connected" : "telegram_api_error";
-    await updatePendingChannelRequestById(pending.id, {
-      status: "failed",
-      failureReason: reason,
-    });
-    await notifyIfBotMethod(pending, () => notifyBotConnectionFailure(telegramUserId, reason, observedChatId));
-    await notifyConnectionFailed(pending, reason);
-    return;
-  }
-
-  console.log("telegram_webhook_connection_persisted", {
-    pendingId: pending.id,
-    channelId: finalized.result.channel.id,
-    source,
-  });
-  await updatePendingChannelRequestById(pending.id, {
-    status: "verified",
-    resolvedChannelId: finalized.result.channel.id,
-    resolvedUserId: finalized.result.userId,
-    isNewAccount: finalized.result.isNewAccount,
-  });
-  // The verification message is static approved copy: it never contains a channel title (neither the one in
-  // `chat_shared`/the update nor the live one), and its button carries only the public request reference.
-  await notifyIfBotMethod(pending, async () => {
-    const outcome = await notifyBotConnectionSuccess(telegramUserId, observedChatId, {
-      id: pending.id,
-      telegramRequestId: pending.telegramRequestId,
-    });
-    console.log("telegram_webhook_success_notification", { pendingId: pending.id, source, ...outcome });
-  });
-}
-
-/**
- * Genuine backend event: a verification the user started failed. Only an
- * EXISTING account (a session user) has somewhere to receive an in-app
- * notification; a brand-new Telegram identity has no account yet and sees the
- * failure through the polling screen instead. Never throws.
- */
-async function notifyConnectionFailed(pending: PendingChannelRequestRecord, reason: string) {
-  const userId = pending.identity.sessionUserId;
-  if (!userId) return;
-  await notifyUser({
-    userId,
-    type: "channel_connection_failed",
-    title: "Channel connection needs attention",
-    body: CHANNEL_FAILURE_MESSAGES[reason] ?? "We couldn't verify the channel you selected. Please try again.",
-    destination: { type: "channels" },
-    dedupeKey: `channel_connect_failed:${pending.id}`,
-  });
 }
 
 /**
@@ -494,14 +388,4 @@ async function safeNotify(fn: () => Promise<unknown>) {
   } catch (err) {
     console.error("telegram_webhook_bot_notify_failed", err instanceof Error ? err.message : "unknown_error");
   }
-}
-
-/** In-chat confirmation is sent ONLY for bot-chat fallback requests; Direct Picker requests are untouched. */
-async function notifyIfBotMethod(pending: PendingChannelRequestRecord, fn: () => Promise<unknown>) {
-  if (connectMethodForRequestId(pending.telegramRequestId) !== "bot") {
-    // Visible in logs so "why no message?" is answerable: legacy Direct Picker requests never get one.
-    console.log("telegram_webhook_in_chat_notification_skipped", { pendingId: pending.id, reason: "direct_picker_request" });
-    return;
-  }
-  await safeNotify(fn);
 }

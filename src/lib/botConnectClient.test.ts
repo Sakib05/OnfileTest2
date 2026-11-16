@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
+import * as botConnectClient from "@/lib/botConnectClient";
 import {
-  BOT_NAVIGATION_DELAY_MS,
   clearLaunchConnectRef,
   formatCountdown,
   getLaunchConnectRef,
@@ -16,8 +16,8 @@ afterEach(() => {
 });
 
 describe("bot-guided connect client helpers", () => {
-  it("the bot chat opens after a deliberate ~3 second delay", () => {
-    expect(BOT_NAVIGATION_DELAY_MS).toBe(3000);
+  it("no artificial navigation delay is exported any more", () => {
+    expect("BOT_NAVIGATION_DELAY_MS" in botConnectClient).toBe(false);
   });
 
   it("formats the countdown as mm:ss", () => {

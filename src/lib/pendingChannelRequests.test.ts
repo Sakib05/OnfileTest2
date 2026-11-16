@@ -6,7 +6,7 @@ import {
   beginBotConnect,
   cancelPendingByToken,
   claimConfirmationDelivery,
-  claimPendingRequestForProcessing,
+  claimSelectedChannelForVerification,
   claimPickerDelivery,
   CONNECT_WINDOW_MS,
   createPendingChannelRequest,
@@ -16,6 +16,9 @@ import {
   getPendingByToken,
   getRequestByRef,
   getRequestByToken,
+  recordChannelSelection,
+  releaseConfirmationDelivery,
+  releaseVerificationClaim,
   releasePickerDelivery,
   revertBotConnectStart,
   updatePendingChannelRequestById,
@@ -58,30 +61,77 @@ describe("pendingChannelRequests — durable correlation state (Bug 2)", () => {
     expect(latest?.telegramRequestId).toBe(second.telegramRequestId);
   });
 
-  it("claimPendingRequestForProcessing only lets ONE caller win a race (prevents duplicate-update double-processing)", async () => {
+  it("claimSelectedChannelForVerification needs a stored selection and only lets ONE caller win a race", async () => {
     const created = await createPendingChannelRequest(identity());
     const pending = await getPendingByToken(created.correlationToken);
     expect(pending).toBeTruthy();
 
+    // Nothing selected yet → nothing to verify, nobody can claim.
+    expect(await claimSelectedChannelForVerification(pending!.id)).toBeNull();
+
+    await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId, "-1001234");
     const results = await Promise.all([
-      claimPendingRequestForProcessing(pending!.id),
-      claimPendingRequestForProcessing(pending!.id),
-      claimPendingRequestForProcessing(pending!.id),
+      claimSelectedChannelForVerification(pending!.id),
+      claimSelectedChannelForVerification(pending!.id),
+      claimSelectedChannelForVerification(pending!.id),
     ]);
 
-    const winners = results.filter(Boolean);
-    expect(winners.length).toBe(1);
+    const winners = results.filter((r) => r !== null);
+    expect(winners).toEqual(["-1001234"]); // exactly one winner, and it receives the STORED channel id
   });
 
-  it("a claimed request cannot be claimed again later (simulating chat_shared + my_chat_member both arriving)", async () => {
+  it("a claimed request cannot be claimed again, nor have its stored channel replaced", async () => {
     const created = await createPendingChannelRequest(identity());
     const pending = await getPendingByToken(created.correlationToken);
+    await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId, "-1001234");
 
-    const first = await claimPendingRequestForProcessing(pending!.id);
-    expect(first).toBe(true);
+    expect(await claimSelectedChannelForVerification(pending!.id)).toBe("-1001234");
+    expect(await claimSelectedChannelForVerification(pending!.id)).toBeNull();
+    expect(await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId, "-1009999")).toBeUndefined();
+    expect((await getPendingByToken(created.correlationToken))?.selectedChatId).toBe("-1001234");
+  });
 
-    const second = await claimPendingRequestForProcessing(pending!.id);
-    expect(second).toBe(false);
+  it("releaseVerificationClaim re-opens a still-pending claimed request, but never a resolved one", async () => {
+    const created = await createPendingChannelRequest(identity());
+    const pending = (await getPendingByToken(created.correlationToken))!;
+    await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId, "-1001234");
+    await claimSelectedChannelForVerification(pending.id);
+    await releaseVerificationClaim(pending.id);
+    expect(await claimSelectedChannelForVerification(pending.id)).toBe("-1001234");
+
+    await updatePendingChannelRequestById(pending.id, { status: "failed", failureReason: "bot_not_admin" });
+    await releaseVerificationClaim(pending.id);
+    expect(await claimSelectedChannelForVerification(pending.id)).toBeNull();
+  });
+
+  it("recordChannelSelection stores the chat for the matching (user, request id) only — and never verifies or resolves", async () => {
+    const created = await createPendingChannelRequest(identity());
+    // wrong user / wrong request id → nothing stored
+    expect(await recordChannelSelection(TEST_TG_USER_ID + 1, created.telegramRequestId, "-1001")).toBeUndefined();
+    expect(await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId + 1, "-1001")).toBeUndefined();
+
+    const stored = await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId, "-1001234");
+    expect(stored).toMatchObject({ selectedChatId: "-1001234", status: "pending", claimed: false, lifecycle: "channel_selected" });
+    expect(stored?.resolvedUserId).toBeNull();
+    expect(stored?.channel).toBeUndefined();
+    // Re-sharing before Verify replaces the stored channel: still ONE request → at most one channel.
+    expect((await recordChannelSelection(TEST_TG_USER_ID, created.telegramRequestId, "-1005678"))?.selectedChatId).toBe("-1005678");
+  });
+
+  it("recordChannelSelection refuses expired, resolved and (bot-method) not-started requests", async () => {
+    const expired = await createPendingChannelRequest(identity());
+    await db.update(pendingChannelRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(pendingChannelRequests.telegramRequestId, expired.telegramRequestId));
+    expect(await recordChannelSelection(TEST_TG_USER_ID, expired.telegramRequestId, "-1001")).toBeUndefined();
+
+    const failed = await createPendingChannelRequest(identity());
+    await cancelPendingByToken(failed.correlationToken);
+    expect(await recordChannelSelection(TEST_TG_USER_ID, failed.telegramRequestId, "-1001")).toBeUndefined();
+
+    const notStarted = await createPendingChannelRequest(identity(), { method: "bot" });
+    expect(await recordChannelSelection(TEST_TG_USER_ID, notStarted.telegramRequestId, "-1001")).toBeUndefined();
+    const row = (await getPendingByToken(notStarted.correlationToken))!;
+    await beginBotConnect(row.id);
+    expect((await recordChannelSelection(TEST_TG_USER_ID, notStarted.telegramRequestId, "-1001"))?.selectedChatId).toBe("-1001");
   });
 
   it("cancelPendingByToken marks a pending request as failed/cancelled, and only once", async () => {
@@ -144,7 +194,8 @@ describe("deriveLifecycleState", () => {
     expect(deriveLifecycleState(base, now)).toBe("prepared");
     expect(deriveLifecycleState({ ...base, connectStartedAt: new Date() }, now)).toBe("connecting");
     expect(deriveLifecycleState({ ...base, connectStartedAt: new Date(), pickerSentAt: new Date() }, now)).toBe("awaiting_channel_selection");
-    expect(deriveLifecycleState({ ...base, connectStartedAt: new Date(), pickerSentAt: new Date(), claimedAt: new Date() }, now)).toBe("verifying");
+    expect(deriveLifecycleState({ ...base, connectStartedAt: new Date(), pickerSentAt: new Date(), selectedChatId: "-1001" }, now)).toBe("channel_selected");
+    expect(deriveLifecycleState({ ...base, connectStartedAt: new Date(), pickerSentAt: new Date(), selectedChatId: "-1001", claimedAt: new Date() }, now)).toBe("verifying");
     expect(deriveLifecycleState({ ...base, status: "verified" }, now)).toBe("connected");
     expect(deriveLifecycleState({ ...base, status: "failed", failureReason: "bot_not_admin" }, now)).toBe("failed");
     expect(deriveLifecycleState({ ...base, status: "failed", failureReason: "cancelled" }, now)).toBe("cancelled");
@@ -198,11 +249,12 @@ describe("beginBotConnect / delivery claims (atomic)", () => {
     expect(await beginBotConnect(b.record.id)).toEqual({ kind: "not_startable", lifecycle: "cancelled" });
   });
 
-  it("an expired request can't be claimed by a late webhook", async () => {
-    const { record } = await make();
+  it("an expired request can't be claimed for verification, even with a stored selection", async () => {
+    const { record, telegramRequestId } = await make();
     await beginBotConnect(record.id);
+    await recordChannelSelection(900_900_001, telegramRequestId, "-1001234");
     await db.update(pendingChannelRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(pendingChannelRequests.id, record.id));
-    expect(await claimPendingRequestForProcessing(record.id)).toBe(false);
+    expect(await claimSelectedChannelForVerification(record.id)).toBeNull();
   });
 
   it("picker and confirmation deliveries can each be reserved only once", async () => {
@@ -216,6 +268,8 @@ describe("beginBotConnect / delivery claims (atomic)", () => {
 
     expect(await claimConfirmationDelivery(record.id)).toBe(true);
     expect(await claimConfirmationDelivery(record.id)).toBe(false);
+    await releaseConfirmationDelivery(record.id);
+    expect(await claimConfirmationDelivery(record.id)).toBe(true);
   });
 
   it("revertBotConnectStart puts the request back to 'prepared'", async () => {

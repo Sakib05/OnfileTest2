@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { channels, pendingChannelRequests, users } from "@/db/schema";
 import { GET } from "./route";
 import { createSetupToken, SETUP_COOKIE_NAME } from "@/lib/setupToken";
-import { beginBotConnect, claimPendingRequestForProcessing, createPendingChannelRequest, getPendingByToken, updatePendingChannelRequestById } from "@/lib/pendingChannelRequests";
+import { beginBotConnect, claimSelectedChannelForVerification, createPendingChannelRequest, getPendingByToken, recordChannelSelection, updatePendingChannelRequestById } from "@/lib/pendingChannelRequests";
 
 /** GET /api/channels/connect-status — the "check status" endpoint. Real Postgres, no Telegram calls. */
 
@@ -62,12 +62,18 @@ describe("GET /api/channels/connect-status", () => {
     expect((await res.json()).status).toBe("expired");
   });
 
-  it("pending: awaiting selection, then verifying once claimed", async () => {
+  it("pending: awaiting selection, then channel_selected, then verifying once claimed", async () => {
     const { correlationToken } = await newPending();
     expect(await (await get(correlationToken, USER_A)).json()).toMatchObject({ status: "pending", stage: "awaiting_selection", state: "prepared" });
     const pending = (await getPendingByToken(correlationToken))!;
     await beginBotConnect(pending.id);
-    await claimPendingRequestForProcessing(pending.id);
+    // The webhook stored the shared channel: it is only SELECTED — nothing is verified or connected.
+    await recordChannelSelection(USER_A, pending.telegramRequestId, CHANNEL_ID);
+    const selected = await (await get(correlationToken, USER_A)).json();
+    expect(selected).toMatchObject({ status: "pending", stage: "channel_selected", state: "channel_selected" });
+    expect(selected.channel).toBeUndefined();
+    // Only the Verify action's claim moves it to "verifying".
+    await claimSelectedChannelForVerification(pending.id);
     const data = await (await get(correlationToken, USER_A)).json();
     expect(data).toMatchObject({ status: "pending", stage: "verifying", state: "verifying" });
     // Server-authoritative expiry + server clock (UTC ISO) for the countdown.

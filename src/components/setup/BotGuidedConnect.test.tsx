@@ -206,21 +206,16 @@ describe("Single Connect button (no Start step)", () => {
   });
 });
 
-describe("Connect → countdown → ~3 s → bot chat opens AND the Mini App is closed", () => {
+describe("Connect → countdown → bot chat opens IMMEDIATELY AND the Mini App is closed", () => {
   async function renderReady(connect: Handler = connectOk()) {
     mockFetch({ "/api/channels/connect-bot-request": startOk(), "/api/channels/connect-bot-start": connect, "/api/channels/connect-status": pendingStatus() });
     await render(<Instructions />);
   }
 
-  it("waits ~3 s, THEN calls openTelegramLink(botUrl) and, right after, the official Telegram.WebApp.close()", async () => {
+  it("navigates IMMEDIATELY after the backend confirmed Connect (no 3 s wait): openTelegramLink(botUrl), then the official Telegram.WebApp.close()", async () => {
     await renderReady();
     await click("Connect");
-    expect(openTelegramLink).not.toHaveBeenCalled();
-
-    await advance(2900);
-    expect(openTelegramLink).not.toHaveBeenCalled();
-    expect(close).not.toHaveBeenCalled();
-    await advance(200);
+    // No timer was advanced at all: the hand-off already happened.
     expect(openTelegramLink).toHaveBeenCalledTimes(1);
     expect(openTelegramLink).toHaveBeenCalledWith(CHAT_URL);
     expect(close).toHaveBeenCalledTimes(1);
@@ -231,6 +226,10 @@ describe("Connect → countdown → ~3 s → bot chat opens AND the Mini App is 
     expect(startIdx).toBeLessThan(openIdx);
     expect(openIdx).toBeLessThan(closeIdx);
     expect(text()).toContain("Waiting for channel selection");
+    // …and nothing fires again later.
+    await advance(10_000);
+    expect(openTelegramLink).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("never uses window.close() as a substitute", async () => {
@@ -372,7 +371,7 @@ describe("Connect → countdown → ~3 s → bot chat opens AND the Mini App is 
     expect(close).toHaveBeenCalledTimes(2);
   });
 
-  it("unmounting the screen during the 3 s wait does NOT silently cancel the hand-off", async () => {
+  it("the hand-off does not depend on the screen staying mounted (it already happened when Connect resolved)", async () => {
     const c2 = document.createElement("div");
     document.body.appendChild(c2);
     const r2 = createRoot(c2);
@@ -389,7 +388,7 @@ describe("Connect → countdown → ~3 s → bot chat opens AND the Mini App is 
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("Cancel during the 3 s wait cancels the automatic hand-off (and tells the server)", async () => {
+  it("Cancel after the immediate hand-off tells the server and navigates nowhere else", async () => {
     mockFetch({
       "/api/channels/connect-bot-request": startOk(),
       "/api/channels/connect-bot-start": connectOk(),
@@ -398,12 +397,24 @@ describe("Connect → countdown → ~3 s → bot chat opens AND the Mini App is 
     });
     await render(<Instructions />);
     await click("Connect");
+    expect(openTelegramLink).toHaveBeenCalledTimes(1);
     await advance(1000);
     await click("Cancel");
     await advance(5000);
-    expect(openTelegramLink).not.toHaveBeenCalled();
-    expect(close).not.toHaveBeenCalled();
+    expect(openTelegramLink).toHaveBeenCalledTimes(1); // no second navigation
     expect(calls("connect-cancel")).toHaveLength(1);
+  });
+
+  it("a stage of 'channel_selected' (shared, waiting for Verify) tells the user to tap Verify in the bot chat", async () => {
+    mockFetch({
+      "/api/channels/connect-bot-request": startOk(),
+      "/api/channels/connect-bot-start": connectOk(),
+      "/api/channels/connect-status": pendingStatus("channel_selected", "channel_selected"),
+    });
+    await render(<Instructions />);
+    await click("Connect");
+    await advance(3100);
+    expect(text()).toContain("tap Verify in the bot chat");
   });
 
   it("fires a subtle haptic right before navigating", async () => {

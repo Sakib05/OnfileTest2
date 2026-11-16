@@ -230,9 +230,15 @@ export const pendingChannelRequests = pgTable(
     connectStartedAt: timestamp("connect_started_at"),
     // Set when the welcome + native channel-picker message was handed to Telegram.
     pickerSentAt: timestamp("picker_sent_at"),
-    // Set (atomically, once) before the "Congratulations" bot message is sent,
-    // so a retried webhook can never produce a second confirmation message.
+    // Set (atomically, once) before the "Channel Verification" bot message (the one with the Verify button)
+    // is sent, so a retried webhook can never produce a second one.
     confirmationSentAt: timestamp("confirmation_sent_at"),
+    // ── Channel selection (migrations/chat_shared_verify) ──
+    // The chat Telegram reported in `chat_shared` for THIS request. The webhook only stores it (never
+    // verifies or connects); the Mini App's Verify action later reads it from here, so the client never
+    // supplies a channel id. Nullable + additive.
+    selectedChatId: varchar("selected_chat_id", { length: 64 }),
+    selectedAt: timestamp("selected_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
     expiresAt: timestamp("expires_at").notNull(),

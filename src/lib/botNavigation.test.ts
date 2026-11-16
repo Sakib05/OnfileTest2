@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as botNavigation from "@/lib/botNavigation";
 import {
-  BOT_NAVIGATION_DELAY_MS,
   NAVIGATION_DEBOUNCE_MS,
-  cancelBotNavigation,
-  hasScheduledBotNavigation,
   navigateToBot,
+  navigateToBotOnce,
   resetBotNavigationForTests,
-  scheduleBotNavigation,
 } from "@/lib/botNavigation";
 import { closeTelegramMiniApp } from "@/lib/telegramWebApp";
 
@@ -87,52 +85,49 @@ describe("navigateToBot — the single shared navigation", () => {
   });
 });
 
-describe("scheduleBotNavigation — the automatic redirect", () => {
-  it("fires once after the delay (~3 s)", () => {
+describe("navigateToBotOnce — the automatic redirect (no delay)", () => {
+  it("has no delay constant and exposes no timer-based scheduling any more", () => {
+    expect("BOT_NAVIGATION_DELAY_MS" in botNavigation).toBe(false);
+    expect("scheduleBotNavigation" in botNavigation).toBe(false);
+  });
+  it("navigates IMMEDIATELY (synchronously, no timer advance needed): before → open → close", () => {
     installFull();
     const onResult = vi.fn();
     const onBefore = vi.fn(() => void calls.push("before"));
-    expect(scheduleBotNavigation("tok", URL_, BOT_NAVIGATION_DELAY_MS, { onBefore, onResult })).toBe(true);
-    expect(BOT_NAVIGATION_DELAY_MS).toBe(3000);
-    vi.advanceTimersByTime(2999);
-    expect(calls).toEqual([]);
-    vi.advanceTimersByTime(1);
+    expect(navigateToBotOnce("tok", URL_, { onBefore, onResult })).toBe(true);
+    // Nothing was waited for: fake timers were never advanced.
+    expect(vi.getTimerCount()).toBe(0);
     expect(calls).toEqual(["before", `open:${URL_}`, "close"]);
     expect(onResult).toHaveBeenCalledWith({ status: "navigated", closed: true });
   });
-  it("is idempotent per key: a second schedule neither duplicates nor re-arms, even after it fired", () => {
+  it("is idempotent per key: a second call neither duplicates nor re-navigates", () => {
     installFull();
-    expect(scheduleBotNavigation("tok", URL_, 3000)).toBe(true);
-    expect(scheduleBotNavigation("tok", URL_, 3000)).toBe(false);
-    vi.advanceTimersByTime(3000);
-    expect(scheduleBotNavigation("tok", URL_, 3000)).toBe(false);
+    expect(navigateToBotOnce("tok", URL_)).toBe(true);
+    expect(navigateToBotOnce("tok", URL_)).toBe(false);
     vi.advanceTimersByTime(10_000);
+    expect(navigateToBotOnce("tok", URL_)).toBe(false);
     expect(calls.filter((c) => c === "close")).toHaveLength(1);
   });
-  it("cancel clears the timer (cleanup) and nothing fires", () => {
+  it("a different request key navigates independently (after the debounce window)", () => {
     installFull();
-    scheduleBotNavigation("tok", URL_, 3000);
-    expect(hasScheduledBotNavigation("tok")).toBe(true);
-    cancelBotNavigation("tok");
-    expect(hasScheduledBotNavigation("tok")).toBe(false);
-    vi.advanceTimersByTime(10_000);
-    expect(calls).toEqual([]);
-    cancelBotNavigation(null); // no throw
+    expect(navigateToBotOnce("a", URL_)).toBe(true);
+    vi.advanceTimersByTime(NAVIGATION_DEBOUNCE_MS + 1);
+    expect(navigateToBotOnce("b", URL_)).toBe(true);
+    expect(calls.filter((c) => c === "close")).toHaveLength(2);
   });
   it("does not depend on any component lifecycle and survives a throwing callback", () => {
     installFull();
-    scheduleBotNavigation("tok", URL_, 3000, {
+    navigateToBotOnce("tok", URL_, {
       onBefore: () => { throw new Error("ui gone"); },
       onResult: () => { throw new Error("ui gone"); },
     });
-    vi.advanceTimersByTime(3000);
     expect(calls).toEqual([`open:${URL_}`, "close"]);
   });
-  it("reports 'unavailable' to the UI when Telegram's bridge is missing", () => {
+  it("reports 'unavailable' to the UI when Telegram's bridge is missing (and never closes the Mini App)", () => {
     install(null);
     const onResult = vi.fn();
-    scheduleBotNavigation("tok", URL_, 3000, { onResult });
-    vi.advanceTimersByTime(3000);
+    navigateToBotOnce("tok", URL_, { onResult });
     expect(onResult).toHaveBeenCalledWith({ status: "unavailable" });
+    expect(calls).toEqual([]);
   });
 });

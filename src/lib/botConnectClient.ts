@@ -3,12 +3,11 @@
  * they are trivially unit-testable).
  */
 
-// The ~3 s pause before the bot chat opens lives in "@/lib/botNavigation", together
-// with the shared navigation routine (open bot chat → Telegram.WebApp.close()).
-export { BOT_NAVIGATION_DELAY_MS } from "@/lib/botNavigation";
+// The hand-off to the bot chat (open bot chat → Telegram.WebApp.close()) lives in
+// "@/lib/botNavigation". It happens immediately — there is no artificial delay.
 
 /**
- * Reads the public request reference from the "Return to Onfile" launch URL
+ * Reads the public request reference from the bot's "Verify" button launch URL
  * (`/?connect=<ref>`). The ref is a plain positive integer; anything else is ignored.
  * It carries no secret and proves nothing — the server resolves it against the
  * authenticated Telegram user.
