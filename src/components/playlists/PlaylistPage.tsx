@@ -14,8 +14,10 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowRightLeft, Check, ChevronRight, CopyPlus, GripVertical, ListPlus, Loader2, Pencil, Search, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Check, CopyPlus, EyeOff, Globe, GripVertical, Link2, ListPlus, Loader2, Lock, Pencil, Play, Search, Share2, Star, Trash2 } from "lucide-react";
+import ActionMenu, { type ActionMenuItem } from "@/components/ui/ActionMenu";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
+import ShareSheet from "@/components/playlists/ShareSheet";
 import FileThumb from "@/components/ui/FileThumb";
 import PlaylistThumb from "@/components/ui/PlaylistThumb";
 import { useToast } from "@/components/ui/Toast";
@@ -23,6 +25,9 @@ import { useApp } from "@/contexts/AppContext";
 import SwipeableRow from "@/components/playlists/SwipeableRow";
 import { cn } from "@/lib/utils";
 import { fileKindLabel } from "@/lib/fileKinds";
+import { formatBytes } from "@/lib/utils";
+import { itemHref } from "@/lib/playlistSharing";
+import { copyText, requestShareLink } from "@/lib/playlistShareClient";
 import { PLAYLIST_DESCRIPTION_MAX, PLAYLIST_TITLE_MAX } from "@/lib/playlists";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { consumeFromLibraryFlag } from "@/lib/playlistNav";
@@ -37,6 +42,8 @@ export interface PlaylistSummary {
   hasPassword?: boolean;
   starsPrice?: number;
   isPublished?: boolean;
+  /** Owner-only: the unguessable public token once the playlist has been shared. */
+  shareSlug?: string | null;
 }
 
 interface MemberFile {
@@ -46,6 +53,10 @@ interface MemberFile {
   mimeType: string | null;
   fileSize: number | null;
   isPublished: boolean | null;
+  /** Smart-link slug of the published file (opens the existing /f/<slug> viewer); null while unpublished. */
+  smartLinkSlug?: string | null;
+  starsPrice?: number | null;
+  hasPassword?: boolean;
   thumbnailUrl: string | null;
   position: number;
 }
@@ -94,6 +105,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
   const [busyFileId, setBusyFileId] = useState<number | null>(null);
   const [openRowId, setOpenRowId] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const savingRef = useRef(false);
   const listRef = useRef<HTMLUListElement>(null);
@@ -275,21 +287,66 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     }
   };
 
+  // ── Open / play / share ─────────────────────────────────────────────────────
+  const isOpenable = (f: MemberFile) => !!f.smartLinkSlug && !!f.isPublished;
+
+  /**
+   * Opens ONE file in the existing public file viewer (/f/<slug>), which keeps enforcing that file's own password / price.
+   * When the playlist can be shared, the playlist context travels along (?list=…&i=…) so the viewer can show
+   * "3 of 12" with Previous / Next / Back to playlist. If it can't (private / paid playlist), the file still opens plainly.
+   */
+  const openItem = async (f: MemberFile) => {
+    if (!f.smartLinkSlug || !f.isPublished) {
+      toast("This file isn't published yet, so it can't be opened from here.", "info");
+      return;
+    }
+    const position = files.filter(isOpenable).findIndex((x) => x.id === f.id) + 1;
+    let token = playlist?.shareSlug ?? null;
+    if (!token) {
+      const r = await requestShareLink(pid);
+      if (r.ok) {
+        token = r.share.slug;
+        setPlaylist((cur) => (cur ? { ...cur, shareSlug: token } : cur));
+      }
+    }
+    router.push(token && position > 0 ? itemHref(f.smartLinkSlug, token, position) : `/f/${encodeURIComponent(f.smartLinkSlug)}`);
+  };
+
+  const playFirst = () => {
+    const first = files.find(isOpenable);
+    if (first) void openItem(first);
+  };
+
+  const copyPlaylistLink = async () => {
+    const r = await requestShareLink(pid);
+    if (!r.ok) {
+      toast(r.message, "error");
+      if (r.reason === "private") setShareOpen(true); // offers "Make public & share"
+      return;
+    }
+    const copied = await copyText(r.share.url);
+    toast(copied ? "Playlist link copied" : "Couldn't copy the link. Open Share to copy it manually.", copied ? "success" : "error");
+  };
+
   const locked = dragging || saving || busyFileId !== null;
   const memberIds = useMemo(() => new Set(files.map((f) => f.id)), [files]);
   const otherPlaylists = allPlaylists.filter((p) => p.id !== pid);
 
-  const headerTitle =
-    view.name === "edit" ? "Edit playlist" : view.name === "add" ? "Add files" : view.name === "transfer" ? "Add or move file" : "Playlist";
+  // The playlist screen itself has no top label (the title is the heading); sub-screens name themselves.
+  const headerTitle = view.name === "edit" ? "Edit playlist" : view.name === "add" ? "Add files" : view.name === "transfer" ? "Add or move file" : null;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   const shell = (children: React.ReactNode) => (
     <div className="min-h-screen bg-app" data-testid="playlist-page">
       <div className="max-w-2xl mx-auto w-full px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2.5rem)]">
         {/* No in-page back arrow: Telegram's native Back Button is the only back control. */}
-        <header className="flex items-center justify-center mb-4 min-h-11">
-          <p className="min-w-0 text-center text-sm font-semibold text-secondary truncate" data-testid="playlist-header-title">{headerTitle}</p>
-        </header>
+        {headerTitle ? (
+          <header className="flex items-center justify-center mb-4 min-h-11">
+            <p className="min-w-0 text-center text-sm font-semibold text-secondary truncate" data-testid="playlist-header-title">{headerTitle}</p>
+          </header>
+        ) : (
+          <div className="h-2" aria-hidden="true" />
+        )}
         {children}
       </div>
     </div>
@@ -317,6 +374,14 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
   }
 
   const count = files.length;
+  const totalBytes = files.reduce((sum, f) => sum + (f.fileSize ?? 0), 0);
+  const openableCount = files.filter(isOpenable).length;
+  const menuItems: ActionMenuItem[] = [
+    { key: "edit", label: "Edit playlist", icon: Pencil, onSelect: () => setView({ name: "edit" }) },
+    { key: "share", label: "Share playlist", icon: Share2, onSelect: () => setShareOpen(true) },
+    { key: "copy", label: "Copy playlist link", icon: Link2, onSelect: () => void copyPlaylistLink() },
+    { key: "delete", label: "Delete playlist", icon: Trash2, destructive: true, onSelect: () => setConfirmDelete(true) },
+  ];
 
   return shell(
     <>
@@ -357,47 +422,78 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
 
       {view.name === "list" && (
         <div className="flex flex-col gap-6">
-          {/* Hero: cover (derived from the first file) · title · description · count · actions */}
+          {/* Header: cover · title · description · facts · actions */}
           <section className="flex flex-col sm:flex-row gap-4 sm:gap-6 sm:items-end" aria-label="Playlist details">
             <div
-              className="relative w-full sm:w-60 flex-shrink-0 aspect-video rounded-2xl overflow-hidden bg-secondary border border-app shadow-app-md"
+              className="relative w-full sm:w-64 flex-shrink-0 aspect-video rounded-2xl overflow-hidden bg-secondary border border-app shadow-app-md"
               data-testid="playlist-cover"
             >
               <PlaylistThumb url={playlist.thumbnailUrl} />
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-brand">Playlist</p>
-              <h1 className="text-2xl font-bold text-primary leading-tight break-words mt-1" data-testid="playlist-title">{playlist.title}</h1>
-              {playlist.description ? (
-                <p className="text-sm text-secondary whitespace-pre-wrap break-words mt-1.5" data-testid="playlist-description">{playlist.description}</p>
-              ) : (
-                <p className="text-sm text-muted mt-1.5" data-testid="playlist-description">No description</p>
-              )}
-              <p className="text-xs font-medium text-secondary mt-2.5" data-testid="playlist-count">
-                {count} {count === 1 ? "file" : "files"}
-              </p>
+            <div className="min-w-0 flex-1 flex flex-col gap-3">
+              <div className="min-w-0">
+                <h1 className="text-2xl font-bold text-primary leading-tight break-words" data-testid="playlist-title">{playlist.title}</h1>
+                {playlist.description ? (
+                  <p className="text-sm text-secondary whitespace-pre-wrap break-words mt-1.5 line-clamp-4" data-testid="playlist-description">{playlist.description}</p>
+                ) : (
+                  <p className="text-sm text-muted mt-1.5" data-testid="playlist-description">No description</p>
+                )}
+              </div>
+
+              <div className="flex items-center gap-x-2 gap-y-1.5 flex-wrap text-xs text-secondary" data-testid="playlist-meta">
+                <span className="font-semibold text-primary" data-testid="playlist-count">
+                  {count} {count === 1 ? "file" : "files"}
+                </span>
+                {totalBytes > 0 && <span aria-label="Total size">· {formatBytes(totalBytes)}</span>}
+                <span className={cn("chip", playlist.isPublished ? "bg-brand-10 text-brand" : "bg-secondary text-secondary")} data-testid="playlist-visibility">
+                  {playlist.isPublished ? <Globe size={11} aria-hidden="true" /> : <EyeOff size={11} aria-hidden="true" />}
+                  {playlist.isPublished ? "Public" : "Private"}
+                </span>
+                {playlist.hasPassword && (
+                  <span className="chip bg-secondary text-secondary" data-testid="playlist-password-chip"><Lock size={11} aria-hidden="true" /> Password</span>
+                )}
+                {(playlist.starsPrice ?? 0) > 0 && (
+                  <span className="chip bg-secondary text-secondary"><Star size={11} aria-hidden="true" /> {playlist.starsPrice} Stars</span>
+                )}
+              </div>
+
+              {/* Primary actions: Play · Share (always visible) · ⋮ menu */}
+              <div className="flex items-center gap-2" data-testid="playlist-actions">
+                {openableCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={playFirst}
+                    disabled={locked}
+                    data-testid="playlist-play"
+                    className="btn-primary flex-1 min-h-11 px-4 text-sm flex items-center justify-center gap-2 disabled:opacity-60"
+                  >
+                    <Play size={16} aria-hidden="true" /> Play first
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShareOpen(true)}
+                  data-testid="playlist-share"
+                  className={cn(
+                    "min-h-11 px-4 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-2 border border-app bg-secondary text-primary",
+                    openableCount > 0 ? "flex-shrink-0" : "flex-1"
+                  )}
+                >
+                  <Share2 size={16} aria-hidden="true" /> Share
+                </button>
+                <ActionMenu label="Playlist actions" items={menuItems} disabled={locked} className="flex-shrink-0" />
+              </div>
             </div>
           </section>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setView({ name: "add" })}
-              disabled={locked}
-              className="btn-primary flex-1 min-h-11 px-4 text-sm flex items-center justify-center gap-2 disabled:opacity-60"
-            >
-              <ListPlus size={16} /> Add files from Library
-            </button>
-            <button
-              type="button"
-              onClick={() => setView({ name: "edit" })}
-              disabled={locked}
-              aria-label="Edit playlist name and description"
-              className="flex-shrink-0 inline-flex items-center justify-center gap-1.5 px-4 min-h-11 rounded-xl bg-secondary border border-app text-sm font-semibold text-primary disabled:opacity-60"
-            >
-              <Pencil size={14} /> Edit
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => setView({ name: "add" })}
+            disabled={locked}
+            className="btn-secondary w-full min-h-11 px-4 text-sm flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            <ListPlus size={16} /> Add files from Library
+          </button>
 
           {/* Ordered files */}
           <section aria-label="Playlist files">
@@ -416,7 +512,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
             ) : (
               <>
                 <p className="text-xs text-secondary mb-3" data-testid="playlist-hint">
-                  Swipe a file left to remove it · hold <GripVertical size={12} className="inline -mt-0.5" aria-hidden="true" /> and drag to reorder · tap a file to add or move it to another playlist.
+                  Tap a file to open it · swipe left to remove · hold <GripVertical size={12} className="inline -mt-0.5" aria-hidden="true" /> and drag to reorder.
                 </p>
                 <DndContext
                   sensors={sensors}
@@ -442,6 +538,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
                           removing={busyFileId === f.id}
                           onOpenChange={(o) => setOpenRowId(o ? f.id : (cur) => (cur === f.id ? null : cur))}
                           onSwipeStart={() => setOpenRowId((cur) => (cur !== null && cur !== f.id ? null : cur))}
+                          onOpenFile={() => void openItem(f)}
                           onOpenTransfer={() => setView({ name: "transfer", file: f })}
                           onRemove={() => void removeFile(f)}
                         />
@@ -452,17 +549,16 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
               </>
             )}
           </section>
-
-          <button
-            type="button"
-            onClick={() => setConfirmDelete(true)}
-            disabled={locked}
-            className="w-full min-h-11 py-2.5 text-sm font-medium text-red-500 flex items-center justify-center gap-2 disabled:opacity-60"
-          >
-            <Trash2 size={14} /> Delete playlist
-          </button>
         </div>
       )}
+
+      <ShareSheet
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        playlistId={pid}
+        title={playlist.title}
+        onPublishedChange={(published) => setPlaylist((cur) => (cur ? { ...cur, isPublished: published } : cur))}
+      />
 
       <DeleteConfirmModal
         open={confirmDelete}
@@ -500,6 +596,7 @@ function SortableRow({
   removing,
   onOpenChange,
   onSwipeStart,
+  onOpenFile,
   onOpenTransfer,
   onRemove,
 }: {
@@ -511,11 +608,13 @@ function SortableRow({
   removing: boolean;
   onOpenChange: (open: boolean) => void;
   onSwipeStart: () => void;
+  onOpenFile: () => void;
   onOpenTransfer: () => void;
   onRemove: () => void;
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: file.id, disabled });
   const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 20 : undefined, position: "relative" };
+  const published = !!file.isPublished && !!file.smartLinkSlug;
 
   return (
     <li
@@ -534,7 +633,7 @@ function SortableRow({
         disabled={locked && !removing}
         removing={removing}
       >
-        <div className="flex items-center gap-1.5 p-2 pr-1">
+        <div className="flex items-center gap-1.5 p-2 pr-1.5">
           {/* Drag handle: the ONLY element that starts a reorder drag. touch-action:none lets a finger drag it without
               scrolling the page; data-no-swipe stops the row's swipe gesture from ever starting on it. */}
           <button
@@ -547,28 +646,46 @@ function SortableRow({
             data-testid="drag-handle"
             data-no-swipe=""
             style={{ touchAction: "none" }}
-            className="w-9 h-11 flex-shrink-0 flex items-center justify-center rounded-lg text-muted cursor-grab active:cursor-grabbing disabled:opacity-40"
+            className="w-8 h-11 flex-shrink-0 flex items-center justify-center rounded-lg text-muted cursor-grab active:cursor-grabbing disabled:opacity-40"
           >
             <GripVertical size={18} />
           </button>
-          <div className="w-16 h-12 rounded-lg bg-card relative overflow-hidden flex-shrink-0">
-            <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} />
-          </div>
+
+          {/* Tap target: position · thumbnail · title + facts. Opens the file in the existing viewer. */}
+          <button
+            type="button"
+            onClick={onOpenFile}
+            disabled={locked}
+            aria-label={published ? `Open ${file.title}` : `${file.title} (not published)`}
+            data-testid="playlist-file-open"
+            className="min-w-0 flex-1 flex items-center gap-2.5 self-stretch text-left disabled:opacity-60"
+          >
+            <span className="w-5 flex-shrink-0 text-center text-xs font-semibold text-muted tabular-nums" data-testid="file-position">{index + 1}</span>
+            <span className="w-24 aspect-video rounded-lg bg-card relative overflow-hidden flex-shrink-0 border border-app">
+              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} />
+            </span>
+            <span className="min-w-0 flex-1 block">
+              <span className="block text-sm font-semibold text-primary line-clamp-2 leading-snug" data-testid="file-title">{file.title}</span>
+              <span className="mt-0.5 text-xs text-secondary flex items-center gap-x-1.5 gap-y-0.5 flex-wrap">
+                <span>{fileKindLabel(file)}</span>
+                {file.fileSize ? <span aria-label="File size">· {formatBytes(file.fileSize)}</span> : null}
+                {index === 0 && <span className="chip bg-brand-10 text-brand" title="The first file's thumbnail is the playlist cover">Cover</span>}
+                {!published && <span className="chip bg-secondary text-secondary" data-testid="file-unpublished">Not published</span>}
+                {file.hasPassword && <span className="chip bg-secondary text-secondary" aria-label="Password protected"><Lock size={10} aria-hidden="true" /></span>}
+                {(file.starsPrice ?? 0) > 0 && <span className="chip bg-secondary text-secondary"><Star size={10} aria-hidden="true" /> {file.starsPrice}</span>}
+              </span>
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={onOpenTransfer}
             disabled={locked}
             aria-label={`Add or move ${file.title} to another playlist`}
-            className="min-w-0 flex-1 flex items-center gap-1 self-stretch text-left disabled:opacity-60"
+            data-testid="file-transfer"
+            className="w-10 h-11 flex-shrink-0 flex items-center justify-center rounded-lg text-secondary disabled:opacity-60"
           >
-            <span className="min-w-0 flex-1 block">
-              <span className="block text-sm font-semibold text-primary line-clamp-1">{file.title}</span>
-              <span className="text-xs text-secondary flex items-center gap-1.5 flex-wrap">
-                <span>{fileKindLabel(file)}</span>
-                {index === 0 && <span className="chip bg-brand-10 text-brand" title="The first file's thumbnail is the playlist cover">Cover</span>}
-              </span>
-            </span>
-            <ChevronRight size={16} className="flex-shrink-0 text-muted" aria-hidden="true" />
+            <ArrowRightLeft size={16} aria-hidden="true" />
           </button>
         </div>
       </SwipeableRow>

@@ -10,6 +10,8 @@ import UnlockPanel from "@/components/download/UnlockPanel";
 import SuccessPanel from "@/components/download/SuccessPanel";
 import CreatorRow from "@/components/download/CreatorRow";
 import ReportModal from "@/components/download/ReportModal";
+import PlaylistNavBar from "@/components/playlists/PlaylistNavBar";
+import { parseListParam } from "@/lib/playlistSharing";
 
 type LoadState = "loading" | "ready" | "not_found" | "error";
 
@@ -76,8 +78,11 @@ function Message({ icon, title, text, action }: { icon: React.ReactNode; title: 
   );
 }
 
-export default function SmartLinkPage({ params }: { params: Promise<{ slug: string }> }) {
+export default function SmartLinkPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams?: Promise<{ list?: string | string[] }> }) {
   const { slug } = use(params);
+  // Optional playlist context (?list=<share token>): adds "3 of 12 · Previous · Next · Back to playlist".
+  // It only ever ADDS navigation; the file below is unlocked exactly as before (password / price rules unchanged).
+  const listSlug = parseListParam(searchParams ? use(searchParams).list : undefined);
   const [file, setFile] = useState<DownloadFileInfo | null>(null);
   const [creator, setCreator] = useState<DownloadCreatorInfo | null>(null);
   const [state, setState] = useState<LoadState>("loading");
@@ -140,6 +145,7 @@ export default function SmartLinkPage({ params }: { params: Promise<{ slug: stri
 
   return (
     <PageShell onReport={() => setShowReport(true)}>
+      {listSlug && <PlaylistNavBar listSlug={listSlug} fileSlug={slug} />}
       <main className="grid gap-5 md:grid-cols-2 md:gap-8 md:items-start">
         {/* Artwork */}
         <div className="md:sticky md:top-6">

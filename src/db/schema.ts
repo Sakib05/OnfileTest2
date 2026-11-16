@@ -312,12 +312,15 @@ export const playlists = pgTable("playlists", {
   password: varchar("password", { length: 256 }),
   starsPrice: integer("stars_price").default(0),
   isPublished: boolean("is_published").default(false),
+  // Unguessable public share token (migrations/playlist_share). NULL until the owner first shares the
+  // playlist. The public page is /p/<share_slug>; the numeric id is never a public handle.
+  shareSlug: varchar("share_slug", { length: 32 }),
   totalFiles: integer("total_files").default(0),
   totalViews: integer("total_views").default(0),
   totalDownloads: integer("total_downloads").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-});
+}, (t) => [uniqueIndex("playlists_share_slug_unique").on(t.shareSlug)]);
 
 // ─── Files ────────────────────────────────────────────────────────────────────
 export const files = pgTable(

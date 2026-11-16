@@ -33,17 +33,20 @@ import { FROM_LIBRARY_KEY } from "@/lib/playlistNav";
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type F = { id: number; title: string; fileType: string; mimeType: null; fileSize: number; isPublished: boolean; thumbnailUrl: string | null; position: number };
-const mk = (id: number, title: string, thumb: string | null = null): F => ({ id, title, fileType: "document", mimeType: null, fileSize: 1000, isPublished: true, thumbnailUrl: thumb, position: id });
+type F2 = F & { smartLinkSlug: string | null };
+const mk = (id: number, title: string, thumb: string | null = null): F2 => ({ id, title, fileType: "document", mimeType: null, fileSize: 1000, isPublished: true, smartLinkSlug: `slug-${id}`, thumbnailUrl: thumb, position: id });
 
 const basePlaylist = { id: 1, title: "Accounting", description: "Intro course", totalFiles: 3, thumbnailUrl: "https://cdn/a.webp" };
 const other = { id: 2, title: "BBA Materials", description: null, totalFiles: 1, thumbnailUrl: null };
 
 let container: HTMLDivElement;
 let root: Root;
-let members: F[];
+let members: F2[];
 let playlistMeta: typeof basePlaylist;
 let calls: { url: string; method: string; body: unknown }[];
 let failNext: { match: RegExp; status: number; body?: unknown } | null;
+let shareResult: { status: number; body: unknown } | null;
+const SHARE_SLUG = "AbCdEfGhIjKlMnOp";
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
@@ -87,14 +90,24 @@ function installFetch() {
       return json({ success: true, mode: body.mode, alreadyInDestination: false });
     }
     if (method === "DELETE" && url === "/api/playlists/1") return json({ success: true });
+    if (method === "POST" && url === "/api/playlists/1/share") {
+      if (shareResult) return json(shareResult.body, shareResult.status);
+      return json({ share: { slug: SHARE_SLUG, path: `/p/${SHARE_SLUG}`, url: `https://onfile.test/p/${SHARE_SLUG}`, hasPassword: false } });
+    }
     return json({ error: "unexpected" }, 500);
   }));
 }
 
 const buttons = () => Array.from(document.body.querySelectorAll("button"));
 const byText = (t: string) => buttons().find((b) => b.textContent?.trim().includes(t)) as HTMLButtonElement | undefined;
+const menuButton = () => document.body.querySelector('[data-testid="action-menu-button"]') as HTMLButtonElement;
+const menuEl = () => document.body.querySelector('[data-testid="action-menu"]') as HTMLElement | null;
+const choose = async (key: string) => {
+  await act(async () => menuButton().click());
+  await act(async () => (document.body.querySelector(`[data-testid="menu-item-${key}"]`) as HTMLButtonElement).click());
+};
 const rows = () => Array.from(document.body.querySelectorAll('[data-testid="playlist-file-row"]')) as HTMLElement[];
-const rowTitles = () => rows().map((r) => r.querySelector("span.font-semibold")?.textContent);
+const rowTitles = () => rows().map((r) => r.querySelector('[data-testid="file-title"]')?.textContent);
 const rowFor = (title: string) => rows().find((r) => r.textContent?.includes(title))!;
 const layerOf = (row: HTMLElement) => row.querySelector('[data-testid="swipe-layer"]') as HTMLElement;
 const swipeRowOf = (row: HTMLElement) => row.querySelector('[data-testid="swipe-row"]') as HTMLElement;
@@ -140,6 +153,7 @@ beforeEach(() => {
   playlistMeta = { ...basePlaylist };
   calls = [];
   failNext = null;
+  shareResult = null;
   Object.values(router).forEach((m) => m.mockReset());
   setActiveTab.mockReset();
   sessionStorage.clear();
@@ -165,17 +179,15 @@ describe("Playlist page — layout (full page, not a popup)", () => {
     expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("3 files");
     expect(coverImg()?.src).toBe("https://cdn/a.webp");
     expect(byText("Add files from Library")).toBeTruthy();
-    expect(document.querySelector('[aria-label="Edit playlist name and description"]')).not.toBeNull();
-    expect(byText("Delete playlist")).toBeTruthy();
   });
 
-  it("lists files in order with a drag handle each and marks the first as the cover — and has NO three-dot menu", async () => {
+  it("lists files in order with a drag handle each and marks the first as the cover — rows have no menu of their own", async () => {
     await mount();
     expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]);
     expect(document.body.querySelectorAll('[data-testid="drag-handle"]')).toHaveLength(3);
     expect(rowFor("One.pdf").textContent).toContain("Cover");
     expect(document.body.querySelector('[aria-label^="Actions for"]')).toBeNull();
-    expect(document.body.querySelector("svg.lucide-ellipsis, svg.lucide-more-horizontal")).toBeNull();
+    expect(rows().some((r) => r.querySelector('[aria-haspopup="menu"]'))).toBe(false); // the ⋮ menu belongs to the playlist header
   });
 
   it("shows an empty-playlist message and the default cover", async () => {
@@ -493,7 +505,7 @@ describe("Playlist page — swipe to remove", () => {
 describe("Playlist page — edit, add, transfer, delete (unchanged behaviour)", () => {
   it("edits the name and description and shows the update immediately", async () => {
     await mount();
-    await act(async () => byText("Edit")!.click());
+    await choose("edit");
     const title = document.getElementById("pl-edit-title") as HTMLInputElement;
     const desc = document.getElementById("pl-edit-desc") as HTMLTextAreaElement;
     expect(title.value).toBe("Accounting");
@@ -591,7 +603,7 @@ describe("Playlist page — edit, add, transfer, delete (unchanged behaviour)", 
 
   it("asks for confirmation before deleting, explains the files are kept, then leaves the page", async () => {
     await mount();
-    await act(async () => byText("Delete playlist")!.click());
+    await choose("delete");
     expect(document.body.textContent).toContain("will NOT be deleted");
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
     const confirm = buttons().filter((b) => b.textContent?.trim() === "Delete").pop()!;
@@ -600,5 +612,309 @@ describe("Playlist page — edit, add, transfer, delete (unchanged behaviour)", 
     expect(calls.filter((c) => c.method === "DELETE").map((c) => c.url)).toEqual(["/api/playlists/1"]);
     expect(router.replace).toHaveBeenCalledWith("/");
     expect(setActiveTab).toHaveBeenCalledWith("files");
+  });
+});
+
+describe("Playlist page — modern header (no 'Playlist' label, no bottom delete)", () => {
+  it("has NO 'Playlist' label above the title and no other eyebrow/top label in the list view", async () => {
+    await mount();
+    const texts = Array.from(document.body.querySelectorAll("*")).filter((el) => el.children.length === 0).map((el) => el.textContent?.trim());
+    expect(texts).not.toContain("Playlist");
+    expect(document.querySelector('[data-testid="playlist-header-title"]')).toBeNull();
+    const title = document.querySelector('[data-testid="playlist-title"]')!;
+    expect(title.tagName).toBe("H1");
+    expect(title.previousElementSibling).toBeNull(); // nothing sits above the title inside its block
+  });
+
+  it("shows cover, title, description, count, total size and visibility facts", async () => {
+    await mount();
+    expect(document.querySelector('[data-testid="playlist-meta"]')?.textContent).toContain("3 files");
+    expect(document.querySelector('[data-testid="playlist-meta"]')?.textContent).toContain("2.9 KB"); // 3 × 1000 B
+    expect(document.querySelector('[data-testid="playlist-visibility"]')?.textContent).toBe("Private"); // base fixture has no isPublished flag
+    expect(coverImg()?.src).toBe("https://cdn/a.webp"); // derived cover only — nothing uploaded
+  });
+
+  it("no longer renders the full-width 'Delete playlist' button or a visible 'Edit' button", async () => {
+    await mount();
+    expect(byText("Delete playlist")).toBeUndefined();
+    expect(buttons().some((b) => b.textContent?.trim() === "Edit")).toBe(false);
+    expect(document.querySelector('[aria-label="Edit playlist name and description"]')).toBeNull();
+  });
+});
+
+describe("Playlist page — three-dot menu", () => {
+  it("opens with Edit, Share, Copy link and a separated destructive Delete; icons + labels; ARIA menu semantics", async () => {
+    await mount();
+    expect(menuEl()).toBeNull();
+    expect(menuButton().getAttribute("aria-haspopup")).toBe("menu");
+    expect(menuButton().getAttribute("aria-expanded")).toBe("false");
+    await act(async () => menuButton().click());
+    expect(menuButton().getAttribute("aria-expanded")).toBe("true");
+    const items = Array.from(menuEl()!.querySelectorAll('[role="menuitem"]'));
+    expect(items.map((i) => i.textContent?.trim())).toEqual(["Edit playlist", "Share playlist", "Copy playlist link", "Delete playlist"]);
+    expect(items.every((i) => i.querySelector("svg"))).toBe(true);
+    expect(items[3].className).toContain("text-red-500"); // destructive is visually distinguished
+    expect(menuEl()!.querySelector('[role="separator"]')).not.toBeNull();
+    expect(menuEl()!.className).toContain("max-w-[calc(100vw-2rem)]"); // can't overflow a narrow screen
+  });
+
+  it("closes on Escape (focus returns to the button), on an outside tap, and when an item is chosen", async () => {
+    await mount();
+    await act(async () => menuButton().click());
+    await act(async () => { menuEl()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(menuEl()).toBeNull();
+    expect(document.activeElement).toBe(menuButton());
+
+    await act(async () => menuButton().click());
+    await act(async () => { document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
+    expect(menuEl()).toBeNull();
+
+    await choose("edit");
+    expect(menuEl()).toBeNull();
+  });
+
+  it("Edit playlist opens the existing edit form and saving uses the existing PATCH", async () => {
+    await mount();
+    await choose("edit");
+    expect(document.querySelector('[data-testid="playlist-header-title"]')?.textContent).toBe("Edit playlist");
+    await act(async () => typeInto(document.getElementById("pl-edit-title") as HTMLInputElement, "Renamed"));
+    await act(async () => byText("Save changes")!.click());
+    await flush();
+    expect(calls.find((c) => c.method === "PATCH")!.body).toMatchObject({ title: "Renamed" });
+  });
+
+  it("Delete playlist goes through the existing confirmation modal; cancelling deletes nothing, confirming deletes only the playlist", async () => {
+    await mount();
+    await choose("delete");
+    expect(document.body.textContent).toContain("will NOT be deleted");
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    await act(async () => buttons().find((b) => b.textContent?.trim() === "Cancel")!.click());
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    await choose("delete");
+    await act(async () => buttons().filter((b) => b.textContent?.trim() === "Delete").pop()!.click());
+    await flush();
+    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.url)).toEqual(["/api/playlists/1"]); // never /api/files/*
+    expect(router.replace).toHaveBeenCalledWith("/");
+  });
+});
+
+describe("Playlist page — sharing", () => {
+  const clip = () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    return writeText;
+  };
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "clipboard");
+    Reflect.deleteProperty(navigator, "share");
+  });
+  const sheet = () => document.body.querySelector('[data-testid="share-sheet"]') as HTMLElement | null;
+  const shareBtn = (id: string) => document.body.querySelector(`[data-testid="${id}"]`) as HTMLButtonElement;
+
+  it("Share is a prominent header button AND a menu item; both open the same share dialog", async () => {
+    await mount();
+    expect(document.querySelector('[data-testid="playlist-actions"] [data-testid="playlist-share"]')?.textContent).toContain("Share");
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(sheet()).not.toBeNull();
+    await act(async () => buttons().find((b) => b.getAttribute("aria-label") === "Close")!.click());
+    expect(sheet()).toBeNull();
+    await choose("share");
+    await flush();
+    expect(sheet()).not.toBeNull();
+  });
+
+  it("shows the server-issued public URL (stable token, never the numeric id) and Copy link copies exactly that URL with a success toast", async () => {
+    const writeText = clip();
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    const url = `https://onfile.test/p/${SHARE_SLUG}`;
+    expect((shareBtn("share-url") as unknown as HTMLInputElement).value).toBe(url);
+    const post = calls.find((c) => c.method === "POST" && c.url === "/api/playlists/1/share");
+    expect(post).toBeTruthy();
+    await act(async () => shareBtn("share-copy").click());
+    await flush();
+    expect(writeText).toHaveBeenCalledWith(url);
+    expect(document.body.textContent).toContain("Playlist link copied");
+  });
+
+  it("shows a failure toast when the clipboard is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: vi.fn(async () => { throw new Error("denied"); }) }, configurable: true });
+    const exec = vi.fn(() => false);
+    (document as unknown as { execCommand: unknown }).execCommand = exec;
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => shareBtn("share-copy").click());
+    await flush();
+    expect(document.body.textContent).toContain("Couldn't copy the link");
+    Reflect.deleteProperty(document, "execCommand");
+  });
+
+  it("Share on Telegram opens Telegram's share dialog for the correct URL (Mini App bridge)", async () => {
+    const openTelegramLink = vi.fn();
+    (window as unknown as { Telegram: unknown }).Telegram = { WebApp: { openTelegramLink } };
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => shareBtn("share-telegram").click());
+    expect(openTelegramLink).toHaveBeenCalledTimes(1);
+    const target = new URL(openTelegramLink.mock.calls[0][0] as string);
+    expect(target.origin + target.pathname).toBe("https://t.me/share/url");
+    expect(target.searchParams.get("url")).toBe(`https://onfile.test/p/${SHARE_SLUG}`);
+    expect(target.searchParams.get("text")).toContain("Accounting");
+  });
+
+  it("Share on Telegram falls back to a new tab outside Telegram", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => shareBtn("share-telegram").click());
+    expect(String(open.mock.calls[0][0])).toContain("https://t.me/share/url?url=https%3A%2F%2Fonfile.test%2Fp%2F" + SHARE_SLUG);
+    open.mockRestore();
+  });
+
+  it("offers native sharing only where supported, and passes the real URL", async () => {
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(shareBtn("share-native")).toBeNull(); // jsdom: no navigator.share
+    await act(async () => buttons().find((b) => b.getAttribute("aria-label") === "Close")!.click());
+
+    const share = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "share", { value: share, configurable: true });
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => shareBtn("share-native").click());
+    expect(share).toHaveBeenCalledWith(expect.objectContaining({ url: `https://onfile.test/p/${SHARE_SLUG}`, title: "Accounting" }));
+  });
+
+  it("'Copy playlist link' in the menu copies the link without opening the dialog", async () => {
+    const writeText = clip();
+    await mount();
+    await choose("copy");
+    await flush();
+    expect(writeText).toHaveBeenCalledWith(`https://onfile.test/p/${SHARE_SLUG}`);
+    expect(sheet()).toBeNull();
+    expect(document.body.textContent).toContain("Playlist link copied");
+  });
+
+  it("a private playlist explains why it can't be shared and offers 'Make public & share' (existing PATCH isPublished)", async () => {
+    shareResult = { status: 409, body: { error: "This playlist is private. Make it public to share it.", reason: "private" } };
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(document.querySelector('[data-testid="share-blocked"]')?.textContent).toContain("private");
+    expect(document.querySelector('[data-testid="share-url"]')).toBeNull(); // no link is shown or invented
+    shareResult = null;
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH" && url === "/api/playlists/1") { calls.push({ url, method: "PATCH", body: JSON.parse(init.body as string) }); return json({ playlist: summary() }); }
+      return original(url, init);
+    }));
+    await act(async () => byText("Make public")!.click());
+    await flush();
+    expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({ isPublished: true });
+    expect((shareBtn("share-url") as unknown as HTMLInputElement).value).toBe(`https://onfile.test/p/${SHARE_SLUG}`);
+  });
+
+  it("a paid playlist can't be shared and says why; the menu's Copy link reports the same error", async () => {
+    shareResult = { status: 409, body: { error: "Paid playlists can't be shared yet because Telegram Stars payments aren't connected.", reason: "paid_unavailable" } };
+    await mount();
+    await choose("copy");
+    await flush();
+    expect(document.body.textContent).toContain("Paid playlists can't be shared yet");
+  });
+
+  it("notes that password protection stays in force", async () => {
+    shareResult = { status: 200, body: { share: { slug: SHARE_SLUG, path: `/p/${SHARE_SLUG}`, url: `https://onfile.test/p/${SHARE_SLUG}`, hasPassword: true } } };
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(document.querySelector('[data-testid="share-password-note"]')?.textContent).toContain("password");
+  });
+});
+
+describe("Playlist page — opening content (sequential viewing entry points)", () => {
+  it("tapping a published file opens the existing file page with the playlist context (list token + position)", async () => {
+    await mount();
+    await act(async () => (rowFor("Two.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
+    await flush();
+    expect(router.push).toHaveBeenCalledWith(`/f/slug-2?list=${SHARE_SLUG}&i=2`);
+  });
+
+  it("'Play first' opens the first published file", async () => {
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-play"]') as HTMLButtonElement).click());
+    await flush();
+    expect(router.push).toHaveBeenCalledWith(`/f/slug-1?list=${SHARE_SLUG}&i=1`);
+  });
+
+  it("position counts only published files (matching the public list); unpublished files can't be opened and say so", async () => {
+    members = [{ ...mk(1, "Draft.pdf"), isPublished: false, smartLinkSlug: null }, mk(2, "Live.pdf"), mk(3, "Live 2.pdf")];
+    await mount();
+    expect(rowFor("Draft.pdf").querySelector('[data-testid="file-unpublished"]')).not.toBeNull();
+    await act(async () => (rowFor("Draft.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
+    expect(router.push).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("isn't published yet");
+    await act(async () => (rowFor("Live 2.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
+    await flush();
+    expect(router.push).toHaveBeenCalledWith(`/f/slug-3?list=${SHARE_SLUG}&i=2`);
+    await act(async () => (document.querySelector('[data-testid="playlist-play"]') as HTMLButtonElement).click());
+    await flush();
+    expect(router.push).toHaveBeenLastCalledWith(`/f/slug-2?list=${SHARE_SLUG}&i=1`);
+  });
+
+  it("when the playlist can't be shared the file still opens plainly (no playlist context)", async () => {
+    shareResult = { status: 409, body: { error: "private", reason: "private" } };
+    await mount();
+    await act(async () => (rowFor("One.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
+    await flush();
+    expect(router.push).toHaveBeenCalledWith("/f/slug-1");
+  });
+
+  it("hides 'Play first' when nothing is published (no dead button) and the empty state is unchanged", async () => {
+    members = [{ ...mk(1, "Draft.pdf"), isPublished: false, smartLinkSlug: null }];
+    await mount();
+    expect(document.querySelector('[data-testid="playlist-play"]')).toBeNull();
+    members = [];
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount();
+    expect(document.querySelector('[data-testid="playlist-play"]')).toBeNull();
+    expect(document.body.textContent).toContain("This playlist is empty");
+  });
+
+  it("each row shows position, type, size and a transfer button that still opens add/move", async () => {
+    await mount();
+    const row = rowFor("Two.pdf");
+    expect(row.querySelector('[data-testid="file-position"]')?.textContent).toBe("2");
+    expect(row.textContent).toContain("1000 B");
+    expect(row.textContent).not.toMatch(/\d+:\d{2}/); // no invented duration
+    await act(async () => (row.querySelector('[data-testid="file-transfer"]') as HTMLButtonElement).click());
+    expect(byText("Add to another playlist")).toBeTruthy();
+  });
+});
+
+describe("Playlist page — layout safety & themes", () => {
+  it("uses min-w-0 / wrapping on text blocks and a width-capped column so a 320px screen can't overflow horizontally", async () => {
+    await mount();
+    const page = document.querySelector('[data-testid="playlist-page"] > div') as HTMLElement;
+    expect(page.className).toContain("max-w-2xl");
+    expect(page.className).toContain("w-full");
+    expect(document.querySelector('[data-testid="playlist-title"]')!.className).toContain("break-words");
+    expect(document.querySelector('[data-testid="playlist-title"]')!.parentElement!.className).toContain("min-w-0");
+    expect(rowFor("One.pdf").querySelector('[data-testid="playlist-file-open"]')!.className).toContain("min-w-0");
+    expect(document.querySelector('[data-testid="playlist-cover"]')!.className).toContain("overflow-hidden");
+  });
+
+  it("styles only through theme tokens (bg-card/bg-secondary/text-primary…), never hard-coded light/dark colours", () => {
+    const fs = require("fs") as typeof import("fs"); // eslint-disable-line @typescript-eslint/no-require-imports
+    for (const f of ["PlaylistPage.tsx", "ShareSheet.tsx", "PublicPlaylistView.tsx", "PlaylistNavBar.tsx", "../ui/ActionMenu.tsx"]) {
+      const src = fs.readFileSync(`${__dirname}/${f}`, "utf8");
+      expect(src, f).not.toMatch(/\b(bg-white|bg-black|bg-gray-\d+|text-gray-\d+|text-black|bg-slate-\d+)/);
+    }
   });
 });
