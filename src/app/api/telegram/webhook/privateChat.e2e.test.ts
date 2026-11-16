@@ -41,7 +41,7 @@ function installMock() {
     calls.push({ method, body });
     let result: unknown = true;
     if (method === "getMe") result = { id: BOT_ID, username: "TestOnfileBot" };
-    else if (method === "getChat") result = { id: CHANNEL, type: "channel", title: "Priv Channel" };
+    else if (method === "getChat") result = body.chat_id === USER ? { id: PRIVATE_CHAT, type: "private" } : { id: CHANNEL, type: "channel", title: "Priv Channel" };
     else if (method === "getChatMember") result = body.user_id === BOT_ID ? { status: "administrator", can_post_messages: true } : { status: "creator" };
     return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
   }) as unknown as typeof fetch;
@@ -168,7 +168,7 @@ describe("first-time user: signed Start flow", () => {
     expect(JSON.stringify(sentMessages().map((m) => m.body.reply_markup ?? {}))).not.toContain("request_chat");
   });
 
-  it("after that first Start the user is a RETURNING user: the next connect uses the existing chat, no start link", async () => {
+  it("after a plain /start (which records nothing) the next connect still uses the existing chat via the getChat backfill, no start link", async () => {
     await webhook({ message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: "/start" } });
     calls = [];
     const cookie = `${SETUP_COOKIE_NAME}=${createSetupToken({ id: USER, first_name: "T" })}`;
@@ -215,14 +215,14 @@ describe("confirmations use the stored chat id", () => {
     expect(String(note.body.chat_id)).not.toBe(String(USER));
   });
 
-  it("a first plain /start gets the creator welcome; a later plain /start does not repeat the onboarding", async () => {
+  it("a first plain /start and a later plain /start get the exact same creator welcome", async () => {
     await webhook({ message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: "/start" } });
     expect(sentMessages()).toHaveLength(1);
     expect(String(sentMessages()[0].body.text)).toBe(BOT_MESSAGES.welcome);
 
     await webhook({ message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, text: "/start" } });
     expect(sentMessages()).toHaveLength(2);
-    expect(String(sentMessages()[1].body.text)).toBe(BOT_MESSAGES.welcomeBack);
+    expect(String(sentMessages()[1].body.text)).toBe(BOT_MESSAGES.welcome);
   });
 
   it("a user already on file (returning) never gets the creator welcome before the signed-Start picker", async () => {

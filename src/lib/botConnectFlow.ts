@@ -143,7 +143,7 @@ export const BOT_MESSAGES = {
    * for the product-claims audit of the benefits listed here.
    */
   welcome: CREATOR_WELCOME_MESSAGE,
-  /** Short reply for a RETURNING user who sends a plain /start — never the full onboarding again. */
+  /** No longer sent: an ordinary /start now gets `welcome` for every user. Kept only for reference/tests. */
   welcomeBack: "👋 Welcome back to Onfile!\n\nOpen the Onfile app any time to pick up where you left off.",
   noActiveRequest:
     "I don’t have an active channel connection request for you. Open Onfile, open “Connect channel via bot” and tap “Start”, then “Connect”.",
@@ -304,6 +304,8 @@ export interface BotTextMessage {
    * Set by the webhook, BEFORE it records the private chat: true = Telegram user had no private chat
    * with the bot on file (first contact), false = returning user, undefined = unknown (lookup failed
    * or caller doesn't track it). Only ever derived server-side from the authenticated webhook.
+   * Only consulted for the signed `/start c1_…` flow; an ordinary `/start` ignores it (and the webhook
+   * does not compute it for an ordinary `/start`).
    */
   isFirstContact?: boolean;
 }
@@ -313,6 +315,18 @@ export function parseBotCommand(text: string): { command: string; arg: string } 
   const m = /^\/([a-zA-Z_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(\S+))?\s*$/.exec(text.trim());
   if (!m) return null;
   return { command: m[1].toLowerCase(), arg: m[2] ?? "" };
+}
+
+/**
+ * True for an ORDINARY `/start`: the command is `/start` and it carries no payload of ours (no payload at
+ * all, or a payload that is not a signed `c1_…` connect payload). Such a message only ever produces the
+ * static Welcome Message, so the webhook may skip all account / private-chat bookkeeping for it.
+ * Deliberately uses the SAME parsing and the SAME `c1_` test as handleBotTextMessage so the two can never
+ * disagree about which `/start` messages are special deep links.
+ */
+export function isOrdinaryStartCommand(text: string): boolean {
+  const parsed = parseBotCommand(text);
+  return parsed !== null && parsed.command === "start" && !parsed.arg.startsWith("c1_");
 }
 
 /**
@@ -330,9 +344,9 @@ export async function handleBotTextMessage(msg: BotTextMessage): Promise<boolean
     // Only payloads of our own shape are ours; anything else (no payload, or
     // some other deep-link feature) gets the neutral welcome.
     if (!parsed.arg || !parsed.arg.startsWith("c1_")) {
-      // New (or unknown) users get the creator introduction; a returning user is not shown the
-      // full onboarding again.
-      await sendBotMessage(msg.chatId, msg.isFirstContact === false ? BOT_MESSAGES.welcomeBack : BOT_MESSAGES.welcome);
+      // Ordinary /start (see isOrdinaryStartCommand): EVERY user — new or returning — gets the same
+      // approved Welcome Message, so nothing about the user is looked up first. Just one sendMessage.
+      await sendBotMessage(msg.chatId, BOT_MESSAGES.welcome);
       return true;
     }
 

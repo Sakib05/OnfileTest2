@@ -12,10 +12,15 @@ backend window, signed `/start`, native picker, webhook verification, replay/dup
 * The old technical "how to connect" welcome was the `BOT_MESSAGES.welcome` text sent for a plain `/start`.
   It is replaced by the approved creator-focused introduction. It contains no setup, permission, button or
   picker instructions. It is sent as plain text (no `parse_mode`), so there is no markup to break.
-* **New vs returning**: the webhook reads whether a verified private chat was already on file *before* it
-  records the chat, and passes `isFirstContact` to `handleBotTextMessage`:
-  * plain `/start`, first contact (or unknown) → creator welcome;
-  * plain `/start`, returning user → short `BOT_MESSAGES.welcomeBack` (never the full onboarding again);
+* **Ordinary `/start` fast path** (no payload, or any payload that is not our signed `c1_…` one — see
+  `isOrdinaryStartCommand` in `src/lib/botConnectFlow.ts`): **every** user, new or returning, gets the same
+  creator welcome. The webhook does **no** account lookup and **no** `bot_private_chats` read or upsert for it
+  (so there is no `isFirstContact` and no `welcomeBack` reply any more); the only database statement before the
+  reply is the `telegram_update_log` idempotency insert, and the only Telegram call is the single `sendMessage`,
+  which is awaited before the webhook responds. The private chat is still recorded by every other private
+  message (`/connect`, signed `/start c1_…`, …), by `my_chat_member` updates, and is backfilled by the existing
+  `getChat` probe when a user connects a channel from the Mini App.
+* The remaining flows keep reading `isFirstContact` (read BEFORE the chat is recorded):
   * signed `/start c1_…` from a first-contact user → creator welcome, **then** the unchanged picker message;
   * signed `/start c1_…` from a returning user → picker only (unchanged);
   * users reached through the backend's existing-chat delivery never receive a welcome.
@@ -97,3 +102,11 @@ Tap the button below to verify your connection and continue to your Onfile dashb
 `src/app/api/telegram/webhook/botFallback.e2e.test.ts` (Postgres + mocked Telegram Bot API; use a DEV DB).
 Real-device Telegram (Android/iOS) testing has **not** been performed — see the checklist in
 `BOT_GUIDED_CONNECT.md`.
+
+## 2a. `/start` response-time optimization (ordinary `/start` only)
+
+Removed from the ordinary `/start` path: the `bot_private_chats` first-contact SELECT (`getPrivateChat`) and the
+`bot_private_chats` upsert (`recordPrivateChat`), plus the new/returning branching they fed. Kept: webhook secret
+check, `telegram_update_log` idempotency insert, awaited `sendMessage`, error handling, and all signed-payload /
+`/connect` / `chat_shared` / `my_chat_member` behaviour. Covered by
+`src/app/api/telegram/webhook/startFastPath.e2e.test.ts`.

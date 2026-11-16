@@ -18,6 +18,7 @@ import {
   resolveMiniAppBaseUrl,
   handleBotTextMessage,
   parseBotCommand,
+  isOrdinaryStartCommand,
   sendChannelVerificationPrompt,
   verifyBotStartPayload,
 } from "@/lib/botConnectFlow";
@@ -121,6 +122,25 @@ describe("signed /start payload", () => {
 
   it("builds the deep link from the supplied (configured) bot username", () => {
     expect(buildBotDeepLink("MyConfiguredBot", "c1_a_b")).toBe("https://t.me/MyConfiguredBot?start=c1_a_b");
+  });
+});
+
+describe("isOrdinaryStartCommand", () => {
+  it("is true for /start with no payload or a non-connect payload (including @BotName form)", () => {
+    for (const t of ["/start", "  /start  ", "/START", "/start@OnfileBot", "/start ref_123", "/start@OnfileBot promo", "/start C1_abc"]) {
+      expect(isOrdinaryStartCommand(t), t).toBe(true);
+    }
+  });
+
+  it("is false for the signed connect payload, other commands and non-commands", () => {
+    for (const t of ["/start c1_abc_0123456789abcdef01234567", "/start@OnfileBot c1_zz", "/connect", "/startx", "hello", "start", ""]) {
+      expect(isOrdinaryStartCommand(t), t).toBe(false);
+    }
+  });
+
+  it("agrees with handleBotTextMessage: any /start it classifies as ordinary never reaches the connect lookup", () => {
+    // The `c1_` prefix is the single discriminator in both places.
+    expect(isOrdinaryStartCommand("/start c1_")).toBe(false);
   });
 });
 
@@ -263,11 +283,24 @@ describe("handleBotTextMessage — /start", () => {
     expect(sentMessages()[0].body.parse_mode).toBeUndefined();
   });
 
-  it("returning user (isFirstContact=false) sending a plain /start does NOT get the full onboarding again", async () => {
+  it("returning user (isFirstContact=false) sending a plain /start gets the exact same welcome as a new user", async () => {
     await handleBotTextMessage({ chatId: USER_A, chatType: "private", fromId: USER_A, text: "/start", isFirstContact: false });
     expect(sentMessages()).toHaveLength(1);
-    expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.welcomeBack);
-    expect(sentMessages()[0].body.text).not.toBe(BOT_MESSAGES.welcome);
+    expect(sentMessages()[0].body.text).toBe(BOT_MESSAGES.welcome);
+    expect(sentMessages()[0].body.reply_markup).toBeUndefined();
+    expect(sentMessages()[0].body.parse_mode).toBeUndefined();
+  });
+
+  it("a plain /start sends the identical welcome whatever isFirstContact is (true / false / undefined)", async () => {
+    for (const isFirstContact of [true, false, undefined]) {
+      await handleBotTextMessage({ chatId: USER_A, chatType: "private", fromId: USER_A, text: "/start", isFirstContact });
+    }
+    expect(sentMessages().map((m) => m.body.text)).toEqual([BOT_MESSAGES.welcome, BOT_MESSAGES.welcome, BOT_MESSAGES.welcome]);
+  });
+
+  it("a plain /start makes exactly one Bot API call (sendMessage) and no other", async () => {
+    await start(USER_A, "/start");
+    expect(calls.map((c) => c.method)).toEqual(["sendMessage"]);
   });
 
   it("first-time signed /start: creator welcome first, then the unchanged picker keyboard", async () => {

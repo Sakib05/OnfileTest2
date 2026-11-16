@@ -8,7 +8,7 @@ import { notifyUser } from "@/lib/notifications";
 import { connectMethodForRequestId, lookupPendingForBotStart, recordChannelSelection } from "@/lib/pendingChannelRequests";
 import { recordBotChannelAdminEvent } from "@/lib/botChannelEvents";
 import { getPrivateChat, markPrivateChatBlocked, recordPrivateChat } from "@/lib/botPrivateChats";
-import { handleBotTextMessage, notifyBotRequestExpired, sendChannelVerificationPrompt } from "@/lib/botConnectFlow";
+import { handleBotTextMessage, isOrdinaryStartCommand, notifyBotRequestExpired, sendChannelVerificationPrompt } from "@/lib/botConnectFlow";
 
 /** Constant-time comparison of the webhook secret header. */
 function secretsMatch(provided: string, expected: string): boolean {
@@ -142,12 +142,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    // FAST PATH — ordinary `/start` (no payload, or a payload that is not our signed `c1_…` one): every
+    // user gets the same static Welcome Message, so NOTHING is looked up or written first — no account
+    // lookup, no `bot_private_chats` read/upsert. The only DB work before the reply is the idempotency
+    // insert above. (The message is still sent and awaited before responding; no background work.)
+    // Signed `/start c1_…` payloads, `/connect` and every other message do NOT take this path.
+    const msg = update.message;
+    const isOrdinaryStart =
+      !!msg?.text && !!msg.from?.id && msg.chat.type === "private" && isOrdinaryStartCommand(msg.text);
+
     // Remember the verified private chat (user id → chat id) so the backend can
     // later message the user in their EXISTING conversation without a "/start".
     // Only trusted, secret-authenticated webhook updates reach this point.
-    // Whether this is the user's first contact is read BEFORE recording, so /start can tell new users
-    // (creator welcome) from returning users (no repeated onboarding).
-    const isFirstContact = update.message ? await recordPrivateChatFromMessage(update.message) : undefined;
+    // Whether this is the user's first contact is read BEFORE recording, so the signed `/start c1_…` flow can
+    // tell new users (creator welcome before the picker) from returning users (picker only).
+    const isFirstContact = update.message && !isOrdinaryStart ? await recordPrivateChatFromMessage(update.message) : undefined;
 
     // Bot-chat fallback ("Connect channel via bot"): `/start <payload>` and
     // `/connect` in a private chat. Never touches `channels` directly — see
