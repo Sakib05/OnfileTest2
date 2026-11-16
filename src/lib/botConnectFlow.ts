@@ -413,7 +413,7 @@ async function notify(telegramUserId: number, observedChatId: number | string | 
   }
 }
 
-// ─── "Return to Onfile" (second bot message) ─────────────────────────────────
+// ─── "Channel Verification" (second bot message) ─────────────────────────────
 
 /** The one variable the operator must set. Everything else is a convenience fallback. */
 export const MINI_APP_URL_ENV = "MINI_APP_URL";
@@ -465,31 +465,43 @@ export function getMiniAppBaseUrl(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 /**
- * The URL behind "Return to Onfile". It carries ONLY the public request
+ * The URL behind the "Verify" button. It carries ONLY the public request
  * reference (`connect=<Telegram request id>`): no token, no secret, no
- * Telegram/chat/channel id. The Mini App resolves it server-side against the
- * authenticated Telegram user, so the ref is meaningless to anyone else.
+ * Telegram/chat/channel id and no channel title. The Mini App resolves it
+ * server-side against the authenticated Telegram user (GET
+ * /api/channels/connect-status?ref=), so the ref is meaningless to anyone else.
+ * It is the SAME launch URL the previous "Return to Onfile" button used — the
+ * existing request is verified, never a new one created. Where the Mini App
+ * navigates afterwards (the Dashboard) is decided client-side, only after the
+ * server has confirmed the connection.
  */
-export function buildReturnToOnfileUrl(telegramRequestId: number, env: NodeJS.ProcessEnv = process.env): string | null {
+export function buildVerifyUrl(telegramRequestId: number, env: NodeJS.ProcessEnv = process.env): string | null {
   const base = getMiniAppBaseUrl(env);
   if (!base) return null;
   return `${base}/?connect=${telegramRequestId}`;
 }
 
-export function buildReturnToOnfileKeyboard(telegramRequestId: number, env: NodeJS.ProcessEnv = process.env) {
-  const url = buildReturnToOnfileUrl(telegramRequestId, env);
+/** Exact label of the inline Web App button below the verification message. */
+export const VERIFY_BUTTON_TEXT = "Verify";
+
+export function buildVerifyKeyboard(telegramRequestId: number, env: NodeJS.ProcessEnv = process.env) {
+  const url = buildVerifyUrl(telegramRequestId, env);
   if (!url) return undefined;
-  return { inline_keyboard: [[{ text: "Return to Onfile", web_app: { url } }]] };
+  return { inline_keyboard: [[{ text: VERIFY_BUTTON_TEXT, web_app: { url } }]] };
 }
 
-export function connectionSuccessMessage(channelTitle?: string | null): string {
-  // `channelTitle` is the title Telegram returned during live verification (never client-supplied).
-  const name = channelTitle?.trim() || "Your channel";
-  return (
-    `✅ ${name} is now connected to your Onfile account.\n\n` +
-    "Your channel is ready!\n\n" +
-    "Return to Onfile to automatically refresh and view your connection status."
-  );
+/**
+ * Exact, product-approved copy of the second bot message. Static on purpose: it does NOT interpolate the channel
+ * title (that would conflict with the approved copy, and the title is user-controlled text), so there is nothing
+ * client-supplied that could reach it.
+ */
+export const CHANNEL_VERIFICATION_MESSAGE =
+  "🔐 Channel Verification\n\n" +
+  "Your channel connection is ready.\n\n" +
+  "Tap the button below to verify your connection and continue to your Onfile dashboard.";
+
+export function channelVerificationMessage(): string {
+  return CHANNEL_VERIFICATION_MESSAGE;
 }
 
 export type SuccessNotificationResult =
@@ -512,22 +524,21 @@ async function locateNotifyChatId(telegramUserId: number, observedChatId?: numbe
 }
 
 /**
- * Second bot message ("✅ <title> is now connected…" + inline `web_app` button "Return to Onfile").
+ * Second bot message ("🔐 Channel Verification…" + inline `web_app` button "Verify").
  * Sent at most ONCE per request (atomic `confirmation_sent_at` reservation), so a retried / duplicated webhook can
- * never produce a second confirmation. Plain text (no parse_mode): the channel title is user-controlled and must
- * never be parsed as markup. `channelTitle` must be the title from live verification.
+ * never produce a second message. Plain text (no parse_mode). It is only ever sent after the live Telegram
+ * verification and the channel write succeeded; it names no channel (so no client-supplied title can reach it).
  *
  * Nothing here fails silently:
  *   - no chat can be located         → `bot_connect_success_not_delivered` (error), confirmation NOT consumed
- *   - no https Mini App URL          → `bot_connect_return_button_unavailable` (error) naming the exact env variable;
+ *   - no https Mini App URL          → `bot_connect_verify_button_unavailable` (error) naming the exact env variable;
  *                                      the message is still sent, without a button (never a plain URL button)
- *   - Telegram rejects the keyboard  → `bot_connect_return_button_rejected` (error) + the text-only message is sent
+ *   - Telegram rejects the keyboard  → `bot_connect_verify_button_rejected` (error) + the text-only message is sent
  *                                      (only for HTTP 400: a deterministic rejection, so no duplicate is possible)
  *   - Telegram rejects the message   → `bot_connect_success_send_failed` (error)
  */
 export async function notifyBotConnectionSuccess(
   telegramUserId: number,
-  channelTitle?: string | null,
   observedChatId?: number | string | null,
   pending?: { id: number; telegramRequestId: number }
 ): Promise<SuccessNotificationResult> {
@@ -542,10 +553,10 @@ export async function notifyBotConnectionSuccess(
     return { delivered: false, reason: "duplicate" };
   }
 
-  const keyboard = pending ? buildReturnToOnfileKeyboard(pending.telegramRequestId) : undefined;
+  const keyboard = pending ? buildVerifyKeyboard(pending.telegramRequestId) : undefined;
   if (pending && !keyboard) {
     const resolution = resolveMiniAppBaseUrl();
-    console.error("bot_connect_return_button_unavailable", {
+    console.error("bot_connect_verify_button_unavailable", {
       pendingId,
       requiredEnv: MINI_APP_URL_ENV,
       example: `${MINI_APP_URL_ENV}=https://onfile-app.vercel.app`,
@@ -555,11 +566,11 @@ export async function notifyBotConnectionSuccess(
     });
   }
 
-  const text = connectionSuccessMessage(channelTitle);
+  const text = channelVerificationMessage();
   let res = await sendBotMessage(chatId, text, keyboard ?? REMOVE_KEYBOARD);
   let buttonAttached = Boolean(keyboard) && res.ok;
   if (!res.ok && keyboard && res.errorCode === 400) {
-    console.error("bot_connect_return_button_rejected", { pendingId, description: res.description, errorCode: res.errorCode });
+    console.error("bot_connect_verify_button_rejected", { pendingId, description: res.description, errorCode: res.errorCode });
     res = await sendBotMessage(chatId, text, REMOVE_KEYBOARD);
     buttonAttached = false;
   }

@@ -429,10 +429,10 @@ async function resolvePendingAgainstChat(
     resolvedUserId: finalized.result.userId,
     isNewAccount: finalized.result.isNewAccount,
   });
-  // The title is the one Telegram returned during live verification (getChat) — never `chat_shared.title`
-  // or the title carried by the update itself.
+  // The verification message is static approved copy: it never contains a channel title (neither the one in
+  // `chat_shared`/the update nor the live one), and its button carries only the public request reference.
   await notifyIfBotMethod(pending, async () => {
-    const outcome = await notifyBotConnectionSuccess(telegramUserId, verification.chat.title ?? finalized.result.channel.channelName, observedChatId, {
+    const outcome = await notifyBotConnectionSuccess(telegramUserId, observedChatId, {
       id: pending.id,
       telegramRequestId: pending.telegramRequestId,
     });

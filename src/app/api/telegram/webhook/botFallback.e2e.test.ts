@@ -162,12 +162,13 @@ describe("bot fallback — chat_shared verification", () => {
     expect(sent.filter((c) => c.method === "getChatMember").length).toBe(2);
 
     const note = userMessages().at(-1)!;
-    expect(String(note.body.text)).toContain("✅ My Private Channel is now connected to your Onfile account.");
-    expect(String(note.body.text)).toContain("Your channel is ready!");
-    // "Return to Onfile" re-opens the Mini App via a web_app button; the URL carries only the public request ref.
+    expect(String(note.body.text)).toBe(
+      "🔐 Channel Verification\n\nYour channel connection is ready.\n\nTap the button below to verify your connection and continue to your Onfile dashboard."
+    );
+    // "Verify" re-opens the Mini App via a web_app button; the URL carries only the public request ref.
     const { telegramRequestId: ref } = await getRequestRowByToken(correlationToken);
     expect(note.body.reply_markup).toEqual({
-      inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: `https://onfile.example.test/?connect=${ref}` } }]],
+      inline_keyboard: [[{ text: "Verify", web_app: { url: `https://onfile.example.test/?connect=${ref}` } }]],
     });
     // Confirmation goes to the verified private chat id (stored as a string), not a user-id assumption.
     expect(String(note.body.chat_id)).toBe(String(USER_A));
@@ -341,15 +342,15 @@ describe("bot-guided flow — lifecycle, messages and idempotency", () => {
     expect(JSON.stringify(userMessages()[0].body.reply_markup ?? {})).not.toContain("request_chat");
   });
 
-  it("the success message is sent exactly once even when Telegram redelivers the selection under a new update_id", async () => {
+  it("the verification message is sent exactly once even when Telegram redelivers the selection under a new update_id", async () => {
     const { telegramRequestId } = await newBotRequest();
     await chatShared(USER_A, telegramRequestId);
     await chatShared(USER_A, telegramRequestId);
     await chatShared(USER_A, telegramRequestId);
-    expect(userMessages().filter((m) => String(m.body.text).includes("is now connected to your Onfile account"))).toHaveLength(1);
+    expect(userMessages().filter((m) => String(m.body.text).includes("Channel Verification"))).toHaveLength(1);
   });
 
-  it("the return button URL holds only the public ref — no token, secret, user id or channel id", async () => {
+  it("the Verify button URL holds only the public ref — no token, secret, user id or channel id", async () => {
     const { telegramRequestId, correlationToken } = await newBotRequest();
     await chatShared(USER_A, telegramRequestId);
     const markup = JSON.stringify(userMessages().at(-1)!.body.reply_markup);
@@ -366,7 +367,7 @@ describe("bot-guided flow — lifecycle, messages and idempotency", () => {
     const { telegramRequestId } = await newBotRequest();
     await chatShared(USER_A, telegramRequestId);
     const note = userMessages().at(-1)!.body;
-    expect(String(note.text)).toContain("is now connected to your Onfile account");
+    expect(String(note.text)).toContain("Channel Verification");
     expect(note.reply_markup).toEqual({ remove_keyboard: true });
   });
 

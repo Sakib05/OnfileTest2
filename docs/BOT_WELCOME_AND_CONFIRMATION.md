@@ -48,33 +48,39 @@ Therefore `buildChannelPickerKeyboard` is unchanged: a `ReplyKeyboardMarkup` `re
 with the instruction message. Telegram shows it above the input field; that is a client constraint.
 Tests assert the picker is a reply-keyboard `request_chat` button and never an `inline_keyboard`.
 
-## 3. Success confirmation
+## 3. Channel Verification message (replaces the old "success" message)
 
 After the existing secure pipeline (claim → live Bot API re-verification of the channel, bot admin and
-user admin → finalize → mark verified) the bot sends, once (atomic `confirmation_sent_at`):
+user admin → finalize → mark verified) the bot sends, once (atomic `confirmation_sent_at`), with `chat_id` = the verified
+private chat, **no `parse_mode`**:
 
 ```
-✅ {Channel Name} is now connected to your Onfile account.
+🔐 Channel Verification
 
-Your channel is ready!
+Your channel connection is ready.
 
-Return to Onfile to automatically refresh and view your connection status.
+Tap the button below to verify your connection and continue to your Onfile dashboard.
 ```
 
-* `{Channel Name}` is the title Telegram returned in the live verification (`verification.chat.title`),
-  falling back to the stored channel name. The `chat_shared.title` in the update is never used.
-* The message carries an inline `web_app` button **Return to Onfile** → `<MINI_APP_URL>/?connect=<ref>`
-  (public request ref only; no token/secret/ids). The Mini App resumes from that ref
-  (`useChannelConnect` → `startTracking`), polls the server-authoritative status and shows the success state
-  without pressing Connect and **without creating another pending request**.
+* The copy is static (`CHANNEL_VERIFICATION_MESSAGE`). It deliberately contains **no channel title**: nothing taken from
+  `chat_shared.title`, the update, or even the live `getChat` title can reach it.
+* The message carries ONE inline `web_app` button **Verify** → `<MINI_APP_URL>/?connect=<ref>`
+  (public request ref only; no token/secret/ids/title). It is the same launch URL the former "Return to Onfile" button used.
+* **What "Verify" does** (`page.tsx` → `ConnectionVerifyGate`): signs the Telegram user in silently (initData), asks the
+  backend about the EXISTING request (`GET /api/channels/connect-status?ref=` — read-only; request must belong to the
+  authenticated Telegram user, not be expired, and its channel must still be verified and owned by the same account),
+  and only on `verified` refreshes the user + connected channels and invalidates the Dashboard data
+  (`AppContext.refreshDashboard`) **before** opening the **Dashboard** (Home tab). It never opens Channel Management
+  and never creates a pending request. Any other answer (pending, expired, invalid, other user's, failed, network)
+  shows an error with "Try Again" (re-checks the same ref) and an explicit "Connect a channel" choice.
 * **Mini App URL.** Required production variable: `MINI_APP_URL=https://onfile-app.vercel.app` (public https origin, no
   secret). Accepted explicit fallbacks, in order: `NEXT_PUBLIC_APP_URL`, then `VERCEL_PROJECT_PRODUCTION_URL` (only when
   `VERCEL_ENV=production`). `VERCEL_URL` is **not** used (per-deployment hostname, usually behind Deployment Protection).
   http/non-URL values are rejected, never sent to Telegram.
 * If no https Mini App URL resolves, the message is still sent **without** a button (never an invented URL, never a plain
-  URL button) and an **error** is logged: `bot_connect_return_button_unavailable { requiredEnv: "MINI_APP_URL", invalid: [...] }`.
+  URL button) and an **error** is logged: `bot_connect_verify_button_unavailable { requiredEnv: "MINI_APP_URL", invalid: [...] }`.
 * Delivery is never silent: `bot_connect_success_not_delivered` (no private chat could be located — not even via Telegram's
-  `getChat`; the confirmation is *not* consumed), `bot_connect_return_button_rejected` (Telegram answered 400 to the
+  `getChat`; the confirmation is *not* consumed), `bot_connect_verify_button_rejected` (Telegram answered 400 to the
   keyboard → text-only message is sent), `bot_connect_success_send_failed` (Telegram refused the message). The webhook also
   logs `telegram_webhook_success_notification { delivered, buttonAttached }` for every verified bot-guided request.
 * The chat is located from the stored private chat, else the private chat of the update, else Telegram's own `getChat(<user id>)`

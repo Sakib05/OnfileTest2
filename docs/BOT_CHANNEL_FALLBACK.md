@@ -169,7 +169,7 @@ the Mini App resumes it (without re-opening the chat).
 
 Direct Picker success (Channel Management): "🎉 Congratulations! Your channel is now
 connected to your Onfile account." + the channel name; onboarding's success screen carries
-the same sentence. The bot-chat confirmation ("✅ “Name” is now connected…") is unchanged.
+the same sentence. The bot-chat message after verification is now the "🔐 Channel Verification" message (see BOT_WELCOME_AND_CONFIRMATION.md).
 
 ## Telegram native Back Button
 

@@ -11,7 +11,6 @@ import { useApp } from "@/contexts/AppContext";
 import { useToast } from "@/components/ui/Toast";
 import Modal from "@/components/ui/Modal";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
-import { getLaunchConnectRef } from "@/lib/botConnectClient";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 import Faq from "@/components/Faq";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
@@ -51,8 +50,7 @@ export default function ProfileTab() {
   const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
   const [channelsError, setChannelsError] = useState<string | null>(null);
   const [channelsLoading, setChannelsLoading] = useState(false);
-  // Returning from the bot ("Return to Onfile") opens the connect flow directly so it can resume and verify.
-  const [showConnectNew, setShowConnectNew] = useState(() => getLaunchConnectRef() !== null);
+  const [showConnectNew, setShowConnectNew] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectedChannel | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [editForm, setEditForm] = useState({ firstName: user?.firstName || "", username: user?.username || "" });

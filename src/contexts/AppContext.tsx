@@ -60,8 +60,16 @@ interface AppContextValue {
   setActiveTab: (t: string) => void;
   profileEntry: ProfileEntry;
   setProfileEntry: (e: ProfileEntry) => void;
+  /** Bumped by every successful `refreshDashboard()`; the Dashboard is keyed on it so it re-fetches its data. */
+  dashboardVersion: number;
   refreshUser: () => Promise<void>;
   refreshChannels: () => Promise<void>;
+  /**
+   * Re-reads the session user and the connected channels from the backend and invalidates the Dashboard's data.
+   * Resolves `true` ONLY if an authenticated user with at least one verified channel was confirmed by the server
+   * (i.e. it is safe to show the Dashboard); `false` otherwise (auth state is left untouched on failure).
+   */
+  refreshDashboard: () => Promise<boolean>;
   startTelegramLogin: () => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
 }
@@ -75,8 +83,10 @@ const AppContext = createContext<AppContextValue>({
   setActiveTab: () => {},
   profileEntry: null,
   setProfileEntry: () => {},
+  dashboardVersion: 0,
   refreshUser: async () => {},
   refreshChannels: async () => {},
+  refreshDashboard: async () => false,
   startTelegramLogin: async () => ({ ok: false }),
   logout: async () => {},
 });
@@ -88,6 +98,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [channelStatus, setChannelStatus] = useState<ChannelStatus>("unknown");
   const [activeTab, setActiveTab] = useState("home");
   const [profileEntry, setProfileEntry] = useState<ProfileEntry>(null);
+  const [dashboardVersion, setDashboardVersion] = useState(0);
 
   /**
    * Checks whether the authenticated creator has at least one verified
@@ -95,20 +106,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * from anything cached client-side — so a disconnected/never-connected
    * creator is correctly routed back to the Channel Connect screen.
    */
-  const refreshChannels = useCallback(async () => {
+  const loadChannelStatus = useCallback(async (): Promise<ChannelStatus> => {
     try {
-      const res = await fetch("/api/channels");
+      const res = await fetch("/api/channels", { cache: "no-store" });
       if (!res.ok) {
         setChannelStatus("unknown");
-        return;
+        return "unknown";
       }
       const data = await res.json();
       const hasVerified = Array.isArray(data.channels) && data.channels.some((c: { status?: string }) => c.status === "verified");
-      setChannelStatus(hasVerified ? "has_channel" : "no_channel");
+      const next: ChannelStatus = hasVerified ? "has_channel" : "no_channel";
+      setChannelStatus(next);
+      return next;
     } catch {
       setChannelStatus("unknown");
+      return "unknown";
     }
   }, []);
+
+  const refreshChannels = useCallback(async () => {
+    await loadChannelStatus();
+  }, [loadChannelStatus]);
 
   const refreshUser = useCallback(async () => {
     try {
@@ -118,7 +136,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (data.user) {
           setUser(data.user);
           setAuthStatus("authenticated");
-          await refreshChannels();
+          await loadChannelStatus();
           return;
         }
       }
@@ -130,7 +148,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setChannelStatus("unknown");
       setAuthStatus("guest");
     }
-  }, [refreshChannels]);
+  }, [loadChannelStatus]);
+
+  const refreshDashboard = useCallback(async (): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/user/me", { cache: "no-store" });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (!data.user) return false;
+      setUser(data.user);
+      setAuthStatus("authenticated");
+      const status = await loadChannelStatus();
+      if (status !== "has_channel") return false;
+      setDashboardVersion((v) => v + 1);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [loadChannelStatus]);
 
   useEffect(() => {
     // One-time session check on mount; must run client-side against the
@@ -197,8 +232,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setActiveTab,
         profileEntry,
         setProfileEntry,
+        dashboardVersion,
         refreshUser,
         refreshChannels,
+        refreshDashboard,
         startTelegramLogin,
         logout,
       }}

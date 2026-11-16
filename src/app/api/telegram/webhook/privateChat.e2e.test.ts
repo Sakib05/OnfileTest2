@@ -195,7 +195,7 @@ describe("first-time user: signed Start flow", () => {
 });
 
 describe("confirmations use the stored chat id", () => {
-  it("the success message after chat_shared goes to the stored private chat (not the user id) and the connection completes", async () => {
+  it("the verification message after chat_shared goes to the stored private chat (not the user id) and the connection completes", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await createPendingChannelRequest({ telegramUserId: USER, sessionUserId: accountId, telegramProfile: null }, { method: "bot" });
     await beginBotConnect((await getPendingByToken(created.correlationToken))!.id); // "Connect" was tapped
@@ -209,8 +209,8 @@ describe("confirmations use the stored chat id", () => {
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     const note = sentMessages().at(-1)!;
     expect(String(note.body.text)).toBe(
-      "✅ Priv Channel is now connected to your Onfile account.\n\nYour channel is ready!\n\n" +
-        "Return to Onfile to automatically refresh and view your connection status."
+      "🔐 Channel Verification\n\nYour channel connection is ready.\n\n" +
+        "Tap the button below to verify your connection and continue to your Onfile dashboard."
     );
     expect(String(note.body.chat_id)).toBe(String(PRIVATE_CHAT));
     expect(String(note.body.chat_id)).not.toBe(String(USER));
@@ -237,7 +237,7 @@ describe("confirmations use the stored chat id", () => {
     expect(JSON.stringify(sentMessages()[0].body.reply_markup)).toContain("request_chat");
   });
 
-  it("the Return to Onfile web_app button is attached to the success message and no second pending request is created", async () => {
+  it("the Verify web_app button is attached to the verification message and no second pending request is created", async () => {
     process.env.MINI_APP_URL = "https://onfile.example.test";
     try {
       await recordPrivateChat(USER, PRIVATE_CHAT);
@@ -248,9 +248,11 @@ describe("confirmations use the stored chat id", () => {
         message: { chat: { id: PRIVATE_CHAT, type: "private" }, from: { id: USER }, chat_shared: { request_id: created.telegramRequestId, chat_id: CHANNEL } },
       });
       const note = sentMessages().at(-1)!;
-      expect(String(note.body.text)).toContain("✅ Priv Channel is now connected to your Onfile account.");
+      expect(String(note.body.text)).toBe(
+        "🔐 Channel Verification\n\nYour channel connection is ready.\n\nTap the button below to verify your connection and continue to your Onfile dashboard."
+      );
       expect(note.body.reply_markup).toEqual({
-        inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: `https://onfile.example.test/?connect=${created.telegramRequestId}` } }]],
+        inline_keyboard: [[{ text: "Verify", web_app: { url: `https://onfile.example.test/?connect=${created.telegramRequestId}` } }]],
       });
       const after = await db.select().from(pendingChannelRequests).where(eq(pendingChannelRequests.telegramUserId, String(USER)));
       expect(after).toHaveLength(before.length);
@@ -279,7 +281,7 @@ describe("confirmations use the stored chat id", () => {
       },
     });
     const texts = sentMessages().map((m) => String(m.body.text));
-    expect(texts.some((t) => t.includes("is now connected"))).toBe(false);
+    expect(texts.some((t) => t.includes("Channel Verification"))).toBe(false);
     expect(texts.some((t) => t.includes("Spoofed Title"))).toBe(false);
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("failed");
   });

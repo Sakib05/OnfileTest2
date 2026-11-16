@@ -1,4 +1,4 @@
-# Bot-guided channel connection (Connect → bot chat → Return to Onfile)
+# Bot-guided channel connection (Connect → bot chat → Verify → Dashboard)
 
 > **Update:** the separate **Start** button/step was removed. A single **Connect** button now prepares the request,
 > starts the backend window, shows the countdown and hands off to the bot (open chat **then** `Telegram.WebApp.close()`).
@@ -32,11 +32,12 @@ Mini App                                   Backend                              
                                              connecting ✔ · not expired ✔ · atomic claim ✔ · live getChat/getChatMember ✔
                                              private ✔ · user admin ✔ · bot admin + can_post_messages ✔ · not owned by another account ✔
                                              channels row written ONLY now; request → verified
-                                             sendMessage("✅ <verified channel title> is now connected …",
-                                                         web_app button "Return to Onfile") ───────▶ confirmation (sent once)
-[Return to Onfile] ◀───────────────────── Mini App opens at  <MINI_APP_URL>/?connect=<public ref>
-   resumes automatically ───────────────▶ GET /api/channels/connect-status?token=… | ?ref=…
-        ◀── connected + channel name  ⇒  "🎉 Congratulations! Your channel is now connected to your Onfile account."
+                                             sendMessage("🔐 Channel Verification …",
+                                                         web_app button "Verify") ───────────────▶ verification message (sent once)
+[Verify] ◀──────────────────────────────── Mini App opens at  <MINI_APP_URL>/?connect=<public ref>
+   ConnectionVerifyGate ────────────────▶ GET /api/channels/connect-status?ref=…   (read-only, existing request)
+        ◀── verified (owned by this Telegram user)  ⇒  refresh user + channels + Dashboard data  ⇒  DASHBOARD
+        ◀── anything else                           ⇒  error + "Try Again" (same ref); never the Dashboard
 ```
 
 ## Request lifecycle
@@ -98,14 +99,19 @@ link is returned (`mode: "start_link"`); the webhook verifies the HMAC + that th
 "Connect" was tapped, then delivers the same welcome + picker. After that first `/start` the user is a returning user.
 A transient Telegram failure → 502 and the request is rolled back to `prepared` (never silently falls back to a `/start`).
 
-## Return to Onfile
+## Verify (second bot message → Mini App → Dashboard)
 
-`web_app` inline button → `<origin>/?connect=<ref>` where `ref` is the request's public Telegram request id (no token, secret,
-user id, chat id or channel id; asserted by tests). On launch: `page.tsx` skips onboarding and routes existing creators to
-Profile → Channel Management (new/no-channel users go to the bot connection page in `CreatorSetup`); `useChannelConnect`
-resumes **from the server state** (token from storage if present, otherwise the `ref`, authenticated by the normal session/
-signed-setup cookie or the silent `initData` sign-in) and verifies automatically — no "Check" button. No new request is created.
-Success is shown only when the server says `connected`. The `?connect=` parameter is stripped once the request concludes.
+`web_app` inline button **Verify** → `<origin>/?connect=<ref>` where `ref` is the request's public Telegram request id (no
+token, secret, user id, chat id, channel id or title; asserted by tests). On launch `page.tsx` skips onboarding and renders
+`ConnectionVerifyGate` (not Channel Management, not CreatorSetup). The gate authenticates via the normal session / signed-setup
+cookie or the silent `initData` sign-in, calls the read-only `GET /api/channels/connect-status?ref=` (the server checks the
+request belongs to this Telegram user, has not expired, and that the channel is verified and owned by the same account;
+unknown / foreign / expired refs are indistinguishable → 404), then — only on `verified` — awaits
+`AppContext.refreshDashboard()` (re-reads `/api/user/me` + `/api/channels`, bumps `dashboardVersion` so the Dashboard remounts
+and refetches) and finally opens the **Dashboard (Home tab)**. `?connect=` and the stored pending-request key are removed so
+a reload does not replay the launch. Failure → error + "Try Again" (re-checks the same ref; never creates a request) and a
+secondary "Connect a channel". Pre-existing in-app flows (`useChannelConnect` in the onboarding screen / Channel Management)
+are unchanged.
 
 ## Error handling matrix
 
@@ -150,7 +156,7 @@ On Telegram for Android (and ideally iOS/Desktop), against a Preview deployment 
    really close? Does the fallback link appear after ~4 s if it stays in front?
 2. Returning user: message + "Select channel to connect" already in the chat, **no** new `/start`. First-time user (fresh
    account): the Start button appears, then the same message.
-3. Pick a private channel → Telegram asks to add the bot as admin → confirmation message with the channel name appears once.
-4. Tap "Return to Onfile": the Mini App reopens on the connection page, verifies without a button and shows the congratulations
-   with the channel name. Repeat after >10 minutes to see the expired state.
+3. Pick a private channel → Telegram asks to add the bot as admin → the "🔐 Channel Verification" message with a "Verify" button appears once.
+4. Tap "Verify" on the "🔐 Channel Verification" message: the Mini App opens, shows "Verifying your connection…" briefly and lands on the
+   Dashboard (NOT Channel Management). Re-open an old Verify button after the request expired/was never completed to see the error + "Try Again".
 5. Public channel / group / channel where the bot lacks "post messages" → explanatory bot message.

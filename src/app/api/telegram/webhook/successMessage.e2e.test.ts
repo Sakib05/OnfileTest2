@@ -14,7 +14,7 @@ import { recordPrivateChat } from "@/lib/botPrivateChats";
  *
  *   Telegram update → POST /api/telegram/webhook → claim → live getChat/getChatMember verification
  *   → channels row written → sendMessage { chat_id, text, reply_markup.inline_keyboard[0][0].web_app }
- *   → "Return to Onfile" URL → GET /api/channels/connect-status?ref= (what the Mini App calls on launch).
+ *   → "Verify" web_app URL → GET /api/channels/connect-status?ref= (what the Mini App calls on launch).
  *
  * Every assertion is on the payload that would be POSTed to https://api.telegram.org/bot<token>/sendMessage.
  * Needs a disposable Postgres with the schema applied (never Production).
@@ -28,8 +28,8 @@ const VERIFIED_TITLE = "Verified Telegram Title";
 const CLIENT_SUPPLIED_TITLE = "Title Supplied By The Update (untrusted)";
 const MINI_APP_URL = "https://onfile-app.vercel.app";
 
-const EXACT_TEXT = (name: string) =>
-  `✅ ${name} is now connected to your Onfile account.\n\nYour channel is ready!\n\nReturn to Onfile to automatically refresh and view your connection status.`;
+// The product-approved copy, verbatim. Static: no channel title is interpolated.
+const EXACT_TEXT = () => "🔐 Channel Verification\n\nYour channel connection is ready.\n\nTap the button below to verify your connection and continue to your Onfile dashboard.";
 
 const ORIGINAL_FETCH = global.fetch;
 const ORIGINAL_ENV = { ...process.env };
@@ -70,7 +70,7 @@ function installTelegramMock() {
 }
 
 const sendMessages = () => calls.filter((c) => c.method === "sendMessage");
-const successMessages = () => sendMessages().filter((c) => String(c.body.text).includes("is now connected to your Onfile account"));
+const successMessages = () => sendMessages().filter((c) => String(c.body.text).includes("🔐 Channel Verification"));
 
 function webhook(update: Record<string, unknown>) {
   const update_id = nextUpdateId++;
@@ -148,7 +148,7 @@ afterAll(async () => {
 });
 
 describe("success message — chat_shared (native picker result) through the real webhook", () => {
-  it("sends exactly ONE sendMessage with the exact text, the VERIFIED title, and the Return to Onfile web_app button", async () => {
+  it("sends exactly ONE sendMessage with the exact Channel Verification text and the Verify web_app button", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await connectingRequest();
     await webhook(chatSharedUpdate(created.telegramRequestId));
@@ -156,16 +156,17 @@ describe("success message — chat_shared (native picker result) through the rea
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     expect(successMessages()).toHaveLength(1);
 
-    // The complete Bot API payload, byte for byte (no parse_mode: the title is user-controlled text).
+    // The complete Bot API payload, byte for byte (no parse_mode, no channel title).
     expect(successMessages()[0].body).toEqual({
       chat_id: String(PRIVATE_CHAT),
-      text: EXACT_TEXT(VERIFIED_TITLE),
+      text: EXACT_TEXT(),
       reply_markup: {
-        inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: `${MINI_APP_URL}/?connect=${created.telegramRequestId}` } }]],
+        inline_keyboard: [[{ text: "Verify", web_app: { url: `${MINI_APP_URL}/?connect=${created.telegramRequestId}` } }]],
       },
     });
-    // Title comes from the live getChat answer, never from the update.
+    // No channel title at all: neither the one in the update (untrusted) nor the live-verified one.
     expect(JSON.stringify(successMessages()[0].body)).not.toContain(CLIENT_SUPPLIED_TITLE);
+    expect(JSON.stringify(successMessages()[0].body)).not.toContain(VERIFIED_TITLE);
     // The message is sent only AFTER live verification (getChat + getChatMember for the bot AND the user).
     const order = calls.map((c) => c.method);
     expect(order.indexOf("sendMessage")).toBeGreaterThan(order.lastIndexOf("getChatMember"));
@@ -200,8 +201,8 @@ describe("success message — my_chat_member (bot promoted by the picker) wins t
     expect(successMessages()).toHaveLength(1);
     expect(successMessages()[0].body).toMatchObject({
       chat_id: String(PRIVATE_CHAT),
-      text: EXACT_TEXT(VERIFIED_TITLE),
-      reply_markup: { inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: `${MINI_APP_URL}/?connect=${created.telegramRequestId}` } }]] },
+      text: EXACT_TEXT(),
+      reply_markup: { inline_keyboard: [[{ text: "Verify", web_app: { url: `${MINI_APP_URL}/?connect=${created.telegramRequestId}` } }]] },
     });
     // The chat_shared that follows must not produce a second confirmation.
     await webhook(chatSharedUpdate(created.telegramRequestId));
@@ -214,8 +215,8 @@ describe("success message — my_chat_member (bot promoted by the picker) wins t
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     expect(successMessages()).toHaveLength(1);
     expect(successMessages()[0].body.chat_id).toBe(String(PRIVATE_CHAT));
-    expect(String(successMessages()[0].body.text)).toBe(EXACT_TEXT(VERIFIED_TITLE));
-    expect(JSON.stringify(successMessages()[0].body.reply_markup)).toContain("Return to Onfile");
+    expect(String(successMessages()[0].body.text)).toBe(EXACT_TEXT());
+    expect(JSON.stringify(successMessages()[0].body.reply_markup)).toContain("Verify");
   });
 
   it("when the chat genuinely cannot be located the failure is logged loudly and the confirmation is NOT consumed", async () => {
@@ -238,7 +239,7 @@ describe("success message — my_chat_member (bot promoted by the picker) wins t
   });
 });
 
-describe("Return to Onfile button configuration", () => {
+describe("Verify button configuration", () => {
   it("MINI_APP_URL missing and no safe alternative: message is still sent, button is NOT silently dropped — the exact missing variable is logged", async () => {
     delete process.env.MINI_APP_URL;
     await recordPrivateChat(USER, PRIVATE_CHAT);
@@ -246,7 +247,7 @@ describe("Return to Onfile button configuration", () => {
     await webhook(chatSharedUpdate(created.telegramRequestId));
     expect(successMessages()).toHaveLength(1);
     expect(successMessages()[0].body.reply_markup).toEqual({ remove_keyboard: true }); // never an invented/plain URL button
-    const entry = errorLog.mock.calls.find((c) => c[0] === "bot_connect_return_button_unavailable");
+    const entry = errorLog.mock.calls.find((c) => c[0] === "bot_connect_verify_button_unavailable");
     expect(entry).toBeDefined();
     expect(entry![1]).toMatchObject({ requiredEnv: "MINI_APP_URL", example: "MINI_APP_URL=https://onfile-app.vercel.app" });
   });
@@ -257,7 +258,7 @@ describe("Return to Onfile button configuration", () => {
     const created = await connectingRequest();
     await webhook(chatSharedUpdate(created.telegramRequestId));
     expect(JSON.stringify(successMessages()[0].body)).not.toContain("http://");
-    const entry = errorLog.mock.calls.find((c) => c[0] === "bot_connect_return_button_unavailable");
+    const entry = errorLog.mock.calls.find((c) => c[0] === "bot_connect_verify_button_unavailable");
     expect(entry![1]).toMatchObject({ requiredEnv: "MINI_APP_URL", invalid: ["MINI_APP_URL"] });
   });
 
@@ -286,8 +287,8 @@ describe("Return to Onfile button configuration", () => {
     await webhook(chatSharedUpdate(created.telegramRequestId));
     expect(sendMessages()).toHaveLength(2);
     expect(sendMessages()[0].body.reply_markup).toMatchObject({ inline_keyboard: expect.any(Array) });
-    expect(String(sendMessages()[1].body.text)).toBe(EXACT_TEXT(VERIFIED_TITLE));
-    expect(loggedErrors()).toContain("bot_connect_return_button_rejected");
+    expect(String(sendMessages()[1].body.text)).toBe(EXACT_TEXT());
+    expect(loggedErrors()).toContain("bot_connect_verify_button_rejected");
   });
 
   it("a Telegram failure on the confirmation is logged (never silent)", async () => {
@@ -302,7 +303,7 @@ describe("Return to Onfile button configuration", () => {
   });
 });
 
-describe("Return behaviour — the Mini App opens at the button URL and sees the connected state with no new request", () => {
+describe("Verify behaviour — the Mini App opens at the button URL and sees the connected state with no new request", () => {
   it("web_app.url → ?connect=<ref> → connect-status?ref= answers verified with the verified channel; no second pending request exists", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await connectingRequest();
@@ -340,5 +341,271 @@ describe("Direct Picker requests (legacy, not used by the current UI) stay silen
     await webhook(chatSharedUpdate(created.telegramRequestId));
     expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     expect(sendMessages()).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// "Channel Verification" message + "Verify" button — the launch contract, end to end.
+// Telegram's HTTP API is the only mock; the webhook route, the connect-status route and Postgres are real.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+const cookieFor = (id: number) => `${SETUP_COOKIE_NAME}=${createSetupToken({ id, first_name: "T" })}`;
+
+function statusReq(ref: string | number, cookie?: string) {
+  return connectStatus(
+    new NextRequest(`http://localhost/api/channels/connect-status?ref=${ref}`, {
+      headers: { host: "localhost", ...(cookie ? { cookie } : {}) },
+    })
+  );
+}
+
+/** Replays a delivery with an explicit update_id (Telegram re-sends the SAME update_id when it saw no 200). */
+function webhookWithId(update_id: number, update: Record<string, unknown>) {
+  updateIds.push(update_id);
+  return POST(
+    new NextRequest("http://localhost/api/telegram/webhook", {
+      method: "POST",
+      body: JSON.stringify({ update_id, ...update }),
+      headers: { host: "localhost", "content-type": "application/json" },
+    })
+  );
+}
+
+const pendingRows = () => db.select().from(pendingChannelRequests).where(eq(pendingChannelRequests.telegramUserId, String(USER)));
+const channelRows = () => db.select().from(channels).where(eq(channels.telegramChannelId, String(CHANNEL)));
+
+describe("Verify button — the actual sendMessage payload", () => {
+  it("POSTs exactly { chat_id, text, reply_markup.inline_keyboard[[{ text: 'Verify', web_app.url }]] } to sendMessage", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+
+    const sent = successMessages();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].method).toBe("sendMessage");
+    expect(sent[0].body).toEqual({
+      chat_id: String(PRIVATE_CHAT),
+      text: "🔐 Channel Verification\n\nYour channel connection is ready.\n\nTap the button below to verify your connection and continue to your Onfile dashboard.",
+      reply_markup: {
+        inline_keyboard: [[{ text: "Verify", web_app: { url: `https://onfile-app.vercel.app/?connect=${created.telegramRequestId}` } }]],
+      },
+    });
+    // One row, one button, and it is a Web App button (not a plain url / callback button).
+    const kb = (sent[0].body.reply_markup as { inline_keyboard: Record<string, unknown>[][] }).inline_keyboard;
+    expect(kb).toHaveLength(1);
+    expect(kb[0]).toHaveLength(1);
+    expect(Object.keys(kb[0][0]).sort()).toEqual(["text", "web_app"]);
+    expect(kb[0][0].text).toBe("Verify");
+    // The old copy / label is gone from every request sent to Telegram.
+    const everything = JSON.stringify(calls.map((c) => c.body));
+    expect(everything).not.toContain("Return to Onfile");
+    expect(everything).not.toContain("is now connected");
+    expect(everything).not.toContain("Congratulations");
+  });
+
+  it("the button URL is https, is the configured Mini App origin, and carries ONLY the public request reference", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    const kb = (successMessages()[0].body.reply_markup as { inline_keyboard: { web_app: { url: string } }[][] }).inline_keyboard;
+    const url = new URL(kb[0][0].web_app.url);
+    expect(url.protocol).toBe("https:");
+    expect(url.origin).toBe(MINI_APP_URL);
+    expect(url.pathname).toBe("/");
+    expect([...url.searchParams.entries()]).toEqual([["connect", String(created.telegramRequestId)]]);
+    const raw = JSON.stringify(successMessages()[0].body);
+    expect(raw).not.toContain(created.correlationToken);
+    expect(raw).not.toContain(String(USER));
+    expect(raw).not.toContain(String(CHANNEL));
+    expect(raw).not.toContain(process.env.TELEGRAM_BOT_TOKEN!);
+  });
+
+  it("is sent only after verification: while the request is merely pending nothing is sent", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    await connectingRequest();
+    await statusReq(1_073_741_900, cookieFor(USER)); // the user poking the status route does not message anyone
+    expect(sendMessages()).toHaveLength(0);
+  });
+});
+
+describe("Verify button — webhook redelivery sends no duplicate message", () => {
+  it("the SAME update_id delivered three times → one sendMessage, one channel row", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    const id = nextUpdateId++;
+    const update = chatSharedUpdate(created.telegramRequestId);
+    expect((await webhookWithId(id, update)).status).toBe(200);
+    expect((await webhookWithId(id, update)).status).toBe(200);
+    expect((await webhookWithId(id, update)).status).toBe(200);
+    expect(successMessages()).toHaveLength(1);
+    expect(await channelRows()).toHaveLength(1);
+  });
+
+  it("the same selection redelivered under NEW update_ids, and the my_chat_member twin → still one sendMessage", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    await webhook(botPromotedUpdate());
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    expect(successMessages()).toHaveLength(1);
+    expect(sendMessages().filter((c) => String(c.body.text).includes("Channel Verification"))).toHaveLength(1);
+    const [row] = await pendingRows();
+    expect(row.confirmationSentAt).not.toBeNull();
+  });
+
+  it("concurrent deliveries (race) → exactly one sendMessage", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    await Promise.all([
+      webhook(chatSharedUpdate(created.telegramRequestId)),
+      webhook(chatSharedUpdate(created.telegramRequestId)),
+      webhook(botPromotedUpdate()),
+    ]);
+    expect(successMessages()).toHaveLength(1);
+  });
+});
+
+describe("Verify button — what the Mini App's verification call can and cannot do", () => {
+  async function verifiedRef() {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    return created;
+  }
+
+  it("verified + owned by the caller → 'verified' with the persisted channel (this is the only answer that may lead to the Dashboard)", async () => {
+    const created = await verifiedRef();
+    const res = await statusReq(created.telegramRequestId, cookieFor(USER));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toMatchObject({ status: "verified", channel: { status: "verified", channelName: VERIFIED_TITLE } });
+  });
+
+  it("retrying verification any number of times creates no pending request, no channel, no message and keeps the same answer", async () => {
+    const created = await verifiedRef();
+    const rowsBefore = await pendingRows();
+    const messagesBefore = sendMessages().length;
+    const answers: unknown[] = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await statusReq(created.telegramRequestId, cookieFor(USER));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      answers.push({ status: body.status, channelId: body.channel?.id });
+    }
+    expect(new Set(answers.map((a) => JSON.stringify(a))).size).toBe(1);
+    const rowsAfter = await pendingRows();
+    expect(rowsAfter).toHaveLength(rowsBefore.length);
+    expect(rowsAfter.map((r) => r.id)).toEqual(rowsBefore.map((r) => r.id));
+    expect(rowsAfter[0].confirmationSentAt?.getTime()).toBe(rowsBefore[0].confirmationSentAt?.getTime());
+    expect(await channelRows()).toHaveLength(1);
+    expect(sendMessages()).toHaveLength(messagesBefore); // no extra Telegram traffic either
+  });
+
+  it("another user's request cannot be used: the same public ref is 'expired'/404 for them and discloses no channel", async () => {
+    const created = await verifiedRef();
+    const OTHER = USER + 7;
+    const res = await statusReq(created.telegramRequestId, cookieFor(OTHER));
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.status).toBe("expired");
+    expect(data.channel).toBeUndefined();
+    expect(JSON.stringify(data)).not.toContain(VERIFIED_TITLE);
+  });
+
+  it("no identity at all (no session / setup cookie) → 401 unauthorized, never verified", async () => {
+    const created = await verifiedRef();
+    const res = await statusReq(created.telegramRequestId);
+    expect(res.status).toBe(401);
+    expect((await res.json()).status).toBe("unauthorized");
+  });
+
+  it("a forged / tampered setup cookie is rejected", async () => {
+    const created = await verifiedRef();
+    const forged = `${SETUP_COOKIE_NAME}=${createSetupToken({ id: USER, first_name: "T" })}x`;
+    const res = await statusReq(created.telegramRequestId, forged);
+    expect(res.status).toBe(401);
+  });
+
+  it("an unverified request (user has not picked a channel yet) → 'pending', no channel — cannot reach the Dashboard", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    const res = await statusReq(created.telegramRequestId, cookieFor(USER));
+    const data = await res.json();
+    expect(data.status).toBe("pending");
+    expect(data.channel).toBeUndefined();
+  });
+
+  it("an expired request (server clock) → 404 'expired', even if the browser says otherwise", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    await db
+      .update(pendingChannelRequests)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(pendingChannelRequests.telegramRequestId, created.telegramRequestId));
+    const res = await statusReq(created.telegramRequestId, cookieFor(USER));
+    expect(res.status).toBe(404);
+    expect((await res.json()).status).toBe("expired");
+    // …and a late selection for it does not connect anything or send the verification message.
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    expect(successMessages()).toHaveLength(0);
+    expect(await channelRows()).toHaveLength(0);
+  });
+
+  it("invalid references (non-numeric, unknown, direct-picker range) are never 'verified'", async () => {
+    await verifiedRef();
+    for (const bad of ["abc", "-1", "1;drop", "99999999999"]) {
+      expect((await statusReq(bad, cookieFor(USER))).status).toBe(400);
+    }
+    for (const unknown of ["5", "1073741999", "2147483000"]) {
+      const res = await statusReq(unknown, cookieFor(USER));
+      expect(res.status).toBe(404);
+      expect((await res.json()).status).toBe("expired");
+    }
+  });
+
+  it("a failed verification (user is not an admin) → 'failed' with a message and no channel", async () => {
+    await recordPrivateChat(USER, PRIVATE_CHAT);
+    const created = await connectingRequest();
+    const base = global.fetch;
+    global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = String(url).split("/").pop() as string;
+      if (method === "getChatMember") {
+        calls.push({ method, body: JSON.parse(init!.body as string) });
+        return new Response(JSON.stringify({ ok: true, result: { status: "member" } }), { status: 200 });
+      }
+      return base(url, init);
+    }) as unknown as typeof fetch;
+    await webhook(chatSharedUpdate(created.telegramRequestId));
+    const res = await statusReq(created.telegramRequestId, cookieFor(USER));
+    const data = await res.json();
+    expect(data.status).toBe("failed");
+    expect(data.channel).toBeUndefined();
+    expect(typeof data.error).toBe("string");
+    expect(successMessages()).toHaveLength(0);
+  });
+
+  it("verified request whose channel no longer belongs to the resolved account → 'failed' (verification_mismatch), never 'verified'", async () => {
+    const created = await verifiedRef();
+    const [intruder] = await db
+      .insert(users)
+      .values({ telegramId: String(USER + 99), referralCode: "E2ESUC99" })
+      .onConflictDoUpdate({ target: users.telegramId, set: { updatedAt: new Date() } })
+      .returning();
+    try {
+      await db
+        .update(pendingChannelRequests)
+        .set({ resolvedUserId: intruder.id })
+        .where(eq(pendingChannelRequests.telegramRequestId, created.telegramRequestId));
+      const res = await statusReq(created.telegramRequestId, cookieFor(USER));
+      const data = await res.json();
+      expect(data.status).toBe("failed");
+      expect(data.reason).toBe("verification_mismatch");
+      expect(data.channel).toBeUndefined();
+    } finally {
+      await db.delete(pendingChannelRequests).where(eq(pendingChannelRequests.telegramUserId, String(USER)));
+      await db.delete(channels).where(eq(channels.telegramChannelId, String(CHANNEL)));
+      await db.delete(users).where(eq(users.telegramId, String(USER + 99)));
+    }
   });
 });

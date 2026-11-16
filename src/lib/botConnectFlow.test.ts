@@ -6,10 +6,12 @@ import {
   BOT_MESSAGES,
   buildBotChatLink,
   buildBotDeepLink,
-  buildReturnToOnfileKeyboard,
+  buildVerifyKeyboard,
+  buildVerifyUrl,
+  CHANNEL_VERIFICATION_MESSAGE,
   channelConnectionWelcomeMessage,
   classifySendFailure,
-  connectionSuccessMessage,
+  channelVerificationMessage,
   createBotStartPayload,
   getMiniAppBaseUrl,
   resolveMiniAppBaseUrl,
@@ -356,19 +358,22 @@ describe("bot-guided flow copy and return link", () => {
     expect(channelConnectionWelcomeMessage(new Date(now + 30_000), now)).toContain("expire in 1 minute.");
   });
 
-  it("success message is the specified text with the actual verified channel name", () => {
-    expect(connectionSuccessMessage("My Private Channel")).toBe(
-      "✅ My Private Channel is now connected to your Onfile account.\n\n" +
-        "Your channel is ready!\n\n" +
-        "Return to Onfile to automatically refresh and view your connection status."
-    );
+  it("verification message is exactly the approved copy", () => {
+    const EXACT =
+      "🔐 Channel Verification\n\n" +
+      "Your channel connection is ready.\n\n" +
+      "Tap the button below to verify your connection and continue to your Onfile dashboard.";
+    expect(channelVerificationMessage()).toBe(EXACT);
+    expect(CHANNEL_VERIFICATION_MESSAGE).toBe(EXACT);
   });
 
-  it("success message never contains the old wording and only falls back to a neutral name when no title is known", () => {
-    const text = connectionSuccessMessage(undefined);
-    expect(text.startsWith("✅ Your channel is now connected to your Onfile account.")).toBe(true);
+  it("verification message never contains the old wording, a placeholder or any channel title", () => {
+    const text = channelVerificationMessage();
     expect(text).not.toContain("Congratulations");
+    expect(text).not.toContain("is now connected");
+    expect(text).not.toContain("Return to Onfile");
     expect(text).not.toContain("{");
+    expect(channelVerificationMessage.length).toBe(0); // takes no argument: nothing client-supplied can reach it
   });
 
   it("getMiniAppBaseUrl accepts only https and honours the documented env precedence", () => {
@@ -397,12 +402,15 @@ describe("bot-guided flow copy and return link", () => {
     expect(resolveMiniAppBaseUrl(env({ MINI_APP_URL: "ftp://x.example", NEXT_PUBLIC_APP_URL: "https://ok.example" }))).toEqual({ ok: true, baseUrl: "https://ok.example", source: "NEXT_PUBLIC_APP_URL" });
   });
 
-  it("the Return to Onfile keyboard is a web_app button carrying only the public ref", () => {
+  it("the Verify keyboard is a web_app button carrying only the public ref", () => {
     const env = { MINI_APP_URL: "https://onfile-app.example" } as unknown as NodeJS.ProcessEnv;
-    expect(buildReturnToOnfileKeyboard(1_073_741_900, env)).toEqual({
-      inline_keyboard: [[{ text: "Return to Onfile", web_app: { url: "https://onfile-app.example/?connect=1073741900" } }]],
+    expect(buildVerifyKeyboard(1_073_741_900, env)).toEqual({
+      inline_keyboard: [[{ text: "Verify", web_app: { url: "https://onfile-app.example/?connect=1073741900" } }]],
     });
-    expect(buildReturnToOnfileKeyboard(5, {} as unknown as NodeJS.ProcessEnv)).toBeUndefined();
+    expect(buildVerifyUrl(1_073_741_900, env)).toBe("https://onfile-app.example/?connect=1073741900");
+    expect(buildVerifyKeyboard(5, {} as unknown as NodeJS.ProcessEnv)).toBeUndefined();
+    // Telegram only accepts https for web_app buttons.
+    expect(buildVerifyKeyboard(5, { MINI_APP_URL: "http://onfile-app.example" } as unknown as NodeJS.ProcessEnv)).toBeUndefined();
   });
 
   it("/start for a prepared-only request explains that Connect must be tapped first (no picker)", async () => {

@@ -9,23 +9,26 @@ import CreateTab from "@/components/tabs/CreateTab";
 import WalletTab from "@/components/tabs/WalletTab";
 import ProfileTab from "@/components/tabs/ProfileTab";
 import { useApp } from "@/contexts/AppContext";
-import { getLaunchConnectRef } from "@/lib/botConnectClient";
+import ConnectionVerifyGate from "@/components/setup/ConnectionVerifyGate";
+import { clearLaunchConnectRef, getLaunchConnectRef } from "@/lib/botConnectClient";
 
 export default function HomePage() {
-  const { activeTab, setActiveTab, setProfileEntry, authStatus, channelStatus } = useApp();
+  const { activeTab, setActiveTab, setProfileEntry, authStatus, channelStatus, dashboardVersion } = useApp();
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingChecked, setOnboardingChecked] = useState(false);
+  // Public request reference when this launch came from the bot's "Verify" button (`/?connect=<ref>`).
+  const [verifyRef, setVerifyRef] = useState<number | null>(null);
 
   useEffect(() => {
-    // Launched by the bot's "Return to Onfile" button (`/?connect=<ref>`): the user is mid-way
-    // through connecting a channel, so never interrupt them with onboarding (the Mini App may
-    // be running with fresh browser storage), and — for an existing creator — land on the
-    // channel connection screen instead of the dashboard. It only picks the SCREEN; the
-    // request itself is verified server-side against the authenticated Telegram user.
-    if (getLaunchConnectRef() !== null) {
+    // Launched by the bot's "Verify" button (`/?connect=<ref>`): the user has just connected a channel, so
+    // never interrupt them with onboarding (the Mini App may be running with fresh browser storage). The
+    // ConnectionVerifyGate below verifies the EXISTING request server-side against the authenticated Telegram
+    // user, refreshes the Dashboard data and then opens the Dashboard — never Channel Management.
+    const launchRef = getLaunchConnectRef();
+    if (launchRef !== null) {
       localStorage.setItem("onfile_onboarding_done", "1");
-      setProfileEntry("channel");
-      setActiveTab("profile");
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setVerifyRef(launchRef);
     }
     const done = localStorage.getItem("onfile_onboarding_done");
     // One-time mount check reading a browser-only API (localStorage);
@@ -48,6 +51,25 @@ export default function HomePage() {
   };
 
   if (!onboardingChecked || authStatus === "loading") return null;
+
+  if (verifyRef !== null) {
+    return (
+      <ConnectionVerifyGate
+        launchRef={verifyRef}
+        onVerified={() => setVerifyRef(null)}
+        onLeave={() => {
+          // Explicit user choice after a failed verification: normal routing resumes (a user without a verified
+          // channel lands on the connect screen; a connected creator opens Channel Management to connect again).
+          clearLaunchConnectRef();
+          if (authStatus === "authenticated" && channelStatus === "has_channel") {
+            setProfileEntry("channel");
+            setActiveTab("profile");
+          }
+          setVerifyRef(null);
+        }}
+      />
+    );
+  }
 
   if (showOnboarding) {
     // Onboarding completion navigates straight into the Channel Connect
@@ -76,7 +98,7 @@ export default function HomePage() {
       {/* Main Content */}
       <main className="flex-1 max-w-lg mx-auto w-full px-4 pt-6 pb-28">
         {activeTab === "home" && (
-          <HomeTab onTabChange={setActiveTab} />
+          <HomeTab key={dashboardVersion} onTabChange={setActiveTab} />
         )}
         {activeTab === "files" && (
           <FilesTab onCreateClick={() => setActiveTab("create")} />

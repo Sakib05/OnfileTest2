@@ -140,6 +140,11 @@ function persist(req: PersistedRequest | null) {
   }
 }
 
+/** Forgets the locally stored in-flight request (UX convenience only) once its outcome is final. */
+export function clearPersistedConnectRequest(): void {
+  persist(null);
+}
+
 /** Fire-and-forget: tells the backend to stop waiting on a request the user abandoned. */
 function notifyCancelled(token: string) {
   fetch("/api/channels/connect-cancel", {
