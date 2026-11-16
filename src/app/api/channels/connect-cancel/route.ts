@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Too many attempts. Please wait a moment and try again." }, { status: 429 });
   }
 
-  let body: { token?: string };
+  let body: { token?: string; onlyIfUnselected?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -37,7 +37,9 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const cancelled = await cancelPendingByToken(token);
+    // `onlyIfUnselected` (Mini App direct picker) can only make the cancel more conservative: the server then
+    // refuses to cancel a request that already carries a selected channel.
+    const cancelled = await cancelPendingByToken(token, { onlyIfUnselected: body.onlyIfUnselected === true });
     return NextResponse.json({ ok: true, cancelled });
   } catch (err) {
     console.error("connect_cancel_failed", err instanceof Error ? err.message : "unknown_error");

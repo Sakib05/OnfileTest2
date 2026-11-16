@@ -5,7 +5,14 @@ import { channels, telegramUpdateLog } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { getOwnBotId } from "@/lib/telegramBot";
 import { notifyUser } from "@/lib/notifications";
-import { connectMethodForRequestId, lookupPendingForBotStart, recordChannelSelection } from "@/lib/pendingChannelRequests";
+import {
+  connectMethodForRequestId,
+  failPendingRequestIfStillPending,
+  lookupPendingForBotStart,
+  recordChannelSelection,
+  type PendingChannelRequestRecord,
+} from "@/lib/pendingChannelRequests";
+import { verifyPendingChannelRequest } from "@/lib/connectVerification";
 import { recordBotChannelAdminEvent } from "@/lib/botChannelEvents";
 import { getPrivateChat, markPrivateChatBlocked, recordPrivateChat } from "@/lib/botPrivateChats";
 import { handleBotTextMessage, isOrdinaryStartCommand, notifyBotRequestExpired, sendChannelVerificationPrompt } from "@/lib/botConnectFlow";
@@ -62,15 +69,18 @@ interface TelegramUpdate {
  *   - `chat_shared` (nested in `message`): Telegram's confirmation that a user picked a channel via the native
  *     `request_chat` picker. Telegram itself has just posted its own "You shared … with Onfile" service message.
  *     This handler does the MINIMUM and returns promptly: it stores the shared channel id against the matching
- *     pending request (one atomic, guarded UPDATE that also validates user / request id / expiry) and
- *     immediately sends the "🔐 Channel Verification" message with the Verify button. It performs NO channel
- *     verification (privacy, ownership, admin rights, bot permissions) and connects NOTHING.
+ *     pending request (one atomic, guarded UPDATE that also validates user / request id / expiry).
+ *     For the legacy bot-chat flow it then immediately sends the "🔐 Channel Verification" message with the Verify
+ *     button and performs NO channel verification (privacy, ownership, admin rights, bot permissions).
+ *     For the direct Mini App flow (`requestChat`, request ids below 2^30) the backend verifies at once
+ *     (autoVerifyDirectSelection) and sends NOTHING to the bot chat.
  *   - `my_chat_member`: fired whenever OUR BOT's own membership/admin status changes in any chat. Used to
  *     record the latest known membership (Manual Connect's discovery lookup), keep the private user → chat
  *     association current and tell owners the bot lost access. It never resolves or finalizes a pending request.
  *
- * Verification and finalization happen ONLY when the user taps Verify and the Mini App calls
- * POST /api/channels/connect-verify (src/lib/connectVerification.ts). No webhook path can connect a channel.
+ * Bot-chat flow: verification and finalization happen ONLY when the user taps Verify and the Mini App calls
+ * POST /api/channels/connect-verify (src/lib/connectVerification.ts). Direct flow: the webhook runs that same
+ * verification itself (the only webhook path that can connect a channel) because there is no Verify tap.
  *
  * Idempotent at two layers:
  *   1. Telegram `update_id`s are logged in `telegram_update_log`; a redelivered update is detected and skipped
@@ -231,10 +241,12 @@ async function handleChatShared(
 
   console.log("telegram_webhook_chat_shared_stored", { pendingId: selected.id });
 
-  // The Mini App's Verify action is bot-chat specific: a legacy Direct Picker request has the Mini App open
-  // in the foreground and verifies from there, so no chat message is sent for it.
+  // DIRECT flow (Mini App `requestChat`, Bot API 9.6+): the Mini App is open in the foreground and never
+  // involves the bot chat, so there is no Verify message and no Verify tap. The BACKEND verifies right here
+  // (same single verification routine the Verify action uses) and the Mini App learns the verdict by polling
+  // the authoritative status endpoint. Nothing is sent to the bot chat.
   if (connectMethodForRequestId(selected.telegramRequestId) !== "bot") {
-    console.log("telegram_webhook_in_chat_notification_skipped", { pendingId: selected.id, reason: "direct_picker_request" });
+    await autoVerifyDirectSelection(selected);
     return;
   }
   if (observedChatId === null) {
@@ -248,6 +260,45 @@ async function handleChatShared(
     });
     console.log("telegram_webhook_verification_prompt", { pendingId: selected.id, ...outcome });
   });
+}
+
+/** Pause between automatic re-attempts after a transient Telegram outage (ms). Kept short: the Mini App is waiting. */
+const DIRECT_VERIFY_RETRY_DELAY_MS = 400;
+/** Total attempts (1 + retries) of the automatic verification when Telegram is briefly unreachable. */
+const DIRECT_VERIFY_MAX_ATTEMPTS = 3;
+
+/**
+ * Verifies a DIRECT-flow selection immediately after `chat_shared` stored it — the backend is the only party
+ * that can mark the channel verified. All real checks live in verifyPendingChannelRequest (shared with the bot
+ * flow's Verify action): atomic claim (exactly one verifier per request, replay/duplicate safe), then — live
+ * against the Bot API — the chat is a channel, PRIVATE, the user is creator/administrator and the Onfile bot is
+ * an administrator with the required rights; only then is the channel connected and the request resolved.
+ *
+ * A transient Telegram outage is retried a couple of times; if it persists the request is failed (reason
+ * `telegram_api_error`, "try again") so the Mini App can show it instead of waiting out the whole TTL.
+ * Never throws and never messages the bot chat.
+ */
+async function autoVerifyDirectSelection(selected: PendingChannelRequestRecord) {
+  try {
+    let step = await verifyPendingChannelRequest(selected, null);
+    for (let attempt = 1; step.kind === "retryable" && attempt < DIRECT_VERIFY_MAX_ATTEMPTS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, DIRECT_VERIFY_RETRY_DELAY_MS * attempt));
+      // Re-read nothing: the selection is already stored; the claim was released by the retryable outcome.
+      step = await verifyPendingChannelRequest({ ...selected, claimed: false }, null);
+    }
+    if (step.kind === "retryable") {
+      await failPendingRequestIfStillPending(selected.id, step.reason);
+    }
+    console.log("telegram_webhook_direct_verification", {
+      pendingId: selected.id,
+      outcome: step.kind,
+      ...(step.kind === "failed" || step.kind === "retryable" ? { reason: step.reason } : {}),
+    });
+  } catch (err) {
+    console.error("telegram_webhook_direct_verification_failed", err instanceof Error ? err.message : "unknown_error");
+    // Safety net: never leave the request claimed/"verifying" forever. A no-op if it was already resolved.
+    await failPendingRequestIfStillPending(selected.id, "telegram_api_error").catch(() => false);
+  }
 }
 
 /**

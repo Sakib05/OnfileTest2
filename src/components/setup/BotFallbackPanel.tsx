@@ -20,7 +20,8 @@ export function isBotFallbackPhase(state: BotConnectState): boolean {
     state.phase === "prepared" ||
     state.phase === "connecting" ||
     state.phase === "waiting_bot" ||
-    state.phase === "resuming"
+    state.phase === "resuming" ||
+    state.phase === "direct"
   );
 }
 
@@ -132,6 +133,38 @@ export default function BotFallbackPanel({
           <Loader2 size={18} className="animate-spin" />
           Connecting…
         </button>
+      </div>
+    );
+  }
+
+  if (state.phase === "direct") {
+    // Direct Mini App flow (requestChat): no bot chat, no countdown screen. While the request/prepared button is
+    // being created the same disabled "Connecting…" button is shown; afterwards a plain status line. Success is
+    // never shown from here — only the backend-confirmed `verified` state (rendered by the parent) is.
+    if (state.step === "preparing") {
+      return (
+        <div className="flex flex-col gap-3" data-testid="direct-connecting">
+          <button disabled className="btn-primary w-full py-4 text-base font-bold flex items-center justify-center gap-2.5 opacity-70">
+            <Loader2 size={18} className="animate-spin" />
+            Connecting…
+          </button>
+        </div>
+      );
+    }
+    const selected = state.step === "verifying" || state.stage === "channel_selected" || state.stage === "verifying";
+    return (
+      <div className="flex flex-col items-center gap-3 py-1" data-testid="direct-waiting">
+        <div className="flex items-center justify-center gap-2 text-sm text-secondary" role="status">
+          <Loader2 size={16} className="animate-spin text-brand" />
+          <span className="font-medium text-primary" data-testid="direct-status-text">
+            {selected ? "Channel selected — verifying..." : "Waiting for channel selection..."}
+          </span>
+        </div>
+        {check.message && !check.loading && (
+          <p className={`text-center text-xs ${check.tone === "error" ? "text-red-500" : "text-secondary"}`} data-testid="bot-check-message" role="status">
+            {check.message}
+          </p>
+        )}
       </div>
     );
   }

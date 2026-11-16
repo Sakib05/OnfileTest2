@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getTelegramWebApp, triggerHaptic } from "@/lib/telegramWebApp";
+import { getTelegramWebApp, isRequestChatSupported, requestChatSelectionDetailed, triggerHaptic } from "@/lib/telegramWebApp";
 import { clearLaunchConnectRef, getLaunchConnectRef } from "@/lib/botConnectClient";
 import { navigateToBotOnce, type BotNavigationResult } from "@/lib/botNavigation";
 
@@ -74,7 +74,16 @@ export type BotConnectState =
       stillVisible?: boolean;
     }
   | { phase: "resuming" }
-  | { phase: "verified"; channel: ConnectedChannel }
+  /**
+   * DIRECT flow (Telegram clients with `Telegram.WebApp.requestChat`, Bot API 9.6+): the whole connection happens
+   * inside the Mini App — no bot chat, no reply keyboard.
+   *   preparing  the secure request + prepared button are being created (POST /api/channels/connect-request)
+   *   picker     Telegram's native channel picker is open
+   *   verifying  the picker finished; waiting for the BACKEND's verdict (never assumed from the picker)
+   * `stage` mirrors the server-reported progress (see /api/channels/connect-status).
+   */
+  | { phase: "direct"; step: "preparing" | "picker" | "verifying"; token: string | null; stage?: ConnectStage }
+  | { phase: "verified"; channel: ConnectedChannel; direct?: boolean }
   | { phase: "failed"; message: string; reason?: string };
 
 /**
@@ -87,6 +96,18 @@ export type BotConnectState =
  * multiply requests.
  */
 const POLL_INTERVAL_MS = 3000;
+/**
+ * Direct flow: the user is looking at the Mini App while the backend verifies (typically well under a second after
+ * `chat_shared`), so the read-only status check runs more often than for the bot-chat flow. Polling stops as soon
+ * as the request concludes.
+ */
+const DIRECT_POLL_INTERVAL_MS = 1000;
+/**
+ * Direct flow: how long after the picker reported "sent" we wait for ANY sign of the selection reaching the backend
+ * before abandoning a request that still has no channel (Telegram's `chat_shared` webhook never arrived). A request
+ * that already carries a selection is never abandoned by this timer — the backend is verifying it.
+ */
+const DIRECT_NO_SELECTION_TIMEOUT_MS = 45_000;
 /** Grace after the server-side expiry before the client stops polling on its own. */
 const POLL_GRACE_MS = 30_000;
 /** How long after navigation we wait before suggesting the manual "open the bot" link. */
@@ -162,6 +183,25 @@ function notifyCancelled(token: string) {
     body: JSON.stringify({ token }),
     keepalive: true,
   }).catch(() => {});
+}
+
+/**
+ * Direct flow: abandons a request whose picker was closed — but ONLY if the server has not received a selection
+ * for it (`onlyIfUnselected` is evaluated atomically server-side). Resolves with whether the server cancelled it,
+ * or null when that could not be determined (network failure). Never throws.
+ */
+async function cancelUnselectedRequest(token: string): Promise<boolean | null> {
+  try {
+    const res = await fetch("/api/channels/connect-cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, onlyIfUnselected: true }),
+    });
+    const data = (await res.json().catch(() => null)) as { cancelled?: unknown } | null;
+    return res.ok && typeof data?.cancelled === "boolean" ? data.cancelled : null;
+  } catch {
+    return null;
+  }
 }
 
 function clockFrom(data: Record<string, unknown> | null): ServerClock | undefined {
@@ -240,7 +280,7 @@ function computeResumeTarget(): { token: string | null; ref: number | null; dead
  * Used by the onboarding screen (BotConnectInstructions) and by Channel Management
  * (ChannelConnectFlow) so the logic exists exactly once.
  */
-export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => void) {
+export function useChannelConnect(onConnected?: (channel: ConnectedChannel, meta?: { direct: boolean }) => void) {
   // A reopened Mini App / "Return to Onfile" launch resumes from the server's state (see the mount effect).
   const [resumeTarget] = useState(() => computeResumeTarget());
   const [state, setState] = useState<BotConnectState>(() => (resumeTarget ? { phase: "resuming" } : { phase: "idle" }));
@@ -254,6 +294,11 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
   const pollDeadline = useRef<number>(0);
   const returnListenerCleanup = useRef<(() => void) | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const directVerifyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Token of the direct-flow request being tracked (null for bot-chat requests). */
+  const directToken = useRef<string | null>(null);
+  /** Set when this client threw WebAppMethodUnsupported at runtime: later taps go straight to the bot-chat flow. */
+  const directUnsupported = useRef(false);
   const onConnectedRef = useRef(onConnected);
   useEffect(() => {
     onConnectedRef.current = onConnected;
@@ -282,6 +327,10 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
     }
     returnListenerCleanup.current?.();
     returnListenerCleanup.current = null;
+    if (directVerifyTimer.current) {
+      clearTimeout(directVerifyTimer.current);
+      directVerifyTimer.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -342,8 +391,14 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
             setCheck(IDLE_CHECK);
             // Success haptic ONLY after the server confirmed the connection.
             triggerHaptic("success");
-            setState({ phase: "verified", channel: outcome.channel });
-            onConnectedRef.current?.(outcome.channel);
+            {
+              const direct = directToken.current !== null && directToken.current === key;
+              directToken.current = null;
+              setState(direct ? { phase: "verified", channel: outcome.channel, direct: true } : { phase: "verified", channel: outcome.channel });
+              // Legacy (bot-chat) flow keeps its exact original call shape: a single `channel` argument.
+              if (direct) onConnectedRef.current?.(outcome.channel, { direct: true });
+              else onConnectedRef.current?.(outcome.channel);
+            }
             break;
           case "failed":
             finishFailed(key, outcome.message, outcome.reason);
@@ -391,6 +446,9 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
                 if (prev.stage === stage && nextClock === prev.clock) return prev;
                 return { ...prev, stage, clock: nextClock };
               }
+              if (prev.phase === "direct") {
+                return prev.stage === stage ? prev : { ...prev, stage };
+              }
               return prev;
             });
             break;
@@ -416,7 +474,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
 
   /** Begins tracking a request (by token and/or public ref) with automatic verification. */
   const startTracking = useCallback(
-    (target: { token: string | null; ref: number | null }, deadline: number) => {
+    (target: { token: string | null; ref: number | null }, deadline: number, intervalMs: number = POLL_INTERVAL_MS) => {
       const key = target.token ?? `ref:${target.ref}`;
       const query = target.token ? `token=${encodeURIComponent(target.token)}` : `ref=${target.ref}`;
       pollDeadline.current = deadline;
@@ -430,7 +488,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
       pollTimer.current = setInterval(() => {
         if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
         void checkStatus(key, query);
-      }, POLL_INTERVAL_MS);
+      }, intervalMs);
 
       // Automatic verification when the user comes back from the bot chat.
       const onReturn = () => {
@@ -478,7 +536,7 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
    *   4. perform the shared automatic hand-off (open bot chat, then close the Mini App)
    *      immediately — see "@/lib/botNavigation".
    */
-  const connect = useCallback(async () => {
+  const connectViaBot = useCallback(async () => {
     if (connecting.current) return; // double tap: one request, one chat
     const current = stateRef.current;
     if (current.phase !== "idle" && current.phase !== "prepared" && current.phase !== "failed") return;
@@ -592,6 +650,145 @@ export function useChannelConnect(onConnected?: (channel: ConnectedChannel) => v
       connecting.current = false;
     }
   }, [startTracking, clearHint]);
+
+  /**
+   * DIRECT flow ("Connect" on a client that supports `Telegram.WebApp.requestChat`, Bot API 9.6+). Everything stays
+   * inside the Mini App:
+   *   1. POST /api/channels/connect-request — authenticates the Mini App user (initData), creates the pending request
+   *      (10-minute expiry) and a prepared `request_chat` button via `savePreparedKeyboardButton`.
+   *   2. `Telegram.WebApp.requestChat(preparedButtonId)` — opens Telegram's native channel picker.
+   *   3. Telegram sends `chat_shared` to the bot; the BACKEND verifies the channel (webhook). The Mini App only watches
+   *      the read-only status endpoint. The picker closing, the requestChat callback and the user's selection are NOT
+   *      success signals — only a `verified` answer from the backend is.
+   *
+   * Resolves "fallback" ONLY when this client turned out not to implement `requestChat` at runtime (the picker never
+   * opened); the caller then runs the unchanged bot-chat flow.
+   */
+  const connectDirect = useCallback(async (): Promise<"fallback" | void> => {
+    connecting.current = true;
+    setCheck(IDLE_CHECK);
+    setState({ phase: "direct", step: "preparing", token: null });
+
+    const isActive = (token: string) => mounted.current && activeKey.current === token && !finished.current.has(token);
+    const endTracking = (token: string) => {
+      finished.current.add(token);
+      activeKey.current = null;
+      activeToken.current = null;
+      directToken.current = null;
+      stopPolling();
+    };
+    const recheck = (token: string) => void checkStatus(token, `token=${encodeURIComponent(token)}`);
+    /** Waits for the backend's verdict; abandons the request only if no selection ever reached the server. */
+    const awaitBackendVerdict = (token: string) => {
+      setState((prev) => (prev.phase === "direct" && prev.token === token ? { ...prev, step: "verifying" } : prev));
+      if (directVerifyTimer.current) clearTimeout(directVerifyTimer.current);
+      directVerifyTimer.current = setTimeout(async () => {
+        directVerifyTimer.current = null;
+        if (!isActive(token)) return;
+        const cancelled = await cancelUnselectedRequest(token);
+        if (cancelled === true && isActive(token)) {
+          finishFailed(token, "We didn't receive your channel selection from Telegram in time. Please try again.", "timeout");
+        }
+      }, DIRECT_NO_SELECTION_TIMEOUT_MS);
+      recheck(token);
+    };
+
+    try {
+      // ── 1. Secure request + prepared button ─────────────────────────────────────────
+      let res: Response;
+      let data: Record<string, unknown>;
+      try {
+        res = await fetch("/api/channels/connect-request", { method: "POST" });
+        data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      } catch {
+        triggerHaptic("error");
+        if (mounted.current) setState({ phase: "failed", message: "Network error. Please check your connection and try again." });
+        return;
+      }
+      if (!res.ok || typeof data.token !== "string" || typeof data.preparedButtonId !== "string") {
+        triggerHaptic("error");
+        if (mounted.current) {
+          setState({
+            phase: "failed",
+            message: (typeof data.error === "string" && data.error) || "Could not open the channel picker. Please try again.",
+            reason: typeof data.reason === "string" ? data.reason : undefined,
+          });
+        }
+        return;
+      }
+      const token = data.token;
+      const preparedButtonId = data.preparedButtonId;
+      if (!mounted.current) {
+        void cancelUnselectedRequest(token);
+        return;
+      }
+
+      // ── 2. Native picker. Tracking starts first so a fast backend verdict is never missed. ──
+      directToken.current = token;
+      setState({ phase: "direct", step: "picker", token });
+      startTracking({ token, ref: null }, Date.now() + 10 * 60_000 + POLL_GRACE_MS, DIRECT_POLL_INTERVAL_MS);
+
+      const outcome = await requestChatSelectionDetailed(preparedButtonId);
+      // Concluded meanwhile (the backend already answered), reset or unmounted: nothing left to do.
+      if (!isActive(token)) return;
+
+      switch (outcome) {
+        case "sent":
+          // Telegram delivered chat_shared to the bot. This is NOT verification — wait for the backend.
+          awaitBackendVerdict(token);
+          return;
+        case "not_sent": {
+          // Dismissed (or Telegram could not deliver it). The server cancels only a request with no selection.
+          const cancelled = await cancelUnselectedRequest(token);
+          if (!isActive(token)) return;
+          if (cancelled === true) {
+            endTracking(token);
+            setState({ phase: "failed", message: "Channel selection was cancelled. Please try again.", reason: "cancelled" });
+          } else {
+            // A selection already exists (or the outcome is unknown): the backend's verdict decides.
+            awaitBackendVerdict(token);
+          }
+          return;
+        }
+        case "unsupported": {
+          // The picker never opened on this client: drop the request and use the unchanged bot-chat flow.
+          directUnsupported.current = true;
+          void cancelUnselectedRequest(token);
+          endTracking(token);
+          stateRef.current = { phase: "idle" };
+          setState({ phase: "idle" });
+          return "fallback";
+        }
+        default: {
+          void cancelUnselectedRequest(token);
+          endTracking(token);
+          triggerHaptic("error");
+          setState({ phase: "failed", message: "We couldn't open the channel picker. Please try again.", reason: "picker_error" });
+          return;
+        }
+      }
+    } finally {
+      connecting.current = false;
+    }
+  }, [startTracking, checkStatus, finishFailed, stopPolling]);
+
+  /**
+   * The single "Connect" action. Chooses the flow from the CLIENT's real capability — never from the OS:
+   *   - `Telegram.WebApp.isVersionAtLeast("9.6")` AND `requestChat` present → direct Mini App picker (above);
+   *   - anything else → the unchanged bot-chat flow (`connectViaBot`).
+   * A "prepared" request (a legacy retry holder) always continues in the legacy flow.
+   */
+  const connect = useCallback(async () => {
+    if (connecting.current) return; // double tap: one request, one picker, one chat
+    const current = stateRef.current;
+    if (current.phase !== "idle" && current.phase !== "prepared" && current.phase !== "failed") return;
+    if (current.phase !== "prepared" && !directUnsupported.current && isRequestChatSupported()) {
+      const result = await connectDirect();
+      if (result === "fallback") await connectViaBot();
+      return;
+    }
+    await connectViaBot();
+  }, [connectDirect, connectViaBot]);
 
   /** Immediately re-checks the server-side status (used e.g. when the local countdown hits zero). */
   const refresh = useCallback(async () => {

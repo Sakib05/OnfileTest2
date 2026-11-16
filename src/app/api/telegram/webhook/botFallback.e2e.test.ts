@@ -313,16 +313,17 @@ describe("chat_shared — stores the selection and sends the Verify message imme
     expect(markup).not.toContain("test-token-bot-fallback-e2e");
   });
 
-  it("a legacy Direct Picker request also only stores the selection: no connection, no bot-chat message", async () => {
+  it("a DIRECT (Mini App requestChat) request is verified by the backend at once — and sends nothing to the bot chat", async () => {
     const { telegramRequestId, correlationToken } = await newBotRequest("direct");
     await chatShared(USER_A, telegramRequestId);
 
     const after = (await getPendingByToken(correlationToken))!;
-    expect(after.status).toBe("pending");
+    expect(after.status).toBe("verified");
     expect(after.selectedChatId).toBe(String(CHAT_ID));
-    expect(await connectedRows()).toHaveLength(0);
+    expect(await connectedRows()).toHaveLength(1);
     expect(userMessages()).toHaveLength(0);
-    expect(verificationCalls()).toHaveLength(0);
+    // The bot-chat Verify prompt is a legacy-only artefact.
+    expect(sent.some((c) => c.method === "sendMessage")).toBe(false);
   });
 });
 
@@ -478,12 +479,14 @@ describe("Verify in the Mini App — the ONLY place the channel is verified and 
     await db.delete(users).where(eq(users.id, other.id));
   });
 
-  it("a legacy Direct Picker request is verified the same way (by token) — only after the user asks", async () => {
+  it("an explicit Verify on an already auto-verified DIRECT request only reports it — no second verification, no duplicate", async () => {
     const { telegramRequestId, correlationToken } = await newBotRequest("direct");
     await chatShared(USER_A, telegramRequestId);
-    expect(await connectedRows()).toHaveLength(0);
+    expect(await connectedRows()).toHaveLength(1);
+    sent.length = 0;
     const data = await (await verify({ token: correlationToken })).json();
     expect(data.status).toBe("verified");
+    expect(sent).toHaveLength(0);
     expect(await connectedRows()).toHaveLength(1);
     expect(userMessages()).toHaveLength(0);
   });

@@ -9,8 +9,9 @@ import ChannelConnectScreen from "@/components/setup/ChannelConnectScreen";
 import BotConnectInstructions from "@/components/setup/BotConnectInstructions";
 import ManualConnectGuide from "@/components/setup/ManualConnectGuide";
 import ChannelConnectSuccessScreen from "@/components/setup/ChannelConnectSuccessScreen";
+import DirectConnectSuccess from "@/components/setup/DirectConnectSuccess";
 
-type SetupStep = "telegram_info" | "channel_connect" | "bot_instructions" | "manual_guide" | "success";
+type SetupStep = "telegram_info" | "channel_connect" | "bot_instructions" | "manual_guide" | "success" | "direct_success";
 
 /**
  * Orchestrates the required onboarding journey once Telegram sign-in has
@@ -26,7 +27,7 @@ type SetupStep = "telegram_info" | "channel_connect" | "bot_instructions" | "man
  * screens below.
  */
 export default function CreatorSetup() {
-  const { authStatus, user, setupProfile, startTelegramLogin, refreshUser } = useApp();
+  const { authStatus, user, setupProfile, startTelegramLogin, refreshUser, refreshDashboard, setActiveTab, setProfileEntry } = useApp();
   const [loginError, setLoginError] = useState<string | null>(null);
   const attemptedLogin = useRef(false);
 
@@ -75,9 +76,20 @@ export default function CreatorSetup() {
     setLoginError(null);
   };
 
-  const handleManualOrBotConnected = (channel: ConnectedChannel) => {
+  const handleManualOrBotConnected = (channel: ConnectedChannel, meta?: { direct: boolean }) => {
     setConnectedChannel(channel);
-    setStep("success");
+    // Direct Mini App flow: the in-app Congratulations state, which opens the Dashboard by itself.
+    setStep(meta?.direct ? "direct_success" : "success");
+  };
+
+  const handleDirectSuccessDone = () => {
+    // The backend already confirmed the connection. Open the Dashboard (never Channel Management) and refresh its
+    // data; page.tsx flips from setup to the main app once the verified channel is loaded.
+    setProfileEntry(null);
+    setActiveTab("home");
+    void refreshDashboard().then((ok) => {
+      if (!ok) void refreshUser();
+    });
   };
 
   const handleContinueToOnfile = () => {
@@ -163,6 +175,10 @@ export default function CreatorSetup() {
           onConnected={handleManualOrBotConnected}
           initialLink={guideInitialLink}
         />
+      )}
+
+      {step === "direct_success" && connectedChannel && (
+        <DirectConnectSuccess channel={connectedChannel} onDone={handleDirectSuccessDone} />
       )}
 
       {step === "success" && connectedChannel && (

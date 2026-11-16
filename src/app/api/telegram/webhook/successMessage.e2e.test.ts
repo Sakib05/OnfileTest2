@@ -321,19 +321,19 @@ describe("Verify behaviour — the Mini App opens at the button URL and verifies
   });
 });
 
-describe("Direct Picker requests (legacy, not used by the current UI) stay silent", () => {
-  it("a direct-range request only stores the selection and gets no in-chat message; it is connected only by an explicit Verify", async () => {
+describe("Direct (Mini App requestChat) requests stay silent in the bot chat", () => {
+  it("a direct-range request is verified by the backend and gets NO in-chat message", async () => {
     await recordPrivateChat(USER, PRIVATE_CHAT);
     const created = await connectingRequest("direct");
     await webhook(chatSharedUpdate(created.telegramRequestId));
-    const mid = (await getPendingByToken(created.correlationToken))!;
-    expect(mid.status).toBe("pending");
-    expect(mid.selectedChatId).toBe(String(CHANNEL));
+    const done = (await getPendingByToken(created.correlationToken))!;
+    expect(done.status).toBe("verified");
+    expect(done.selectedChatId).toBe(String(CHANNEL));
     expect(sendMessages()).toHaveLength(0);
 
+    // An explicit Verify afterwards only reports the stored outcome.
     const res = await verifyReq({ token: created.correlationToken }, cookieFor(USER));
     expect((await res.json()).status).toBe("verified");
-    expect((await getPendingByToken(created.correlationToken))?.status).toBe("verified");
     expect(sendMessages()).toHaveLength(0);
   });
 });

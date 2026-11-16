@@ -1,8 +1,10 @@
 "use client";
-import React from "react";
+import React, { useState } from "react";
 import { Radio, ShieldCheck } from "lucide-react";
 import BotFallbackPanel, { BotConnectFailure, isBotFallbackPhase } from "@/components/setup/BotFallbackPanel";
 import ConnectSuccessNotice from "@/components/setup/ConnectSuccessNotice";
+import DirectConnectSuccess from "@/components/setup/DirectConnectSuccess";
+import { useApp } from "@/contexts/AppContext";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
 import { useChannelConnect, type ConnectedChannel } from "@/lib/useChannelConnect";
 
@@ -21,13 +23,36 @@ export default function ChannelConnectFlow({
 }: {
   onConnected?: (channel: ConnectedChannel) => void;
 }) {
-  const { state, check, connect, refresh, reset } = useChannelConnect(onConnected);
+  const { refreshDashboard, setActiveTab, setProfileEntry } = useApp();
+  // Direct Mini App flow (Telegram `requestChat`): the Congratulations state is shown in-app, then the Dashboard opens.
+  const [directSuccess, setDirectSuccess] = useState<ConnectedChannel | null>(null);
+  const { state, check, connect, refresh, reset } = useChannelConnect((channel, meta) => {
+    if (meta?.direct) {
+      setDirectSuccess(channel);
+      return;
+    }
+    onConnected?.(channel);
+  });
+
+  const handleDirectSuccessDone = () => {
+    setProfileEntry(null);
+    setActiveTab("home"); // the Dashboard — not Channel Management
+    void refreshDashboard();
+  };
 
   if (!isRunningInsideTelegram()) {
     return (
       <div className="flex items-start gap-2 text-left text-xs text-secondary bg-secondary rounded-xl p-3">
         <Radio size={14} className="mt-0.5 flex-shrink-0 text-brand" />
         <span>Open Onfile from inside Telegram to connect a channel. This screen cannot access Telegram&apos;s native chat selector in a regular browser tab.</span>
+      </div>
+    );
+  }
+
+  if (directSuccess) {
+    return (
+      <div className="fixed inset-0 z-50 bg-app flex items-center justify-center px-6 py-10" data-testid="direct-success-overlay">
+        <DirectConnectSuccess channel={directSuccess} onDone={handleDirectSuccessDone} />
       </div>
     );
   }

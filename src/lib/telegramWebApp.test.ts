@@ -35,6 +35,14 @@ describe("isRequestChatSupported — feature detection", () => {
     install({ requestChat: vi.fn(), isVersionAtLeast: () => true });
     expect(isRequestChatSupported()).toBe(true);
   });
+  it("false when the bridge has no isVersionAtLeast at all (predates Bot API 6.1, so certainly < 9.6)", () => {
+    install({ requestChat: vi.fn() });
+    expect(isRequestChatSupported()).toBe(false);
+  });
+  it("false when isVersionAtLeast returns something other than true", () => {
+    install({ requestChat: vi.fn(), isVersionAtLeast: () => undefined });
+    expect(isRequestChatSupported()).toBe(false);
+  });
   it("false (not a crash) when isVersionAtLeast throws", () => {
     install({ requestChat: vi.fn(), isVersionAtLeast: () => { throw new Error("boom"); } });
     expect(isRequestChatSupported()).toBe(false);

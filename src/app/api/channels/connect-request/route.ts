@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isSameOriginRequest } from "@/lib/auth";
 import { resolveConnectingIdentity } from "@/lib/channelConnection";
 import { createPreparedChatRequestButton } from "@/lib/telegramBot";
-import { createPendingChannelRequest } from "@/lib/pendingChannelRequests";
+import { cancelOpenDirectRequestsForUser, cancelPendingByToken, createPendingChannelRequest } from "@/lib/pendingChannelRequests";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 
 const REQUEST_FAILURE_MESSAGES: Record<string, string> = {
@@ -12,6 +12,14 @@ const REQUEST_FAILURE_MESSAGES: Record<string, string> = {
 };
 
 /**
+ * "Connect" for Telegram clients that support `Telegram.WebApp.requestChat` (Bot API 9.6+; the Mini App decides
+ * that from `isVersionAtLeast("9.6")` + the method's presence — see src/lib/telegramWebApp.ts). The legacy
+ * bot-chat flow (/api/channels/connect-bot-request) is used for every other client.
+ *
+ * The response carries ONLY the opaque status-polling token and the prepared button id — no Telegram ids, no
+ * channel data, no verdict. The request is bound to the authenticated Telegram user (initData / session) and
+ * keeps the standard 10-minute expiry.
+ *
  * Step 1 of the native Telegram direct-picker channel connection flow:
  * stores a `request_chat` keyboard button scoped to the signed-in Telegram
  * user via the Bot API method `savePreparedKeyboardButton`, and returns its
@@ -54,6 +62,15 @@ export async function POST(req: NextRequest) {
     }
     const identity = identityResult.identity;
 
+    // Newest request wins: a repeated "Connect" tap (or a second device) supersedes this user's earlier direct
+    // requests that never received a channel. Requests already carrying a selection, and every legacy
+    // (bot-chat) request, are untouched.
+    try {
+      await cancelOpenDirectRequestsForUser(identity.telegramUserId);
+    } catch (err) {
+      console.error("connect_request_supersede_failed", err instanceof Error ? err.message : "unknown_error");
+    }
+
     let pending: Awaited<ReturnType<typeof createPendingChannelRequest>>;
     try {
       pending = await createPendingChannelRequest(identity);
@@ -75,6 +92,8 @@ export async function POST(req: NextRequest) {
       // bot token, no DB credentials). Stage logged here so the two log
       // lines can be correlated to this specific request.
       console.error("connect_request_failed", { stage: "save_prepared_keyboard_button", reason: prepared.reason });
+      // Nothing can ever complete this request (no prepared button exists): don't leave it pending.
+      await cancelPendingByToken(pending.correlationToken).catch(() => false);
       return NextResponse.json(
         { error: REQUEST_FAILURE_MESSAGES[prepared.reason] ?? "Could not start the connection flow.", reason: prepared.reason },
         { status: 502 }

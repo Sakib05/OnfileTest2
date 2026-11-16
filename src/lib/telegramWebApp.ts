@@ -87,18 +87,15 @@ export function isRunningInsideTelegram(): boolean {
 export function isRequestChatSupported(): boolean {
   const webApp = getTelegramWebApp();
   if (!webApp || typeof webApp.requestChat !== "function") return false;
-  if (typeof webApp.isVersionAtLeast === "function") {
-    try {
-      return webApp.isVersionAtLeast(REQUEST_CHAT_MIN_VERSION);
-    } catch {
-      // If the client throws on an unrecognized method, treat it as
-      // unsupported rather than guessing.
-      return false;
-    }
+  // The version gate is mandatory: `telegram-web-app.js` defines requestChat on EVERY client, so its mere
+  // presence proves nothing. A bridge without isVersionAtLeast predates Bot API 6.1 (and therefore 9.6).
+  if (typeof webApp.isVersionAtLeast !== "function") return false;
+  try {
+    return webApp.isVersionAtLeast(REQUEST_CHAT_MIN_VERSION) === true;
+  } catch {
+    // If the client throws on an unrecognized method, treat it as unsupported rather than guessing.
+    return false;
   }
-  // No isVersionAtLeast but requestChat itself exists: trust its presence,
-  // since Telegram does not ship optional/partial WebApp methods.
-  return true;
 }
 
 export type RequestChatOutcome =

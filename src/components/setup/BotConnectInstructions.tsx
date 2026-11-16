@@ -63,7 +63,7 @@ export default function BotConnectInstructions({
   onSuccess,
 }: {
   onBack: () => void;
-  onSuccess: (channel: ConnectedChannel) => void;
+  onSuccess: (channel: ConnectedChannel, meta?: { direct: boolean }) => void;
 }) {
   const { state, check, connect, refresh, reset } = useChannelConnect(onSuccess);
 

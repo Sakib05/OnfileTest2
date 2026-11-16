@@ -399,18 +399,26 @@ export async function releaseVerificationClaim(id: number): Promise<void> {
  * cosmetic status. A request that already resolved (verified/failed via the
  * webhook) is left untouched — this is a no-op in that case, not an error.
  */
-export async function cancelPendingByToken(token: string): Promise<boolean> {
+export async function cancelPendingByToken(
+  token: string,
+  options?: { onlyIfUnselected?: boolean }
+): Promise<boolean> {
   const tokenHash = hashToken(token);
+  const conditions = [
+    eq(pendingChannelRequests.tokenHash, tokenHash),
+    eq(pendingChannelRequests.status, "pending"),
+    gt(pendingChannelRequests.expiresAt, new Date()),
+  ];
+  // Direct (Mini App) flow: the client only ever abandons a request whose picker it closed. The server must
+  // never let that cancel a request that already carries a selection (it is being / about to be verified), so
+  // this guard is evaluated atomically inside the same UPDATE. It only makes the cancel MORE conservative.
+  if (options?.onlyIfUnselected) {
+    conditions.push(isNull(pendingChannelRequests.selectedChatId), isNull(pendingChannelRequests.claimedAt));
+  }
   const result = await db
     .update(pendingChannelRequests)
     .set({ status: "failed", failureReason: "cancelled", updatedAt: new Date() })
-    .where(
-      and(
-        eq(pendingChannelRequests.tokenHash, tokenHash),
-        eq(pendingChannelRequests.status, "pending"),
-        gt(pendingChannelRequests.expiresAt, new Date())
-      )
-    )
+    .where(and(...conditions))
     .returning({ id: pendingChannelRequests.id });
   return result.length > 0;
 }
@@ -437,6 +445,45 @@ export async function cancelOpenBotRequestsForUser(telegramUserId: number): Prom
     )
     .returning({ id: pendingChannelRequests.id });
   return result.length;
+}
+
+/**
+ * Supersedes any still-open DIRECT-method (Mini App `requestChat`) request of this Telegram user that has not
+ * received a channel yet, so repeated "Connect" taps (or two devices) never leave several live prepared buttons
+ * behind — only the newest request can complete. Requests that already carry a selection (or are being
+ * verified) are never touched, and neither are bot-method requests (the legacy flow). Returns how many were
+ * superseded.
+ */
+export async function cancelOpenDirectRequestsForUser(telegramUserId: number): Promise<number> {
+  const result = await db
+    .update(pendingChannelRequests)
+    .set({ status: "failed", failureReason: "cancelled", updatedAt: new Date() })
+    .where(
+      and(
+        eq(pendingChannelRequests.telegramUserId, String(telegramUserId)),
+        eq(pendingChannelRequests.status, "pending"),
+        isNull(pendingChannelRequests.claimedAt),
+        isNull(pendingChannelRequests.selectedChatId),
+        gt(pendingChannelRequests.expiresAt, new Date()),
+        lt(pendingChannelRequests.telegramRequestId, BOT_REQUEST_ID_MIN)
+      )
+    )
+    .returning({ id: pendingChannelRequests.id });
+  return result.length;
+}
+
+/**
+ * Marks a request `failed` ONLY if it is still `pending` (never overwrites a verified / already-failed
+ * outcome). Used as the last-resort safety net of the automatic (webhook-side) verification so a request can
+ * never be left "verifying" forever. Returns whether this call changed the row.
+ */
+export async function failPendingRequestIfStillPending(id: number, reason: string): Promise<boolean> {
+  const result = await db
+    .update(pendingChannelRequests)
+    .set({ status: "failed", failureReason: reason, updatedAt: new Date() })
+    .where(and(eq(pendingChannelRequests.id, id), eq(pendingChannelRequests.status, "pending")))
+    .returning({ id: pendingChannelRequests.id });
+  return result.length > 0;
 }
 
 export type StartLookupResult =
