@@ -53,7 +53,7 @@ export function getUnlockMethods(file: Pick<DownloadFileInfo, "hasPassword" | "s
 }
 
 export type UnlockResult =
-  | { ok: true; telegramMessageLink: string | null }
+  | { ok: true; telegramMessageLink: string | null; /** Present only when the server attributed the unlock to a public playlist. */ receipt?: string }
   | { ok: false; status: number; message: string };
 
 export function unlockErrorMessage(status: number, serverMessage?: string): string {
@@ -63,19 +63,44 @@ export function unlockErrorMessage(status: number, serverMessage?: string): stri
   return "Something went wrong. Please check your connection and try again.";
 }
 
-/** Asks the server to unlock the file. Never throws. */
-export async function requestUnlock(slug: string, password?: string, fetchImpl: typeof fetch = fetch): Promise<UnlockResult> {
+/**
+ * Asks the server to unlock the file. Never throws.
+ * `playlistSlug` (optional) is the public playlist token the visitor is on; the server re-validates it and only then
+ * returns a `receipt` used for playlist analytics. It never influences whether the file unlocks.
+ */
+export async function requestUnlock(slug: string, password?: string, fetchImpl: typeof fetch = fetch, playlistSlug?: string): Promise<UnlockResult> {
   try {
     const res = await fetchImpl(`/api/link/${encodeURIComponent(slug)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: password || "" }),
+      body: JSON.stringify(playlistSlug ? { password: password || "", playlist: playlistSlug } : { password: password || "" }),
     });
-    const data = (await res.json().catch(() => ({}))) as { telegramMessageLink?: string | null; error?: string };
-    if (res.ok) return { ok: true, telegramMessageLink: data.telegramMessageLink ?? null };
+    const data = (await res.json().catch(() => ({}))) as { telegramMessageLink?: string | null; receipt?: unknown; error?: string };
+    if (res.ok) {
+      return typeof data.receipt === "string"
+        ? { ok: true, telegramMessageLink: data.telegramMessageLink ?? null, receipt: data.receipt }
+        : { ok: true, telegramMessageLink: data.telegramMessageLink ?? null };
+    }
     return { ok: false, status: res.status, message: unlockErrorMessage(res.status, data.error) };
   } catch {
     return { ok: false, status: 0, message: unlockErrorMessage(0) };
+  }
+}
+
+/**
+ * Tells the server the visitor opened the Telegram link it released (playlist analytics "download" confirmation).
+ * Fire-and-forget: `keepalive` lets it finish even if the tap switches to the Telegram app. Never throws, never blocks.
+ */
+export function confirmDelivered(slug: string, receipt: string, fetchImpl: typeof fetch = fetch): void {
+  try {
+    void fetchImpl(`/api/link/${encodeURIComponent(slug)}/delivered`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ receipt }),
+      keepalive: true,
+    }).catch(() => undefined);
+  } catch {
+    /* analytics must never affect delivery */
   }
 }
 

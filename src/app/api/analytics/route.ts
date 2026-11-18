@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { analytics, files } from "@/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { getSessionUser, unauthorized } from "@/lib/auth";
+import { RESERVED_EVENT_TYPES } from "@/lib/playlistAnalytics";
 
 export async function GET(req: NextRequest) {
   try {
@@ -78,6 +79,11 @@ export async function POST(req: NextRequest) {
     const eventType = typeof body.eventType === "string" ? body.eventType.slice(0, 32) : undefined;
     if (!eventType || (!fileId && !playlistId)) {
       return NextResponse.json({ error: "fileId or playlistId, and eventType are required" }, { status: 400 });
+    }
+    // Playlist analytics event types are written by the server only (idempotent + validated); this open endpoint must
+    // not be a way to inflate them.
+    if (RESERVED_EVENT_TYPES.includes(eventType)) {
+      return NextResponse.json({ error: "Reserved event type" }, { status: 400 });
     }
     await db.insert(analytics).values({
       fileId,

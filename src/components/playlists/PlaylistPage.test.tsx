@@ -92,7 +92,6 @@ function installFetch() {
       return json({ success: true, mode: body.mode, alreadyInDestination: false });
     }
     if (method === "DELETE" && url === "/api/playlists/1") return json({ success: true });
-    if (method === "GET" && url === "/api/playlists/1/stats") return json({ stats: { fileRequests: 7 } });
     if (method === "PATCH" && /^\/api\/files\/\d+$/.test(url)) {
       const id = Number(url.split("/").pop());
       members = members.map((m) => (m.id === id ? { ...m, ...(body.isPublished !== undefined ? { isPublished: body.isPublished } : {}), ...(body.title ? { title: body.title } : {}), ...(body.starsPrice !== undefined ? { starsPrice: body.starsPrice } : {}), ...("password" in body ? { hasPassword: !!body.password } : {}) } : m));
@@ -117,10 +116,10 @@ const byText = (t: string) => buttons().find((b) => b.textContent?.trim().includ
 const q = (sel: string) => document.body.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => Array.from(document.body.querySelectorAll(sel)) as HTMLElement[];
 const click = (el: Element | null | undefined) => act(async () => (el as HTMLElement).click());
-const headerMenuButton = () => q('[aria-label="Playlist options"]') as HTMLButtonElement;
 const moreTile = () => q('[data-testid="playlist-actions"] [data-testid="action-menu-button"]') as HTMLButtonElement;
+const headerMenuButton = moreTile; // the More tile in the action row is the ONLY playlist menu
 const menuEl = () => q('[data-testid="action-menu"]');
-/** Opens the playlist ⋮ menu in the header and picks an item. */
+/** Opens the playlist More (⋯) menu in the action row and picks an item. */
 const choose = async (key: string) => {
   await click(headerMenuButton());
   await click(q(`[data-testid="menu-item-${key}"]`));
@@ -200,11 +199,17 @@ describe("Creator playlist page — layout", () => {
     expect(actions.className).toContain("grid-cols-4"); // all four share one row on a phone
   });
 
-  it("has no large decorative 'Playlist' heading; the compact header says 'Manage' and the title is the only <h1>", async () => {
+  it("has no 'Manage' text, no header ⋮ menu and no large 'Playlist' heading; the title is the only <h1>", async () => {
     await mount();
-    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("Manage");
+    expect(q('[data-testid="playlist-header-title"]')).toBeNull();
+    expect(q('[aria-label="Playlist options"]')).toBeNull(); // the old top-right menu is gone
+    expect(qa("header [aria-haspopup]")).toHaveLength(0);
+    expect(qa("h1, h2, p, span, button").some((e) => e.children.length === 0 && e.textContent?.trim() === "Manage")).toBe(false);
     expect(qa("h1").map((h) => h.textContent)).toEqual(["Accounting"]);
     expect(qa("h1, h2, p").some((e) => e.textContent?.trim() === "Playlist")).toBe(false);
+    // exactly one playlist menu on the page: the More tile next to Share
+    expect(qa('[aria-haspopup="menu"]').filter((b) => !b.closest('[data-testid="playlist-file-row"]'))).toHaveLength(1);
+    expect(moreTile()).not.toBeNull();
   });
 
   it("lists files in the saved order with handle, position, type, size, status and a ⋮ menu each; the first is the cover", async () => {
@@ -264,23 +269,28 @@ describe("Creator playlist page — layout", () => {
   });
 });
 
-describe("Creator playlist page — analytics (real data only)", () => {
-  it("shows the file-request count the backend records and says what isn't tracked", async () => {
+describe("Creator playlist page — analytics live on their own page", () => {
+  it("shows no analytics cards, charts, statistics or request counts on the management page", async () => {
     await mount();
-    expect(wrote("GET", /\/api\/playlists\/1\/stats$/)).toHaveLength(1);
-    expect(q('[data-testid="stat-file-requests"]')?.textContent).toBe("7");
-    const text = q('[data-testid="playlist-stats"]')!.textContent!;
-    expect(text).toContain("not confirmed Telegram deliveries");
-    expect(text).toContain("aren't tracked yet");
-    expect(text).not.toMatch(/\$|USDT|revenue/i); // never shows invented money
+    expect(q('[data-testid="playlist-stats"]')).toBeNull();
+    expect(q('[data-testid="stat-file-requests"]')).toBeNull();
+    expect(wrote("GET", /\/analytics|\/stats/)).toHaveLength(0); // nothing is even fetched
+    const text = q('[data-testid="playlist-page"]')!.textContent!;
+    expect(text).not.toMatch(/File requests|Successful deliveries|Confirmed file deliveries|Earnings|\bViews\b/i);
+    expect(q(".recharts-wrapper")).toBeNull();
   });
 
-  it("degrades gracefully when analytics can't be loaded", async () => {
-    failNext = { match: /stats$/, status: 500 };
+  it("More → Analytics opens the analytics page of THIS playlist", async () => {
     await mount();
-    expect(q('[data-testid="playlist-stats"]')?.textContent).toContain("unavailable");
-    expect(q('[data-testid="stat-file-requests"]')).toBeNull();
-    expect(rowTitles()).toHaveLength(3); // the rest of the page is unaffected
+    await choose("analytics");
+    expect(router.push).toHaveBeenCalledWith("/playlists/1/analytics");
+  });
+
+  it("the Analytics item sits in the More menu between Share settings and Copy public link", async () => {
+    await mount();
+    await click(moreTile());
+    const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim());
+    expect(labels.indexOf("Analytics")).toBe(labels.indexOf("Share settings") + 1);
   });
 });
 
@@ -507,7 +517,7 @@ describe("Creator playlist page — Add Files (existing channel Library workflow
   });
 
   it("explains an empty connected channel and links to Create", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/files" ? json({ files: [] }) : url === "/api/playlists" ? json({ playlists: [summary()] }) : url.endsWith("/stats") ? json({ stats: { fileRequests: 0 } }) : json({ files: members }))));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/files" ? json({ files: [] }) : url === "/api/playlists" ? json({ playlists: [summary()] }) : json({ files: members }))));
     await mount();
     await click(q('[data-testid="action-add-files"]'));
     await flush();
@@ -518,7 +528,7 @@ describe("Creator playlist page — Add Files (existing channel Library workflow
   });
 
   it("tells the creator when every channel file is already in the playlist", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/files" ? json({ files: [mk(1, "One.pdf"), mk(2, "Two.pdf"), mk(3, "Three.pdf")] }) : url === "/api/playlists" ? json({ playlists: [summary()] }) : url.endsWith("/stats") ? json({ stats: { fileRequests: 0 } }) : json({ files: members }))));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/files" ? json({ files: [mk(1, "One.pdf"), mk(2, "Two.pdf"), mk(3, "Three.pdf")] }) : url === "/api/playlists" ? json({ playlists: [summary()] }) : json({ files: members }))));
     await mount();
     await click(q('[data-testid="action-add-files"]'));
     await flush();
@@ -710,11 +720,11 @@ describe("Creator playlist page — file actions", () => {
 });
 
 describe("Creator playlist page — playlist More menu", () => {
-  it("both the header ⋮ and the More tile open the same accessible menu with the supported actions, Delete last and destructive", async () => {
+  it("the More tile opens an accessible menu with the supported actions (incl. Analytics), Delete last and destructive", async () => {
     await mount();
     await click(headerMenuButton());
     const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim());
-    expect(labels).toEqual(["Edit details", "Make private", "Monetization settings", "Share settings", "Copy public link", "Duplicate playlist", "Delete playlist"]);
+    expect(labels).toEqual(["Edit details", "Make private", "Monetization settings", "Share settings", "Analytics", "Copy public link", "Duplicate playlist", "Delete playlist"]);
     expect(menuEl()?.getAttribute("role")).toBe("menu");
     expect(q('[data-testid="menu-item-delete"]')!.className).toContain("text-red-500");
     expect(qa('[role="separator"]').length).toBeGreaterThanOrEqual(2);
@@ -724,7 +734,7 @@ describe("Creator playlist page — playlist More menu", () => {
     expect(menuEl()).toBeNull();
     expect(document.activeElement).toBe(headerMenuButton());
     await click(moreTile());
-    expect(qa('[data-testid="action-menu"] [role="menuitem"]')).toHaveLength(7);
+    expect(qa('[data-testid="action-menu"] [role="menuitem"]')).toHaveLength(8);
   });
 
   it("Edit details saves title and description with the existing PATCH and shows them at once", async () => {

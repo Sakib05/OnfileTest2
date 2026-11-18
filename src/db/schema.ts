@@ -397,9 +397,19 @@ export const analytics = pgTable(
     eventType: varchar("event_type", { length: 32 }),
     ipHash: varchar("ip_hash", { length: 64 }),
     country: varchar("country", { length: 8 }),
+    // ── Playlist analytics (migrations/playlist_analytics; additive + nullable, legacy rows untouched) ──
+    // Idempotency key, server-generated only (never accepted from a client). The UNIQUE index makes a retried /
+    // duplicated event a no-op: views use `v:<playlist>:<visitor>:<30-min bucket>`, downloads use `d:<receipt nonce>`.
+    eventKey: varchar("event_key", { length: 96 }),
+    // HMAC of the anonymous visitor cookie (not reversible, not a Telegram id / IP). Only used for "unique viewers".
+    visitorHash: varchar("visitor_hash", { length: 64 }),
     createdAt: timestamp("created_at").defaultNow(),
   },
-  (t) => [index("analytics_file_id_idx").on(t.fileId)]
+  (t) => [
+    index("analytics_file_id_idx").on(t.fileId),
+    uniqueIndex("analytics_event_key_idx").on(t.eventKey),
+    index("analytics_playlist_event_idx").on(t.playlistId, t.eventType, t.createdAt),
+  ]
 );
 
 // ─── Transactions ─────────────────────────────────────────────────────────────

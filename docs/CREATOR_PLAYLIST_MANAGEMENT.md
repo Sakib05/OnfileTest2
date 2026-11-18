@@ -4,12 +4,12 @@ A dashboard-style workspace for one playlist. It is **separate from the public v
 Everything goes through the existing, session-scoped endpoints; ownership is enforced server-side (the client never sends an owner id).
 
 ## Layout (top → bottom)
-1. **Header** – Back · compact heading ("Manage", or the sub-screen name) · ⋮ playlist menu.
+1. **Header** – *(updated)* no "Manage" text and no top-right ⋮ menu on the playlist screen. Sub-screens show only their own name (Edit details, Add files, …). The single playlist menu is the **More** tile in the action row.
    *Back*: inside Telegram the native BackButton is the back control (the in-page arrow is hidden to avoid two arrows); in a plain browser the page renders its own Back button. Escape leaves a sub-screen; focus moves to the new screen's heading.
 2. **Cover** – the derived cover (first file's thumbnail) or the default art, with **Change cover**.
 3. **Info** – title, description, `Public/Private`, file count, total size (sum of the sizes that exist; shown as `245 MB+` when some files have no recorded size; hidden when none), Password / Stars chips, and a note when some files are not published.
 4. **Primary actions** (one 4-column row, ≥ 60 px tall on phones): **Add Files** (filled brand colour) · **Preview** · **Share** · **More**.
-5. **Analytics** (compact) – see below.
+5. *(removed)* Analytics no longer appear on this page — they live on **More → Analytics** (`/playlists/[id]/analytics`, see `PLAYLIST_ANALYTICS.md`).
 6. **Files** – drag handle · position · thumbnail/type art · title · type · size · Published/Not published · ⋮ menu.
 
 ## Operations and the endpoints they use (no new backend systems)
@@ -26,7 +26,7 @@ Everything goes through the existing, session-scoped endpoints; ownership is enf
 | Preview | `POST /api/playlists/:id/share` → `router.push("/p/<token>")` (the real public page) |
 | Duplicate | `POST /api/playlists` then `POST /api/playlists/:newId/files` (same file references, same order, visibility + Stars copied, **password not copied**); a half-built copy is deleted again on failure |
 | Delete (confirmation: Telegram files are not deleted) | `DELETE /api/playlists/:id` |
-| Analytics | `GET /api/playlists/:id/stats` (**new**, read-only, owner-only) |
+| Analytics | More → Analytics → `/playlists/:id/analytics` page → `GET /api/playlists/:id/analytics` (owner-only; replaces the old `/stats` route, which was removed) |
 
 ## Cover
 Covers are derived (`getPlaylistCovers`); there is no cover upload or storage. "Change cover" therefore means *choose which file is first* – done with the existing reorder endpoint and explained in the UI.
@@ -37,9 +37,8 @@ Covers are derived (`getPlaylistCovers`); there is no cover upload or storage. "
 * A **Stars-priced** playlist cannot be shared yet (existing 409 `paid_unavailable`), so there is nothing to preview; the UI says so.
 * Browser/Telegram Back returns to this page.
 
-## Analytics (honest by design)
-Only `fileRequests` is shown: the sum of `files.downloads` over the playlist's files. That counter is incremented by `POST /api/link/:slug` when a file's unlock check passes – a **request**, not a confirmed Telegram delivery – so it is labelled "File requests" with that explanation.
-Not shown because the backend does not record them per playlist: views (`playlists.total_views` / `files.views` are never written), confirmed downloads, advertisement revenue, creator earnings (`files.earnings` is never written; `/api/analytics` multiplies downloads by a hard-coded 0.05, which this page deliberately does **not** reuse). The card states this.
+## Analytics
+Moved to its own page — see `docs/PLAYLIST_ANALYTICS.md`. The management page shows no analytics cards, charts or counters.
 
 ## Changed shared pieces
 * `ActionMenu` – optional `triggerClassName`, `triggerContent`, `menuClassName`, item `separated` (defaults unchanged).

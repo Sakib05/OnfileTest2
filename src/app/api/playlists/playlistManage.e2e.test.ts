@@ -7,10 +7,9 @@ import { createSession } from "@/lib/auth";
 import { POST as playlistsPost } from "./route";
 import { POST as membersAdd } from "./[id]/files/route";
 import { DELETE as memberRemove } from "./[id]/files/[fileId]/route";
-import { GET as statsGet } from "./[id]/stats/route";
 import { PATCH as filePatch } from "../files/[id]/route";
 
-/** REAL handlers + sessions + Postgres: owner-only stats, "remove from playlist" safety, file settings validation. */
+/** REAL handlers + sessions + Postgres: "remove from playlist" safety, file settings validation. */
 const tag = `pm_${Date.now()}`;
 let userA = 0;
 let userB = 0;
@@ -59,30 +58,6 @@ afterAll(async () => {
     await db.delete(sessions).where(inArray(sessions.userId, ids));
     await db.delete(users).where(inArray(users.id, ids));
   }
-});
-
-describe("GET /api/playlists/:id/stats", () => {
-  it("returns the summed file-request counter of the playlist's files, for the owner only", async () => {
-    const pl = await makePlaylist(tokenA, "Stats");
-    const f1 = await makeFile(userA, "a", { downloads: 3 });
-    const f2 = await makeFile(userA, "b", { downloads: 4 });
-    const outside = await makeFile(userA, "not in playlist", { downloads: 100 });
-    expect(outside.id).toBeGreaterThan(0);
-    await membersAdd(req(`/api/playlists/${pl.id}/files`, { method: "POST", token: tokenA, json: { fileIds: [f1.id, f2.id] } }), ctx(pl.id));
-
-    const ok = await statsGet(req(`/api/playlists/${pl.id}/stats`, { token: tokenA }), ctx(pl.id));
-    expect(ok.status).toBe(200);
-    expect(await ok.json()).toEqual({ stats: { fileRequests: 7 } });
-  });
-
-  it("is 0 for an empty playlist; 401 without a session; 404 for another creator's or a missing playlist; 400 for a bad id", async () => {
-    const pl = await makePlaylist(tokenA, "Empty stats");
-    expect(await (await statsGet(req(`/api/playlists/${pl.id}/stats`, { token: tokenA }), ctx(pl.id))).json()).toEqual({ stats: { fileRequests: 0 } });
-    expect((await statsGet(req(`/api/playlists/${pl.id}/stats`), ctx(pl.id))).status).toBe(401);
-    expect((await statsGet(req(`/api/playlists/${pl.id}/stats`, { token: tokenB }), ctx(pl.id))).status).toBe(404);
-    expect((await statsGet(req(`/api/playlists/2147483000/stats`, { token: tokenA }), ctx(2147483000))).status).toBe(404);
-    expect((await statsGet(req(`/api/playlists/abc/stats`, { token: tokenA }), ctx("abc"))).status).toBe(400);
-  });
 });
 
 describe("Remove from playlist keeps everything else", () => {

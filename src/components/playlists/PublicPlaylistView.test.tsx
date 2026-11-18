@@ -400,6 +400,46 @@ describe("unified viewer — Get File keeps the existing server-side flow", () =
     expect(q('[data-testid="stars-note"]')!.textContent).toContain("isn’t available yet");
     expect(posts()).toHaveLength(0);
   });
+
+  describe("playlist analytics hand-off", () => {
+    const deliveredCalls = () => calls.filter((c) => c.url.endsWith("/delivered"));
+    async function unlockSelected(receipt?: string) {
+      respond = (url, init) => {
+        if (/^\/api\/link\/file-\d$/.test(url) && init?.method === "POST") return json({ success: true, telegramMessageLink: "https://t.me/c/1/1", ...(receipt ? { receipt } : {}) });
+        if (url.endsWith("/delivered")) return json({ counted: true });
+        return defaultRespond(url, init);
+      };
+      await mountFake();
+      const get = q('[data-testid="get-file"]') as HTMLButtonElement;
+      await click(get);
+      await advance(10000);
+      await act(async () => get.click());
+    }
+
+    it("the unlock carries the public playlist token, so the server can attribute the delivery to THIS playlist", async () => {
+      await unlockSelected("r".repeat(22));
+      expect(posts()[0].body).toEqual({ password: "", playlist: SLUG });
+    });
+
+    it("tapping 'Open in Telegram' confirms the delivery with the server's receipt — the link itself is untouched", async () => {
+      await unlockSelected("r".repeat(22));
+      expect(deliveredCalls()).toHaveLength(0); // unlocking alone confirms nothing
+      const link = q('a[href="https://t.me/c/1/1"]') as HTMLAnchorElement;
+      link.addEventListener("click", (e) => e.preventDefault()); // jsdom must not navigate
+      await click(link);
+      expect(deliveredCalls()).toHaveLength(1);
+      expect(deliveredCalls()[0]).toMatchObject({ url: "/api/link/file-1/delivered", method: "POST", body: { receipt: "r".repeat(22) } });
+      expect(link.getAttribute("target")).toBe("_blank");
+    });
+
+    it("without a receipt (not attributable) nothing is confirmed and the link works as before", async () => {
+      await unlockSelected();
+      const link = q('a[href="https://t.me/c/1/1"]') as HTMLAnchorElement;
+      link.addEventListener("click", (e) => e.preventDefault());
+      await click(link);
+      expect(deliveredCalls()).toHaveLength(0);
+    });
+  });
 });
 
 describe("states", () => {
