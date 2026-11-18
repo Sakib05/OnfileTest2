@@ -1,5 +1,5 @@
 "use client";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import {
   DndContext,
@@ -12,82 +12,54 @@ import {
   type DragEndEvent,
   type Modifier,
 } from "@dnd-kit/core";
-import { SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
-import { ArrowRightLeft, Check, CopyPlus, EyeOff, Globe, GripVertical, Link2, ListPlus, Loader2, Lock, Pencil, Play, Search, Share2, Star, Trash2 } from "lucide-react";
+import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { ChevronLeft, CircleDollarSign, Copy, EyeOff, Globe, GripVertical, Link2, ListPlus, Loader2, Pencil, Share2, Trash2 } from "lucide-react";
 import ActionMenu, { type ActionMenuItem } from "@/components/ui/ActionMenu";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ShareSheet from "@/components/playlists/ShareSheet";
-import FileThumb from "@/components/ui/FileThumb";
-import PlaylistThumb from "@/components/ui/PlaylistThumb";
 import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
-import SwipeableRow from "@/components/playlists/SwipeableRow";
-import { cn } from "@/lib/utils";
-import { fileKindLabel } from "@/lib/fileKinds";
-import { formatBytes } from "@/lib/utils";
 import { itemHref } from "@/lib/playlistSharing";
 import { copyText, requestShareLink } from "@/lib/playlistShareClient";
-import { PLAYLIST_DESCRIPTION_MAX, PLAYLIST_TITLE_MAX } from "@/lib/playlists";
+import { chunkIds, duplicateTitle, moveToFront, previewBlock, summariseFiles } from "@/lib/playlistManage";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
+import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
 import { consumeFromLibraryFlag } from "@/lib/playlistNav";
+import PlaylistHero from "@/components/playlists/manage/PlaylistHero";
+import PlaylistStats from "@/components/playlists/manage/PlaylistStats";
+import ManageFileRow from "@/components/playlists/manage/ManageFileRow";
+import AddFilesView from "@/components/playlists/manage/AddFilesView";
+import EditDetailsView from "@/components/playlists/manage/EditDetailsView";
+import SettingsForm from "@/components/playlists/manage/SettingsForm";
+import TransferView from "@/components/playlists/manage/TransferView";
+import ConfirmDialog from "@/components/playlists/manage/ConfirmDialog";
+import { JSON_HEADERS, isOpenable, readJson, type MemberFile, type PlaylistSummary } from "@/components/playlists/manage/types";
 
-export interface PlaylistSummary {
-  id: number;
-  title: string;
-  description?: string | null;
-  totalFiles?: number;
-  totalDownloads?: number;
-  thumbnailUrl?: string | null;
-  hasPassword?: boolean;
-  starsPrice?: number;
-  isPublished?: boolean;
-  /** Owner-only: the unguessable public token once the playlist has been shared. */
-  shareSlug?: string | null;
-}
+export type { PlaylistSummary } from "@/components/playlists/manage/types";
 
-interface MemberFile {
-  id: number;
-  title: string;
-  fileType: string | null;
-  mimeType: string | null;
-  fileSize: number | null;
-  isPublished: boolean | null;
-  /** Smart-link slug of the published file (opens the existing /f/<slug> viewer); null while unpublished. */
-  smartLinkSlug?: string | null;
-  starsPrice?: number | null;
-  hasPassword?: boolean;
-  thumbnailUrl: string | null;
-  position: number;
-}
+type View =
+  | { name: "list" }
+  | { name: "edit" }
+  | { name: "add" }
+  | { name: "monetization" }
+  | { name: "transfer"; file: MemberFile; mode: "add" | "move" }
+  | { name: "fileSettings"; file: MemberFile };
 
-interface LibraryFile {
-  id: number;
-  title: string;
-  fileType: string | null;
-  mimeType?: string | null;
-  fileSize?: number | null;
-  thumbnailUrl?: string | null;
-}
+type Confirm = { kind: "remove"; file: MemberFile } | { kind: "unpublish"; file: MemberFile } | { kind: "private" } | { kind: "duplicate" } | null;
 
-type View = { name: "list" } | { name: "edit" } | { name: "add" } | { name: "transfer"; file: MemberFile };
-
-const JSON_HEADERS = { "Content-Type": "application/json" };
 /** Rows only travel up/down; keeps the dragged row inside the list column. */
 const lockVertical: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 
-async function readJson(res: Response): Promise<Record<string, unknown> | null> {
-  return (await res.json().catch(() => null)) as Record<string, unknown> | null;
-}
+const noopSubscribe = () => () => {};
 
 /**
- * Full-page playlist details (route: /playlists/[id]) — replaces the former popup.
+ * Creator playlist management page (route: /playlists/[id]) — a dashboard-style workspace, separate from the
+ * public viewer (/p/<token>, /f/<slug>), which it only links to.
  *
- * Hierarchy: Back · cover · title · description · file count · actions · ordered file list.
- * Everything the old manager did is preserved: edit title/description, add files from the
- * Library, drag to reorder, remove (now swipe-to-remove), add-to / move-to another playlist, delete.
- * The playlist cover is DERIVED server-side from the first ordered file's thumbnail — nothing is
- * uploaded or duplicated here; we only re-read the server's snapshot after every change.
+ * Layout: header (back · heading · ⋮) → cover → info → Add Files / Preview / Share / More → compact analytics → ordered files.
+ * Every operation goes through the EXISTING, session-scoped endpoints (ownership is enforced server-side):
+ *   playlist PATCH/DELETE · /files (add, reorder) · /files/:id (remove) · /files/:id/transfer · /share · /api/files/:id (publish, settings).
+ * The cover is DERIVED from the first ordered file's thumbnail; we only re-read the server's snapshot after changes.
  */
 export default function PlaylistPage({ playlistId, initialView = "list" }: { playlistId: number; initialView?: "list" | "edit" }) {
   const { toast } = useToast();
@@ -103,15 +75,20 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
   const [dragging, setDragging] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyFileId, setBusyFileId] = useState<number | null>(null);
-  const [openRowId, setOpenRowId] = useState<number | null>(null);
+  const [confirm, setConfirm] = useState<Confirm>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [working, setWorking] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [statsKey, setStatsKey] = useState(0);
   const savingRef = useRef(false);
-  const listRef = useRef<HTMLUListElement>(null);
+  const headingRef = useRef<HTMLElement>(null);
+  const firstViewRender = useRef(true);
 
   const pid = playlistId;
   const authed = authStatus === "authenticated";
+  // Inside Telegram the native Back Button is the back control; elsewhere (browser) the page shows its own.
+  const insideTelegram = useSyncExternalStore(noopSubscribe, () => isRunningInsideTelegram(), () => false);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   const goToLibrary = useCallback(() => {
@@ -120,20 +97,40 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     else router.replace("/");
   }, [router, setActiveTab]);
 
-  /** Back: from a sub-screen (edit / add / move) → the playlist; from the playlist → the Library. */
+  /** Back: from a sub-screen → the playlist; from the playlist → the Library (the Creator's playlist list). */
   const handleBack = useCallback(() => {
     if (view.name !== "list") setView({ name: "list" });
     else goToLibrary();
   }, [view.name, goToLibrary]);
 
-  // Telegram's native BackButton (and the Android back gesture inside the Mini App) is the ONLY back
-  // control on this page — there is no in-page arrow — and follows the same rule.
   useTelegramBackButton(handleBack);
 
   // Visitors / sessions without a verified creator account never see a dashboard page.
   useEffect(() => {
     if (authStatus === "guest" || authStatus === "setup_required" || channelStatus === "no_channel") router.replace("/");
   }, [authStatus, channelStatus, router]);
+
+  // Keyboard: Escape leaves a sub-screen (dialogs and menus handle their own Escape first).
+  const overlayOpen = confirm !== null || confirmDelete || shareOpen;
+  useEffect(() => {
+    if (view.name === "list" || overlayOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target instanceof Element && e.target.closest('[role="menu"]')) return;
+      setView({ name: "list" });
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [view.name, overlayOpen]);
+
+  // Focus management: after switching screens, move focus to the new screen's heading.
+  useEffect(() => {
+    if (firstViewRender.current) {
+      firstViewRender.current = false;
+      return;
+    }
+    headingRef.current?.focus();
+  }, [view.name]);
 
   // ── Data ───────────────────────────────────────────────────────────────────
   const loadFiles = useCallback(async () => {
@@ -173,19 +170,8 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     if (authed) void loadAll();
   }, [authed, loadAll]);
 
-  // A revealed Remove panel closes when the user taps anywhere outside that row.
-  useEffect(() => {
-    if (openRowId === null) return;
-    const onDown = (e: PointerEvent) => {
-      const row = listRef.current?.querySelector(`[data-file-id="${openRowId}"]`);
-      if (row && !row.contains(e.target as Node)) setOpenRowId(null);
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    return () => document.removeEventListener("pointerdown", onDown, true);
-  }, [openRowId]);
-
   // Mouse needs a small move before a drag starts; touch needs a short press so normal scrolling still works.
-  // Both listeners live on the drag HANDLE only, so tapping/scrolling/swiping anywhere else never starts a drag.
+  // Both listeners live on the drag HANDLE only, so tapping or scrolling anywhere else never starts a drag.
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 120, tolerance: 6 } }),
@@ -200,19 +186,22 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
       setPlaylist((cur) => ({ ...cur, ...next }));
       setAllPlaylists((cur) => cur.map((p) => (p.id === next.id ? { ...p, ...next } : p)));
     }
+    setStatsKey((k) => k + 1);
   };
 
-  const handleDragEnd = async (e: DragEndEvent) => {
-    setDragging(false);
-    const { active, over } = e;
-    if (!over || active.id === over.id || savingRef.current) return;
-    const from = files.findIndex((f) => f.id === active.id);
-    const to = files.findIndex((f) => f.id === over.id);
-    if (from < 0 || to < 0) return;
+  const patchPlaylistState = (p: Partial<PlaylistSummary>) => {
+    setPlaylist((cur) => (cur ? { ...cur, ...p } : cur));
+    setAllPlaylists((cur) => cur.map((x) => (x.id === pid ? { ...x, ...p } : x)));
+  };
 
+  /**
+   * Persists a new order through the existing PUT endpoint. Optimistic: the list shows the new order at once and is
+   * rolled back (with a message) if the server refuses. Returns whether it was saved.
+   */
+  const persistOrder = async (next: MemberFile[], successMessage: string): Promise<boolean> => {
+    if (savingRef.current) return false;
     const previous = files;
-    const next = arrayMove(files, from, to);
-    setFiles(next); // show the new order immediately
+    setFiles(next);
     savingRef.current = true;
     setSaving(true);
     try {
@@ -222,24 +211,43 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
         setFiles(previous);
         toast(String(data?.error ?? "Couldn't save the new order."), "error");
         if (res.status === 409) await loadFiles().catch(() => undefined); // someone else changed it — show the truth
-        return;
+        return false;
       }
       applySnapshot(data); // persisted order + refreshed cover (first file)
-      toast("Order saved");
+      toast(successMessage);
+      return true;
     } catch {
       setFiles(previous);
       toast("Network error. The order wasn't saved.", "error");
+      return false;
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
   };
 
+  const handleDragEnd = async (e: DragEndEvent) => {
+    setDragging(false);
+    const { active, over } = e;
+    if (!over || active.id === over.id || savingRef.current) return;
+    const from = files.findIndex((f) => f.id === active.id);
+    const to = files.findIndex((f) => f.id === over.id);
+    if (from < 0 || to < 0) return;
+    await persistOrder(arrayMove(files, from, to), "Order saved");
+  };
+
+  /** Cover = first file's thumbnail, so choosing a cover moves that file to the top (existing reorder endpoint). */
+  const setCover = async (fileId: number) => {
+    const next = moveToFront(files, fileId);
+    if (next === files) return;
+    await persistOrder(next, "Cover updated");
+  };
+
+  // ── File actions ───────────────────────────────────────────────────────────
   /**
-   * Remove ONE file's membership from THIS playlist (DELETE /api/playlists/:id/files/:fileId).
-   * The file itself, its thumbnail and its membership in other playlists are untouched (server-side
-   * guarantee; this route never touches /api/files). The row disappears immediately; if the request
-   * fails the previous list, count and cover are restored.
+   * Removes ONE file's membership from THIS playlist (DELETE /api/playlists/:id/files/:fileId). The file itself, its
+   * Telegram post, thumbnail, own link and membership in other playlists are untouched (this route never touches
+   * /api/files). The row disappears immediately; on failure the previous list, count and cover are restored.
    */
   const removeFile = async (f: MemberFile) => {
     if (busyFileId !== null || saving || savingRef.current) return;
@@ -247,7 +255,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     const prevPlaylist = playlist;
     const next = files.filter((x) => x.id !== f.id);
     setBusyFileId(f.id);
-    setOpenRowId(null);
     setFiles(next);
     setPlaylist((cur) => (cur ? { ...cur, totalFiles: next.length, thumbnailUrl: next[0]?.thumbnailUrl ?? null } : cur));
     try {
@@ -259,9 +266,9 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
         throw err;
       }
       applySnapshot(data);
-      toast("Removed from playlist. The file is still in your Library.");
+      toast("Removed from this playlist. The original file is untouched.");
     } catch (e) {
-      setFiles(prevFiles); // restore the row where it was
+      setFiles(prevFiles);
       setPlaylist(prevPlaylist);
       toast("Couldn't remove it from the playlist. Please try again.", "error");
       if ((e as { status?: number }).status === 404) void loadFiles().catch(() => undefined);
@@ -270,12 +277,31 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     }
   };
 
+  /** Publish / unpublish ONE file with the existing PATCH. Nothing is deleted; the file's own access rules are unchanged. */
+  const setFilePublished = async (f: MemberFile, published: boolean) => {
+    if (busyFileId !== null || saving) return;
+    setBusyFileId(f.id);
+    try {
+      const res = await fetch(`/api/files/${f.id}`, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ isPublished: published }) });
+      const data = await readJson(res);
+      const row = data?.file as { isPublished?: boolean | null } | undefined;
+      if (!res.ok || !row) throw new Error("failed");
+      setFiles((cur) => cur.map((x) => (x.id === f.id ? { ...x, isPublished: !!row.isPublished } : x)));
+      toast(published ? "File published" : "File unpublished. It isn't deleted — publish it again any time.");
+    } catch {
+      toast(published ? "Couldn't publish the file. Please try again." : "Couldn't unpublish the file. Please try again.", "error");
+    } finally {
+      setBusyFileId(null);
+    }
+  };
+
+  // ── Playlist actions ───────────────────────────────────────────────────────
   const deletePlaylist = async () => {
-    setDeleting(true);
+    setWorking(true);
     try {
       const res = await fetch(`/api/playlists/${pid}`, { method: "DELETE" });
       if (!res.ok) throw new Error("failed");
-      toast("Playlist deleted. Its files are still in your Library.");
+      toast("Playlist deleted. Your Telegram files are untouched.");
       setConfirmDelete(false);
       consumeFromLibraryFlag();
       setActiveTab("files");
@@ -283,13 +309,75 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     } catch {
       toast("Couldn't delete the playlist. Please try again.", "error");
     } finally {
-      setDeleting(false);
+      setWorking(false);
     }
   };
 
-  // ── Open / play / share ─────────────────────────────────────────────────────
-  const isOpenable = (f: MemberFile) => !!f.smartLinkSlug && !!f.isPublished;
+  const setVisibility = async (published: boolean) => {
+    setWorking(true);
+    try {
+      const res = await fetch(`/api/playlists/${pid}`, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ isPublished: published }) });
+      const data = await readJson(res);
+      if (!res.ok || !data?.playlist) throw new Error("failed");
+      applySnapshot(data);
+      toast(published ? "Playlist is now public" : "Playlist is now private. Its public link no longer works.");
+      setConfirm(null);
+    } catch {
+      toast("Couldn't change the visibility. Please try again.", "error");
+    } finally {
+      setWorking(false);
+    }
+  };
 
+  /**
+   * Duplicates the playlist STRUCTURE only: a new playlist (existing create endpoint) whose members are references to the
+   * same files (existing add endpoint). No Telegram file is copied. Password isn't copied (only a hash is stored).
+   * If anything fails after the copy was created, the half-built copy is deleted again.
+   */
+  const duplicatePlaylist = async () => {
+    if (!playlist) return;
+    setWorking(true);
+    try {
+      const res = await fetch("/api/playlists", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ title: duplicateTitle(playlist.title), description: playlist.description ?? null, starsPrice: playlist.starsPrice ?? 0 }),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data?.playlist) {
+        toast(String(data?.error ?? "Couldn't duplicate the playlist. Please try again."), "error");
+        return;
+      }
+      const created = data.playlist as PlaylistSummary;
+      if (data.duplicate) {
+        toast("A playlist with that name was created a moment ago — find it in your Library.", "info");
+        setConfirm(null);
+        return;
+      }
+      try {
+        for (const ids of chunkIds(files.map((f) => f.id))) {
+          const r = await fetch(`/api/playlists/${created.id}/files`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ fileIds: ids }) });
+          if (!r.ok) throw new Error("add failed");
+        }
+        if (!playlist.isPublished) {
+          const r = await fetch(`/api/playlists/${created.id}`, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ isPublished: false }) });
+          if (!r.ok) throw new Error("visibility failed");
+        }
+      } catch {
+        await fetch(`/api/playlists/${created.id}`, { method: "DELETE" }).catch(() => undefined);
+        toast("Couldn't duplicate the playlist. Nothing was created.", "error");
+        return;
+      }
+      toast(`Duplicated as “${created.title}”. Find it in your Library.`);
+      setConfirm(null);
+    } catch {
+      toast("Network error. Please try again.", "error");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  // ── Open / preview / share ─────────────────────────────────────────────────
   /**
    * Opens ONE file in the existing public file viewer (/f/<slug>), which keeps enforcing that file's own password / price.
    * When the playlist can be shared, the playlist context travels along (?list=…&i=…) so the viewer can show
@@ -297,7 +385,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
    */
   const openItem = async (f: MemberFile) => {
     if (!f.smartLinkSlug || !f.isPublished) {
-      toast("This file isn't published yet, so it can't be opened from here.", "info");
+      toast("This file isn't published yet, so it can't be previewed.", "info");
       return;
     }
     const position = files.filter(isOpenable).findIndex((x) => x.id === f.id) + 1;
@@ -312,9 +400,36 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     router.push(token && position > 0 ? itemHref(f.smartLinkSlug, token, position) : `/f/${encodeURIComponent(f.smartLinkSlug)}`);
   };
 
-  const playFirst = () => {
-    const first = files.find(isOpenable);
-    if (first) void openItem(first);
+  /**
+   * Preview = the REAL public playlist page (/p/<token>), exactly as a visitor sees it (password / Stars / ad rules are
+   * enforced there, not here). It never changes visibility: a private playlist has no public page, so we explain that and
+   * offer the Share dialog instead of publishing it silently. Browser / Telegram Back returns to this page.
+   */
+  const previewPlaylist = async () => {
+    if (!playlist || previewing) return;
+    const block = previewBlock(playlist);
+    if (block === "private") {
+      toast("This playlist is private, so it has no public page to preview. Make it public to preview it.", "info");
+      setShareOpen(true);
+      return;
+    }
+    if (block === "paid") {
+      toast("Playlists with a Stars price have no public page yet, so there's nothing to preview.", "info");
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const r = await requestShareLink(pid);
+      if (!r.ok) {
+        toast(r.message, "error");
+        if (r.reason === "private") setShareOpen(true);
+        return;
+      }
+      setPlaylist((cur) => (cur ? { ...cur, shareSlug: r.share.slug } : cur));
+      router.push(r.share.path);
+    } finally {
+      setPreviewing(false);
+    }
   };
 
   const copyPlaylistLink = async () => {
@@ -328,25 +443,62 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     toast(copied ? "Playlist link copied" : "Couldn't copy the link. Open Share to copy it manually.", copied ? "success" : "error");
   };
 
-  const locked = dragging || saving || busyFileId !== null;
+  const locked = dragging || saving || busyFileId !== null || working;
   const memberIds = useMemo(() => new Set(files.map((f) => f.id)), [files]);
   const otherPlaylists = allPlaylists.filter((p) => p.id !== pid);
+  const summary = useMemo(() => summariseFiles(files), [files]);
 
-  // The playlist screen itself has no top label (the title is the heading); sub-screens name themselves.
-  const headerTitle = view.name === "edit" ? "Edit playlist" : view.name === "add" ? "Add files" : view.name === "transfer" ? "Add or move file" : null;
+  const headerTitle =
+    view.name === "edit" ? "Edit details"
+    : view.name === "add" ? "Add files"
+    : view.name === "monetization" ? "Monetization"
+    : view.name === "fileSettings" ? "File settings"
+    : view.name === "transfer" ? "Move to another playlist"
+    : "Manage";
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  const shell = (children: React.ReactNode) => (
-    <div className="min-h-screen bg-app" data-testid="playlist-page">
-      <div className="max-w-2xl mx-auto w-full px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2.5rem)]">
-        {/* No in-page back arrow: Telegram's native Back Button is the only back control. */}
-        {headerTitle ? (
-          <header className="flex items-center justify-center mb-4 min-h-11">
-            <p className="min-w-0 text-center text-sm font-semibold text-secondary truncate" data-testid="playlist-header-title">{headerTitle}</p>
-          </header>
-        ) : (
-          <div className="h-2" aria-hidden="true" />
-        )}
+  const menuItems: ActionMenuItem[] = playlist
+    ? [
+        { key: "edit", label: "Edit details", icon: Pencil, onSelect: () => setView({ name: "edit" }) },
+        playlist.isPublished
+          ? { key: "visibility", label: "Make private", icon: EyeOff, onSelect: () => setConfirm({ kind: "private" }) }
+          : { key: "visibility", label: "Make public", icon: Globe, onSelect: () => void setVisibility(true) },
+        { key: "monetization", label: "Monetization settings", icon: CircleDollarSign, onSelect: () => setView({ name: "monetization" }) },
+        { key: "share", label: "Share settings", icon: Share2, onSelect: () => setShareOpen(true) },
+        { key: "copy", label: "Copy public link", icon: Link2, onSelect: () => void copyPlaylistLink() },
+        { key: "duplicate", label: "Duplicate playlist", icon: Copy, separated: true, onSelect: () => setConfirm({ kind: "duplicate" }) },
+        { key: "delete", label: "Delete playlist", icon: Trash2, destructive: true, onSelect: () => setConfirmDelete(true) },
+      ]
+    : [];
+
+  const Heading = view.name === "list" ? "p" : "h1";
+  const shell = (children: React.ReactNode, withMenu = false) => (
+    <div className="min-h-screen bg-app overflow-x-hidden" data-testid="playlist-page">
+      <div className="max-w-2xl mx-auto w-full px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2.5rem)]">
+        <header className="flex items-center gap-1 min-h-12 mb-3">
+          {insideTelegram ? (
+            <span className="w-11 flex-shrink-0" aria-hidden="true" />
+          ) : (
+            <button
+              type="button"
+              onClick={handleBack}
+              aria-label={view.name === "list" ? "Back to your playlists" : "Back to playlist"}
+              data-testid="page-back"
+              className="w-11 h-11 -ml-2 flex-shrink-0 inline-flex items-center justify-center rounded-xl text-primary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
+            >
+              <ChevronLeft size={22} aria-hidden="true" />
+            </button>
+          )}
+          {/* The playlist's own <h1> is its title; sub-screens name themselves with the page <h1>. */}
+          <Heading ref={headingRef as never} tabIndex={-1} className="min-w-0 flex-1 text-center text-base font-semibold text-primary truncate outline-none" data-testid="playlist-header-title">
+            {headerTitle}
+          </Heading>
+          {withMenu ? (
+            <ActionMenu label="Playlist options" items={menuItems} disabled={locked} className="flex-shrink-0" triggerClassName="w-11 h-11 -mr-2 inline-flex items-center justify-center rounded-xl text-primary hover:bg-secondary disabled:opacity-60" />
+          ) : (
+            <span className="w-11 flex-shrink-0" aria-hidden="true" />
+          )}
+        </header>
         {children}
       </div>
     </div>
@@ -360,37 +512,61 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     return shell(
       <div className="text-center py-16 px-2" data-testid="playlist-error">
         <p className="font-semibold text-primary mb-1">{loadError === "notfound" ? "Playlist not found" : "Couldn't load this playlist"}</p>
-        <p className="text-sm text-secondary mb-5">
-          {loadError === "notfound" ? "It may have been deleted." : "Please check your connection and try again."}
-        </p>
+        <p className="text-sm text-secondary mb-5">{loadError === "notfound" ? "It may have been deleted." : "Please check your connection and try again."}</p>
         <div className="flex items-center justify-center gap-2">
           {loadError !== "notfound" && (
-            <button type="button" className="btn-primary text-sm px-5 py-2.5" onClick={() => void loadAll()}>Try again</button>
+            <button type="button" className="btn-primary min-h-11 text-sm px-5 py-2.5" onClick={() => void loadAll()}>Try again</button>
           )}
-          <button type="button" className="btn-secondary text-sm px-5 py-2.5" onClick={goToLibrary}>Back to My Library</button>
+          <button type="button" className="btn-secondary min-h-11 text-sm px-5 py-2.5" onClick={goToLibrary}>Back to My Library</button>
         </div>
       </div>
     );
   }
 
   const count = files.length;
-  const totalBytes = files.reduce((sum, f) => sum + (f.fileSize ?? 0), 0);
-  const openableCount = files.filter(isOpenable).length;
-  const menuItems: ActionMenuItem[] = [
-    { key: "edit", label: "Edit playlist", icon: Pencil, onSelect: () => setView({ name: "edit" }) },
-    { key: "share", label: "Share playlist", icon: Share2, onSelect: () => setShareOpen(true) },
-    { key: "copy", label: "Copy playlist link", icon: Link2, onSelect: () => void copyPlaylistLink() },
-    { key: "delete", label: "Delete playlist", icon: Trash2, destructive: true, onSelect: () => setConfirmDelete(true) },
-  ];
+  const goCreate = () => {
+    setActiveTab("create");
+    consumeFromLibraryFlag();
+    router.replace("/");
+  };
 
   return shell(
     <>
       {view.name === "edit" && (
-        <EditForm
+        <EditDetailsView
           playlist={playlist}
+          files={files}
+          coverBusy={locked}
           onSaved={(p) => {
-            setPlaylist((cur) => ({ ...cur, ...p }));
-            setAllPlaylists((cur) => cur.map((x) => (x.id === p.id ? { ...x, ...p } : x)));
+            patchPlaylistState(p);
+            setView({ name: "list" });
+          }}
+          onSetCover={(id) => void setCover(id)}
+        />
+      )}
+
+      {view.name === "monetization" && (
+        <SettingsForm
+          kind="playlist"
+          id={pid}
+          initial={{ title: playlist.title, hasPassword: !!playlist.hasPassword, starsPrice: playlist.starsPrice ?? 0 }}
+          onSaved={(r) => {
+            patchPlaylistState({ hasPassword: r.hasPassword, starsPrice: r.starsPrice });
+            setView({ name: "list" });
+          }}
+        />
+      )}
+
+      {view.name === "fileSettings" && (
+        <SettingsForm
+          key={view.file.id}
+          kind="file"
+          id={view.file.id}
+          withTitle
+          initial={{ title: view.file.title, hasPassword: !!view.file.hasPassword, starsPrice: view.file.starsPrice ?? 0 }}
+          onSaved={(r) => {
+            const id = view.file.id;
+            setFiles((cur) => cur.map((x) => (x.id === id ? { ...x, title: r.title ?? x.title, hasPassword: r.hasPassword, starsPrice: r.starsPrice } : x)));
             setView({ name: "list" });
           }}
         />
@@ -400,6 +576,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
         <AddFilesView
           playlistId={pid}
           memberIds={memberIds}
+          onGoCreate={goCreate}
           onAdded={(data) => {
             applySnapshot(data);
             setView({ name: "list" });
@@ -412,135 +589,83 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
           fromPlaylistId={pid}
           file={view.file}
           playlists={otherPlaylists}
+          initialMode={view.mode}
           onDone={async () => {
             setView({ name: "list" });
-            setOpenRowId(null);
             await Promise.all([loadFiles(), loadPlaylists()]).catch(() => undefined); // count + derived cover may have changed
+            setStatsKey((k) => k + 1);
           }}
         />
       )}
 
       {view.name === "list" && (
-        <div className="flex flex-col gap-6">
-          {/* Header: cover · title · description · facts · actions */}
-          <section className="flex flex-col sm:flex-row gap-4 sm:gap-6 sm:items-end" aria-label="Playlist details">
-            <div
-              className="relative w-full sm:w-64 flex-shrink-0 aspect-video rounded-2xl overflow-hidden bg-secondary border border-app shadow-app-md"
-              data-testid="playlist-cover"
-            >
-              <PlaylistThumb url={playlist.thumbnailUrl} />
-            </div>
-            <div className="min-w-0 flex-1 flex flex-col gap-3">
-              <div className="min-w-0">
-                <h1 className="text-2xl font-bold text-primary leading-tight break-words" data-testid="playlist-title">{playlist.title}</h1>
-                {playlist.description ? (
-                  <p className="text-sm text-secondary whitespace-pre-wrap break-words mt-1.5 line-clamp-4" data-testid="playlist-description">{playlist.description}</p>
-                ) : (
-                  <p className="text-sm text-muted mt-1.5" data-testid="playlist-description">No description</p>
-                )}
-              </div>
-
-              <div className="flex items-center gap-x-2 gap-y-1.5 flex-wrap text-xs text-secondary" data-testid="playlist-meta">
-                <span className="font-semibold text-primary" data-testid="playlist-count">
-                  {count} {count === 1 ? "file" : "files"}
-                </span>
-                {totalBytes > 0 && <span aria-label="Total size">· {formatBytes(totalBytes)}</span>}
-                <span className={cn("chip", playlist.isPublished ? "bg-brand-10 text-brand" : "bg-secondary text-secondary")} data-testid="playlist-visibility">
-                  {playlist.isPublished ? <Globe size={11} aria-hidden="true" /> : <EyeOff size={11} aria-hidden="true" />}
-                  {playlist.isPublished ? "Public" : "Private"}
-                </span>
-                {playlist.hasPassword && (
-                  <span className="chip bg-secondary text-secondary" data-testid="playlist-password-chip"><Lock size={11} aria-hidden="true" /> Password</span>
-                )}
-                {(playlist.starsPrice ?? 0) > 0 && (
-                  <span className="chip bg-secondary text-secondary"><Star size={11} aria-hidden="true" /> {playlist.starsPrice} Stars</span>
-                )}
-              </div>
-
-              {/* Primary actions: Play · Share (always visible) · ⋮ menu */}
-              <div className="flex items-center gap-2" data-testid="playlist-actions">
-                {openableCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={playFirst}
-                    disabled={locked}
-                    data-testid="playlist-play"
-                    className="btn-primary flex-1 min-h-11 px-4 text-sm flex items-center justify-center gap-2 disabled:opacity-60"
-                  >
-                    <Play size={16} aria-hidden="true" /> Play first
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setShareOpen(true)}
-                  data-testid="playlist-share"
-                  className={cn(
-                    "min-h-11 px-4 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-2 border border-app bg-secondary text-primary",
-                    openableCount > 0 ? "flex-shrink-0" : "flex-1"
-                  )}
-                >
-                  <Share2 size={16} aria-hidden="true" /> Share
-                </button>
-                <ActionMenu label="Playlist actions" items={menuItems} disabled={locked} className="flex-shrink-0" />
-              </div>
-            </div>
-          </section>
-
-          <button
-            type="button"
-            onClick={() => setView({ name: "add" })}
+        <div className="flex flex-col gap-5">
+          <PlaylistHero
+            playlist={playlist}
+            summary={summary}
+            menuItems={menuItems}
             disabled={locked}
-            className="btn-secondary w-full min-h-11 px-4 text-sm flex items-center justify-center gap-2 disabled:opacity-60"
-          >
-            <ListPlus size={16} /> Add files from Library
-          </button>
+            previewing={previewing}
+            onAddFiles={() => setView({ name: "add" })}
+            onPreview={() => void previewPlaylist()}
+            onShare={() => setShareOpen(true)}
+            onChangeCover={() => setView({ name: "edit" })}
+          />
 
-          {/* Ordered files */}
+          <PlaylistStats playlistId={pid} refreshKey={statsKey} />
+
           <section aria-label="Playlist files">
-            <div className="flex items-center justify-between gap-2 mb-1">
+            <div className="flex items-center justify-between gap-2 mb-1 min-h-6">
               <h2 className="text-base font-bold text-primary flex items-baseline gap-2">
                 Files <span className="text-xs font-medium text-muted">{count}</span>
               </h2>
-              {saving && <Loader2 size={14} className="animate-spin text-secondary" aria-label="Saving order" />}
+              <span role="status" aria-live="polite" className="text-xs text-secondary inline-flex items-center gap-1.5">
+                {saving && (
+                  <>
+                    <Loader2 size={13} className="animate-spin" aria-hidden="true" /> Saving…
+                  </>
+                )}
+              </span>
             </div>
 
-            {loadError === null && count === 0 ? (
-              <div className="text-center py-10 px-2 rounded-2xl border border-dashed border-app">
+            {count === 0 ? (
+              <div className="text-center py-10 px-3 rounded-2xl border border-dashed border-app" data-testid="playlist-empty">
                 <p className="text-sm font-semibold text-primary mb-1">This playlist is empty</p>
-                <p className="text-sm text-secondary">Add files from your Library. The first file&apos;s thumbnail becomes the playlist cover.</p>
+                <p className="text-sm text-secondary mb-4">Add files from your connected Telegram channel. The first file&apos;s thumbnail becomes the playlist cover.</p>
+                <button type="button" onClick={() => setView({ name: "add" })} className="btn-primary min-h-11 px-5 py-2.5 text-sm inline-flex items-center gap-2">
+                  <ListPlus size={16} aria-hidden="true" /> Add Files
+                </button>
               </div>
             ) : (
               <>
                 <p className="text-xs text-secondary mb-3" data-testid="playlist-hint">
-                  Tap a file to open it · swipe left to remove · hold <GripVertical size={12} className="inline -mt-0.5" aria-hidden="true" /> and drag to reorder.
+                  Hold <GripVertical size={12} className="inline -mt-0.5" aria-hidden="true" /> and drag to reorder · use ⋮ for more actions.
                 </p>
                 <DndContext
                   sensors={sensors}
                   collisionDetection={closestCenter}
                   modifiers={[lockVertical]}
-                  onDragStart={() => {
-                    setDragging(true);
-                    setOpenRowId(null);
-                  }}
+                  onDragStart={() => setDragging(true)}
                   onDragCancel={() => setDragging(false)}
                   onDragEnd={(e) => void handleDragEnd(e)}
                 >
                   <SortableContext items={files.map((f) => f.id)} strategy={verticalListSortingStrategy}>
-                    <ul ref={listRef} className="flex flex-col gap-2" data-testid="playlist-files">
+                    <ul className="flex flex-col gap-2" data-testid="playlist-files">
                       {files.map((f, index) => (
-                        <SortableRow
+                        <ManageFileRow
                           key={f.id}
                           file={f}
                           index={index}
-                          disabled={saving || busyFileId !== null}
-                          locked={locked}
-                          open={openRowId === f.id}
-                          removing={busyFileId === f.id}
-                          onOpenChange={(o) => setOpenRowId(o ? f.id : (cur) => (cur === f.id ? null : cur))}
-                          onSwipeStart={() => setOpenRowId((cur) => (cur !== null && cur !== f.id ? null : cur))}
-                          onOpenFile={() => void openItem(f)}
-                          onOpenTransfer={() => setView({ name: "transfer", file: f })}
-                          onRemove={() => void removeFile(f)}
+                          disabled={saving || busyFileId !== null || working}
+                          busy={busyFileId === f.id}
+                          actions={{
+                            onPreview: () => void openItem(f),
+                            onSettings: () => setView({ name: "fileSettings", file: f }),
+                            onMove: () => setView({ name: "transfer", file: f, mode: "move" }),
+                            onTogglePublish: () => (f.isPublished ? setConfirm({ kind: "unpublish", file: f }) : void setFilePublished(f, true)),
+                            onSetCover: () => void setCover(f.id),
+                            onRemove: () => setConfirm({ kind: "remove", file: f }),
+                          }}
                         />
                       ))}
                     </ul>
@@ -560,15 +685,73 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
         onPublishedChange={(published) => setPlaylist((cur) => (cur ? { ...cur, isPublished: published } : cur))}
       />
 
+      <ConfirmDialog
+        open={confirm?.kind === "remove"}
+        title="Remove from playlist?"
+        description={
+          <>
+            “{confirm?.kind === "remove" ? confirm.file.title : ""}” will be removed from this playlist only. The original file stays in your Telegram channel and Library, keeps its own link, and stays in any other playlist.
+          </>
+        }
+        confirmLabel="Remove"
+        destructive
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          const f = confirm?.kind === "remove" ? confirm.file : null;
+          setConfirm(null);
+          if (f) void removeFile(f);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirm?.kind === "unpublish"}
+        title="Unpublish this file?"
+        description={
+          <>
+            “{confirm?.kind === "unpublish" ? confirm.file.title : ""}” will stop being available to visitors everywhere — in every playlist and through its own link. It isn&apos;t deleted, and you can publish it again at any time.
+          </>
+        }
+        confirmLabel="Unpublish"
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          const f = confirm?.kind === "unpublish" ? confirm.file : null;
+          setConfirm(null);
+          if (f) void setFilePublished(f, false);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirm?.kind === "private"}
+        title="Make this playlist private?"
+        description="Its public link stops working right away. If you make it public again, the same link works again."
+        confirmLabel="Make private"
+        busyLabel="Updating…"
+        loading={working}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => void setVisibility(false)}
+      />
+
+      <ConfirmDialog
+        open={confirm?.kind === "duplicate"}
+        title="Duplicate this playlist?"
+        description={`A new playlist “${duplicateTitle(playlist.title)}” is created with the same ${count === 1 ? "file" : `${count} files`}, in the same order. Files aren't copied — both playlists reference the same Telegram files. The password isn't copied.`}
+        confirmLabel="Duplicate"
+        busyLabel="Duplicating…"
+        loading={working}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => void duplicatePlaylist()}
+      />
+
       <DeleteConfirmModal
         open={confirmDelete}
-        onClose={() => !deleting && setConfirmDelete(false)}
+        onClose={() => !working && setConfirmDelete(false)}
         onConfirm={() => void deletePlaylist()}
-        loading={deleting}
+        loading={working}
         title="Delete playlist"
-        description={`Delete “${playlist.title}”? Its ${count || playlist.totalFiles || 0} file(s) will NOT be deleted — they stay in your Library and in any other playlist. Only the playlist itself is removed.`}
+        description={`Delete “${playlist.title}”? Only the playlist is removed. Its ${count || playlist.totalFiles || 0} file(s) are NOT deleted — they stay in your Telegram channel, your Library and any other playlist.`}
       />
-    </>
+    </>,
+    view.name === "list"
   );
 }
 
@@ -578,385 +761,14 @@ function PageSkeleton() {
       <div className="w-full aspect-video rounded-2xl bg-card border border-app animate-pulse-brand" />
       <div className="h-7 w-2/3 rounded-lg bg-card animate-pulse-brand" />
       <div className="h-4 w-1/2 rounded-lg bg-card animate-pulse-brand" />
+      <div className="grid grid-cols-4 gap-2">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="h-[3.75rem] rounded-xl bg-card border border-app animate-pulse-brand" />
+        ))}
+      </div>
       {[1, 2, 3].map((i) => (
         <div key={i} className="h-16 rounded-xl bg-card border border-app animate-pulse-brand" />
       ))}
-    </div>
-  );
-}
-
-// ─── Sortable, swipeable row ─────────────────────────────────────────────────────
-
-function SortableRow({
-  file,
-  index,
-  disabled,
-  locked,
-  open,
-  removing,
-  onOpenChange,
-  onSwipeStart,
-  onOpenFile,
-  onOpenTransfer,
-  onRemove,
-}: {
-  file: MemberFile;
-  index: number;
-  disabled: boolean;
-  locked: boolean;
-  open: boolean;
-  removing: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSwipeStart: () => void;
-  onOpenFile: () => void;
-  onOpenTransfer: () => void;
-  onRemove: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: file.id, disabled });
-  const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 20 : undefined, position: "relative" };
-  const published = !!file.isPublished && !!file.smartLinkSlug;
-
-  return (
-    <li
-      ref={setNodeRef}
-      style={style}
-      data-testid="playlist-file-row"
-      data-file-id={file.id}
-      className={cn("rounded-xl", isDragging && "shadow-app-lg ring-2 ring-brand opacity-95")}
-    >
-      <SwipeableRow
-        open={open && !isDragging}
-        onOpenChange={onOpenChange}
-        onSwipeStart={onSwipeStart}
-        onRemove={onRemove}
-        removeLabel={`Remove ${file.title} from playlist`}
-        disabled={locked && !removing}
-        removing={removing}
-      >
-        <div className="flex items-center gap-1.5 p-2 pr-1.5">
-          {/* Drag handle: the ONLY element that starts a reorder drag. touch-action:none lets a finger drag it without
-              scrolling the page; data-no-swipe stops the row's swipe gesture from ever starting on it. */}
-          <button
-            type="button"
-            ref={setActivatorNodeRef}
-            {...attributes}
-            {...listeners}
-            disabled={disabled}
-            aria-label={`Reorder ${file.title}`}
-            data-testid="drag-handle"
-            data-no-swipe=""
-            style={{ touchAction: "none" }}
-            className="w-8 h-11 flex-shrink-0 flex items-center justify-center rounded-lg text-muted cursor-grab active:cursor-grabbing disabled:opacity-40"
-          >
-            <GripVertical size={18} />
-          </button>
-
-          {/* Tap target: position · thumbnail · title + facts. Opens the file in the existing viewer. */}
-          <button
-            type="button"
-            onClick={onOpenFile}
-            disabled={locked}
-            aria-label={published ? `Open ${file.title}` : `${file.title} (not published)`}
-            data-testid="playlist-file-open"
-            className="min-w-0 flex-1 flex items-center gap-2.5 self-stretch text-left disabled:opacity-60"
-          >
-            <span className="w-5 flex-shrink-0 text-center text-xs font-semibold text-muted tabular-nums" data-testid="file-position">{index + 1}</span>
-            <span className="w-24 aspect-video rounded-lg bg-card relative overflow-hidden flex-shrink-0 border border-app">
-              <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} />
-            </span>
-            <span className="min-w-0 flex-1 block">
-              <span className="block text-sm font-semibold text-primary line-clamp-2 leading-snug" data-testid="file-title">{file.title}</span>
-              <span className="mt-0.5 text-xs text-secondary flex items-center gap-x-1.5 gap-y-0.5 flex-wrap">
-                <span>{fileKindLabel(file)}</span>
-                {file.fileSize ? <span aria-label="File size">· {formatBytes(file.fileSize)}</span> : null}
-                {index === 0 && <span className="chip bg-brand-10 text-brand" title="The first file's thumbnail is the playlist cover">Cover</span>}
-                {!published && <span className="chip bg-secondary text-secondary" data-testid="file-unpublished">Not published</span>}
-                {file.hasPassword && <span className="chip bg-secondary text-secondary" aria-label="Password protected"><Lock size={10} aria-hidden="true" /></span>}
-                {(file.starsPrice ?? 0) > 0 && <span className="chip bg-secondary text-secondary"><Star size={10} aria-hidden="true" /> {file.starsPrice}</span>}
-              </span>
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onOpenTransfer}
-            disabled={locked}
-            aria-label={`Add or move ${file.title} to another playlist`}
-            data-testid="file-transfer"
-            className="w-10 h-11 flex-shrink-0 flex items-center justify-center rounded-lg text-secondary disabled:opacity-60"
-          >
-            <ArrowRightLeft size={16} aria-hidden="true" />
-          </button>
-        </div>
-      </SwipeableRow>
-    </li>
-  );
-}
-
-// ─── Edit name / description ──────────────────────────────────────────────────
-
-function EditForm({ playlist, onSaved }: { playlist: PlaylistSummary; onSaved: (p: PlaylistSummary) => void }) {
-  const { toast } = useToast();
-  const [title, setTitle] = useState(playlist.title);
-  const [description, setDescription] = useState(playlist.description ?? "");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const dirty = title.trim() !== playlist.title || description.trim() !== (playlist.description ?? "");
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (saving) return;
-    const t = title.trim();
-    if (!t) return setError("Playlist name is required.");
-    if (t.length > PLAYLIST_TITLE_MAX) return setError(`Name must be ${PLAYLIST_TITLE_MAX} characters or fewer.`);
-    if (description.length > PLAYLIST_DESCRIPTION_MAX) return setError(`Description must be ${PLAYLIST_DESCRIPTION_MAX} characters or fewer.`);
-    setError(null);
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/playlists/${playlist.id}`, { method: "PATCH", headers: JSON_HEADERS, body: JSON.stringify({ title: t, description: description.trim() || null }) });
-      const data = await readJson(res);
-      if (!res.ok || !data?.playlist) {
-        setError(String(data?.error ?? "Couldn't save your changes. Please try again."));
-        return;
-      }
-      toast("Playlist updated");
-      onSaved(data.playlist as PlaylistSummary);
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
-      <div>
-        <label htmlFor="pl-edit-title" className="text-xs font-semibold text-secondary mb-1.5 block">Playlist name</label>
-        <input id="pl-edit-title" className="input-app" value={title} maxLength={PLAYLIST_TITLE_MAX} onChange={(e) => setTitle(e.target.value)} autoFocus />
-      </div>
-      <div>
-        <label htmlFor="pl-edit-desc" className="text-xs font-semibold text-secondary mb-1.5 block">Description (optional)</label>
-        <textarea id="pl-edit-desc" className="input-app min-h-28" value={description} maxLength={PLAYLIST_DESCRIPTION_MAX} onChange={(e) => setDescription(e.target.value)} />
-        <p className="text-[11px] text-muted text-right mt-1">{description.length}/{PLAYLIST_DESCRIPTION_MAX}</p>
-      </div>
-      {error && <p role="alert" className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl px-3 py-2">{error}</p>}
-      <button type="submit" disabled={saving || !dirty} className="btn-primary w-full py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-60">
-        {saving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} {saving ? "Saving…" : "Save changes"}
-      </button>
-    </form>
-  );
-}
-
-// ─── Add library files ───────────────────────────────────────────────────────
-
-function AddFilesView({ playlistId, memberIds, onAdded }: { playlistId: number; memberIds: Set<number>; onAdded: (data: Record<string, unknown> | null) => void }) {
-  const { toast } = useToast();
-  const [library, setLibrary] = useState<LibraryFile[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [query, setQuery] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const loadLibrary = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const res = await fetch("/api/files", { cache: "no-store" });
-      if (!res.ok) throw new Error("failed");
-      const data = await readJson(res);
-      setLibrary(Array.isArray(data?.files) ? (data!.files as LibraryFile[]) : []);
-    } catch {
-      setLoadError("Couldn't load your Library. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadLibrary();
-  }, [loadLibrary]);
-
-  const shown = library.filter((f) => !query.trim() || f.title.toLowerCase().includes(query.trim().toLowerCase()));
-  const toggle = (id: number) =>
-    setSelected((cur) => {
-      const next = new Set(cur);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  const submit = async () => {
-    if (selected.size === 0 || saving) return;
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/playlists/${playlistId}/files`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ fileIds: [...selected] }) });
-      const data = await readJson(res);
-      if (!res.ok) {
-        toast(String(data?.error ?? "Couldn't add the files. Please try again."), "error");
-        return;
-      }
-      const added = Array.isArray(data?.added) ? data!.added.length : 0;
-      const skipped = Array.isArray(data?.alreadyMembers) ? data!.alreadyMembers.length : 0;
-      toast(added > 0 ? `Added ${added} ${added === 1 ? "file" : "files"}${skipped ? ` (${skipped} already in the playlist)` : ""}` : "Those files are already in the playlist", added > 0 ? "success" : "info");
-      onAdded(data);
-    } catch {
-      toast("Network error. Please try again.", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <p className="text-sm text-secondary">Pick files from your Library. They are added by reference — the originals are never copied or changed.</p>
-      <div className="flex items-center gap-2 h-11 pl-3.5 pr-3 rounded-xl border-[1.5px] border-app bg-secondary focus-within:border-[#FF6115] focus-within:shadow-[0_0_0_3px_rgba(255,97,21,0.15)] transition-[border-color,box-shadow]">
-        <Search size={15} className="flex-shrink-0 text-muted" aria-hidden="true" />
-        <input
-          className="flex-1 min-w-0 h-full p-0 bg-transparent border-0 outline-none text-sm text-primary placeholder:text-muted appearance-none [&::-webkit-search-cancel-button]:hidden"
-          type="search"
-          placeholder="Search your Library…"
-          aria-label="Search your Library"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-      </div>
-      {loading ? (
-        <p className="text-sm text-secondary text-center py-6" role="status">Loading…</p>
-      ) : loadError ? (
-        <div className="text-center py-4">
-          <p role="alert" className="text-sm text-red-500 mb-3">{loadError}</p>
-          <button type="button" className="btn-secondary text-sm px-4 py-2" onClick={() => void loadLibrary()}>Try again</button>
-        </div>
-      ) : shown.length === 0 ? (
-        <p className="text-sm text-secondary text-center py-6">{library.length === 0 ? "Your Library has no files yet." : "No files match your search."}</p>
-      ) : (
-        <ul className="flex flex-col gap-2" data-testid="library-picker">
-          {shown.map((f) => {
-            const already = memberIds.has(f.id);
-            const checked = selected.has(f.id);
-            return (
-              <li key={f.id}>
-                <label className={cn("flex items-center gap-3 rounded-xl p-2.5 bg-secondary min-h-14", already ? "opacity-60" : "cursor-pointer", checked && "ring-2 ring-brand")}>
-                  <input type="checkbox" className="w-5 h-5 accent-[var(--color-primary)] flex-shrink-0" checked={checked} disabled={already} onChange={() => toggle(f.id)} aria-label={`Select ${f.title}`} />
-                  <div className="w-14 h-10 rounded-lg bg-card relative overflow-hidden flex-shrink-0">
-                    <FileThumb url={f.thumbnailUrl} fileType={f.fileType} title={f.title} mimeType={f.mimeType} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-primary line-clamp-1">{f.title}</p>
-                    <p className="text-xs text-secondary">{fileKindLabel(f)}</p>
-                  </div>
-                  {already && <span className="chip bg-brand-10 text-brand flex-shrink-0">In playlist</span>}
-                </label>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <button type="button" onClick={() => void submit()} disabled={selected.size === 0 || saving} className="btn-primary sticky bottom-[calc(env(safe-area-inset-bottom)+12px)] w-full min-h-11 py-3 text-sm flex items-center justify-center gap-2 shadow-app-md disabled:opacity-60">
-        {saving ? <Loader2 size={15} className="animate-spin" /> : <ListPlus size={15} />}
-        {saving ? "Adding…" : selected.size > 0 ? `Add ${selected.size} ${selected.size === 1 ? "file" : "files"}` : "Select files to add"}
-      </button>
-    </div>
-  );
-}
-
-// ─── Add to / move to another playlist ─────────────────────────────────────────
-
-function TransferView({
-  fromPlaylistId,
-  file,
-  playlists,
-  onDone,
-}: {
-  fromPlaylistId: number;
-  file: MemberFile;
-  playlists: PlaylistSummary[];
-  onDone: () => Promise<void>;
-}) {
-  const { toast } = useToast();
-  const [mode, setMode] = useState<"add" | "move">("add");
-  const [target, setTarget] = useState<number | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const submit = async () => {
-    if (target === null || saving) return;
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/playlists/${fromPlaylistId}/files/${file.id}/transfer`, { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ toPlaylistId: target, mode }) });
-      const data = await readJson(res);
-      if (!res.ok) {
-        toast(String(data?.error ?? "Couldn't update the playlists. Please try again."), "error");
-        return;
-      }
-      const dest = playlists.find((p) => p.id === target)?.title ?? "the playlist";
-      if (data?.alreadyInDestination) toast(mode === "move" ? `Already in “${dest}” — removed from this playlist.` : `Already in “${dest}”.`, "info");
-      else toast(mode === "move" ? `Moved to “${dest}”` : `Also added to “${dest}”`);
-      await onDone();
-    } catch {
-      toast("Network error. Please try again.", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-3 bg-secondary rounded-xl p-2.5">
-        <div className="w-14 h-10 rounded-lg bg-card relative overflow-hidden flex-shrink-0">
-          <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} />
-        </div>
-        <p className="text-sm font-semibold text-primary line-clamp-2 min-w-0">{file.title}</p>
-      </div>
-      <div role="group" aria-label="Action" className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-secondary">
-        {([["add", "Add to another playlist", CopyPlus], ["move", "Move to another playlist", ArrowRightLeft]] as const).map(([m, label, Icon]) => (
-          <button
-            key={m}
-            type="button"
-            aria-pressed={mode === m}
-            onClick={() => setMode(m)}
-            className={cn(
-              "flex items-center justify-center gap-1.5 rounded-lg min-h-11 px-2 text-xs font-semibold transition-colors",
-              mode === m ? "bg-card text-primary shadow-app-sm" : "text-secondary"
-            )}
-          >
-            <Icon size={14} className={mode === m ? "text-brand" : undefined} /> {label}
-          </button>
-        ))}
-      </div>
-      <p className="text-sm text-secondary">
-        {mode === "move"
-          ? "Move: the file leaves this playlist and is added to the one you choose."
-          : "Add: the file stays in this playlist and is also added to the one you choose."}{" "}
-        Either way, the original file stays in your Library.
-      </p>
-      {playlists.length === 0 ? (
-        <p className="text-sm text-secondary text-center py-6">You have no other playlists yet. Create one from the Publish tab first.</p>
-      ) : (
-        <ul className="flex flex-col gap-2 max-h-[40vh] overflow-y-auto overscroll-contain" role="radiogroup" aria-label="Destination playlist">
-          {playlists.map((p) => (
-            <li key={p.id}>
-              <label className={cn("flex items-center gap-3 rounded-xl p-2.5 bg-secondary cursor-pointer min-h-14", target === p.id && "ring-2 ring-brand")}>
-                <input type="radio" name="destination" className="w-5 h-5 accent-[var(--color-primary)] flex-shrink-0" checked={target === p.id} onChange={() => setTarget(p.id)} aria-label={p.title} />
-                <div className="w-12 h-10 rounded-lg relative overflow-hidden flex-shrink-0 bg-card">
-                  <PlaylistThumb url={p.thumbnailUrl} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-primary line-clamp-1">{p.title}</p>
-                  <p className="text-xs text-secondary">{p.totalFiles ?? 0} files</p>
-                </div>
-              </label>
-            </li>
-          ))}
-        </ul>
-      )}
-      <button type="button" onClick={() => void submit()} disabled={target === null || saving} className="btn-primary w-full py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-60">
-        {saving ? <Loader2 size={15} className="animate-spin" /> : mode === "move" ? <ArrowRightLeft size={15} /> : <CopyPlus size={15} />}
-        {saving ? "Working…" : mode === "move" ? "Move here" : "Add here"}
-      </button>
     </div>
   );
 }

@@ -11,6 +11,8 @@ export interface ActionMenuItem {
   /** Destructive actions are tinted red and separated from the rest. */
   destructive?: boolean;
   disabled?: boolean;
+  /** Draws a divider above this item (destructive items are always separated). */
+  separated?: boolean;
 }
 
 /**
@@ -27,11 +29,19 @@ export default function ActionMenu({
   label = "More actions",
   disabled,
   className,
+  triggerClassName,
+  triggerContent,
+  menuClassName,
 }: {
   items: ActionMenuItem[];
   label?: string;
   disabled?: boolean;
   className?: string;
+  /** Replaces the default 44px square trigger styling (e.g. a labelled tile or a compact row button). */
+  triggerClassName?: string;
+  /** Replaces the default ⋮ icon inside the trigger. */
+  triggerContent?: React.ReactNode;
+  menuClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [flipUp, setFlipUp] = useState(false);
@@ -116,9 +126,12 @@ export default function ActionMenu({
           setOpen((o) => !o);
         }}
         onKeyDown={onButtonKeyDown}
-        className="w-11 h-11 inline-flex items-center justify-center rounded-xl bg-secondary border border-app text-primary disabled:opacity-60 active:scale-95 transition-transform"
+        className={cn(
+          triggerClassName ?? "w-11 h-11 inline-flex items-center justify-center rounded-xl bg-secondary border border-app text-primary disabled:opacity-60 active:scale-95 transition-transform",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]"
+        )}
       >
-        <MoreVertical size={18} aria-hidden="true" />
+        {triggerContent ?? <MoreVertical size={18} aria-hidden="true" />}
       </button>
 
       {open && (
@@ -131,12 +144,13 @@ export default function ActionMenu({
           onKeyDown={onMenuKeyDown}
           className={cn(
             "absolute right-0 z-30 w-56 max-w-[calc(100vw-2rem)] rounded-2xl border border-app bg-card shadow-app-lg p-1.5 animate-fade-in",
-            flipUp ? "bottom-full mb-1.5" : "top-full mt-1.5"
+            flipUp ? "bottom-full mb-1.5" : "top-full mt-1.5",
+            menuClassName
           )}
         >
           {items.map((item, idx) => {
             const Icon = item.icon;
-            const separate = item.destructive && idx > 0;
+            const separate = (item.destructive || item.separated) && idx > 0;
             return (
               <React.Fragment key={item.key}>
                 {separate && <div role="separator" className="my-1 h-px bg-[var(--color-border)]" />}

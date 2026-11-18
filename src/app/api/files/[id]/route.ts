@@ -5,6 +5,7 @@ import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
 import { notifyUser } from "@/lib/notifications";
+import { STARS_MAX } from "@/lib/publishing/constants";
 import { cleanupThumbnailObject, findThumbnailKeyForCleanup } from "@/lib/thumbnails/cleanup";
 
 /**
@@ -52,7 +53,27 @@ export async function PATCH(
     for (const key of allowed) {
       if (key in body) updates[key] = body[key];
     }
+    // Hardening for the owner UI (playlist page → File settings / Publish): validate the editable fields that
+    // can be sent here. Only keys that are present are checked, so every existing caller keeps working.
+    if ("title" in updates) {
+      const t = typeof updates.title === "string" ? updates.title.trim() : "";
+      if (!t || t.length > 256) return NextResponse.json({ error: "Title is required (up to 256 characters)." }, { status: 400 });
+      updates.title = t;
+    }
+    if ("starsPrice" in updates) {
+      const n = Number(updates.starsPrice);
+      if (!Number.isInteger(n) || n < 0 || n > STARS_MAX) {
+        return NextResponse.json({ error: `Stars price must be a whole number from 0 to ${STARS_MAX}.` }, { status: 400 });
+      }
+      updates.starsPrice = n;
+    }
+    if ("isPublished" in updates && typeof updates.isPublished !== "boolean") {
+      return NextResponse.json({ error: "isPublished must be true or false." }, { status: 400 });
+    }
     if ("password" in updates) {
+      if (updates.password && (typeof updates.password !== "string" || updates.password.length > 128)) {
+        return NextResponse.json({ error: "Password must be text up to 128 characters." }, { status: 400 });
+      }
       updates.password = updates.password ? hashAccessPassword(String(updates.password)) : null;
     }
 

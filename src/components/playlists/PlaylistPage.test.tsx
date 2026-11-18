@@ -32,11 +32,11 @@ import { FROM_LIBRARY_KEY } from "@/lib/playlistNav";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type F = { id: number; title: string; fileType: string; mimeType: null; fileSize: number; isPublished: boolean; thumbnailUrl: string | null; position: number };
+type F = { id: number; title: string; fileType: string; mimeType: null; fileSize: number; isPublished: boolean; thumbnailUrl: string | null; position: number; hasPassword?: boolean; starsPrice?: number };
 type F2 = F & { smartLinkSlug: string | null };
 const mk = (id: number, title: string, thumb: string | null = null): F2 => ({ id, title, fileType: "document", mimeType: null, fileSize: 1000, isPublished: true, smartLinkSlug: `slug-${id}`, thumbnailUrl: thumb, position: id });
 
-const basePlaylist = { id: 1, title: "Accounting", description: "Intro course", totalFiles: 3, thumbnailUrl: "https://cdn/a.webp" };
+const basePlaylist: { id: number; title: string; description: string | null; totalFiles: number; thumbnailUrl: string | null; isPublished?: boolean; starsPrice?: number; hasPassword?: boolean } = { id: 1, title: "Accounting", description: "Intro course", totalFiles: 3, thumbnailUrl: "https://cdn/a.webp", isPublished: true };
 const other = { id: 2, title: "BBA Materials", description: null, totalFiles: 1, thumbnailUrl: null };
 
 let container: HTMLDivElement;
@@ -46,6 +46,7 @@ let playlistMeta: typeof basePlaylist;
 let calls: { url: string; method: string; body: unknown }[];
 let failNext: { match: RegExp; status: number; body?: unknown } | null;
 let shareResult: { status: number; body: unknown } | null;
+let duplicateCreate = false;
 const SHARE_SLUG = "AbCdEfGhIjKlMnOp";
 
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -76,7 +77,8 @@ function installFetch() {
       return json({ success: true, ...snapshot() });
     }
     if (method === "PATCH" && url === "/api/playlists/1") {
-      playlistMeta = { ...playlistMeta, title: body.title, description: body.description };
+      playlistMeta = { ...playlistMeta, ...body } as typeof playlistMeta;
+      if ("password" in body) (playlistMeta as Record<string, unknown>).hasPassword = !!body.password;
       return json({ playlist: summary() });
     }
     if (method === "GET" && url === "/api/files") return json({ files: [mk(1, "One.pdf"), mk(2, "Two.pdf"), mk(3, "Three.pdf"), mk(4, "Four.pdf"), mk(5, "Five.docx")] });
@@ -90,6 +92,17 @@ function installFetch() {
       return json({ success: true, mode: body.mode, alreadyInDestination: false });
     }
     if (method === "DELETE" && url === "/api/playlists/1") return json({ success: true });
+    if (method === "GET" && url === "/api/playlists/1/stats") return json({ stats: { fileRequests: 7 } });
+    if (method === "PATCH" && /^\/api\/files\/\d+$/.test(url)) {
+      const id = Number(url.split("/").pop());
+      members = members.map((m) => (m.id === id ? { ...m, ...(body.isPublished !== undefined ? { isPublished: body.isPublished } : {}), ...(body.title ? { title: body.title } : {}), ...(body.starsPrice !== undefined ? { starsPrice: body.starsPrice } : {}), ...("password" in body ? { hasPassword: !!body.password } : {}) } : m));
+      const m = members.find((x) => x.id === id)!;
+      return json({ file: { ...m, password: m.hasPassword ? "hash" : null } });
+    }
+    if (method === "POST" && url === "/api/playlists") return json({ playlist: { id: 3, title: body.title, description: body.description, totalFiles: 0, thumbnailUrl: null, isPublished: true }, duplicate: duplicateCreate }, duplicateCreate ? 200 : 201);
+    if (method === "POST" && url === "/api/playlists/3/files") return json({ added: body.fileIds, alreadyMembers: [] });
+    if (method === "PATCH" && url === "/api/playlists/3") return json({ playlist: { id: 3, title: "x", isPublished: body.isPublished } });
+    if (method === "DELETE" && url === "/api/playlists/3") return json({ success: true });
     if (method === "POST" && url === "/api/playlists/1/share") {
       if (shareResult) return json(shareResult.body, shareResult.status);
       return json({ share: { slug: SHARE_SLUG, path: `/p/${SHARE_SLUG}`, url: `https://onfile.test/p/${SHARE_SLUG}`, hasPassword: false } });
@@ -98,44 +111,40 @@ function installFetch() {
   }));
 }
 
+
 const buttons = () => Array.from(document.body.querySelectorAll("button"));
 const byText = (t: string) => buttons().find((b) => b.textContent?.trim().includes(t)) as HTMLButtonElement | undefined;
-const menuButton = () => document.body.querySelector('[data-testid="action-menu-button"]') as HTMLButtonElement;
-const menuEl = () => document.body.querySelector('[data-testid="action-menu"]') as HTMLElement | null;
+const q = (sel: string) => document.body.querySelector(sel) as HTMLElement | null;
+const qa = (sel: string) => Array.from(document.body.querySelectorAll(sel)) as HTMLElement[];
+const click = (el: Element | null | undefined) => act(async () => (el as HTMLElement).click());
+const headerMenuButton = () => q('[aria-label="Playlist options"]') as HTMLButtonElement;
+const moreTile = () => q('[data-testid="playlist-actions"] [data-testid="action-menu-button"]') as HTMLButtonElement;
+const menuEl = () => q('[data-testid="action-menu"]');
+/** Opens the playlist ⋮ menu in the header and picks an item. */
 const choose = async (key: string) => {
-  await act(async () => menuButton().click());
-  await act(async () => (document.body.querySelector(`[data-testid="menu-item-${key}"]`) as HTMLButtonElement).click());
+  await click(headerMenuButton());
+  await click(q(`[data-testid="menu-item-${key}"]`));
 };
-const rows = () => Array.from(document.body.querySelectorAll('[data-testid="playlist-file-row"]')) as HTMLElement[];
+const rows = () => qa('[data-testid="playlist-file-row"]');
 const rowTitles = () => rows().map((r) => r.querySelector('[data-testid="file-title"]')?.textContent);
 const rowFor = (title: string) => rows().find((r) => r.textContent?.includes(title))!;
-const layerOf = (row: HTMLElement) => row.querySelector('[data-testid="swipe-layer"]') as HTMLElement;
-const swipeRowOf = (row: HTMLElement) => row.querySelector('[data-testid="swipe-row"]') as HTMLElement;
-const isOpen = (row: HTMLElement) => swipeRowOf(row).getAttribute("data-open") === "true";
-const coverImg = () => document.body.querySelector('[data-testid="playlist-cover"] img') as HTMLImageElement | null;
-const anyModal = () => document.body.querySelector(".fixed.inset-0.z-50");
+/** Opens a file row's ⋮ menu and picks an item. */
+const chooseRow = async (title: string, key: string) => {
+  await click(rowFor(title).querySelector('[data-testid="action-menu-button"]'));
+  await click(q(`[data-testid="menu-item-${key}"]`));
+};
+const confirmBtn = () => q('[data-testid="confirm-action"]') as HTMLButtonElement;
+const cancelBtn = () => buttons().find((b) => b.textContent?.trim() === "Cancel") as HTMLButtonElement;
+const coverImg = () => q('[data-testid="playlist-cover"] img') as HTMLImageElement | null;
+const anyModal = () => q(".fixed.inset-0.z-50");
+const wrote = (method: string, urlRe?: RegExp) => calls.filter((c) => c.method === method && (!urlRe || urlRe.test(c.url)));
 
 function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
-
-/** Fires a pointer event React understands (jsdom has no layout, so coordinates are all we need). */
-function pointer(el: Element, type: "pointerdown" | "pointermove" | "pointerup" | "pointercancel", x: number, y: number, t: number, id = 1) {
-  const ev = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 });
-  Object.defineProperties(ev, { pointerId: { value: id }, pointerType: { value: "touch" }, timeStamp: { value: t } });
-  return act(async () => { el.dispatchEvent(ev); });
-}
-/** A complete, slow (non-flick) horizontal drag from (x0,y) by dx. */
-async function drag(el: Element, dx: number, opts: { y?: number; dy?: number; end?: "up" | "cancel" } = {}) {
-  const x0 = 220, y0 = opts.y ?? 20;
-  await pointer(el, "pointerdown", x0, y0, 0);
-  await pointer(el, "pointermove", x0 + dx * 0.4, y0 + (opts.dy ?? 0) * 0.4, 100);
-  await pointer(el, "pointermove", x0 + dx, y0 + (opts.dy ?? 0), 200);
-  await pointer(el, opts.end === "cancel" ? "pointercancel" : "pointerup", x0 + dx, y0 + (opts.dy ?? 0), 1500); // long pause → not a flick
-}
-const swipeLeft = (title: string, dx = -90) => drag(layerOf(rowFor(title)), dx);
+const type = (sel: string, value: string) => act(async () => typeInto(q(sel) as HTMLInputElement, value));
 
 async function mount(opts: { initialView?: "list" | "edit"; id?: number } = {}) {
   await act(async () =>
@@ -154,6 +163,7 @@ beforeEach(() => {
   calls = [];
   failNext = null;
   shareResult = null;
+  duplicateCreate = false;
   Object.values(router).forEach((m) => m.mockReset());
   setActiveTab.mockReset();
   sessionStorage.clear();
@@ -169,57 +179,132 @@ afterEach(async () => {
   delete (window as unknown as { Telegram?: unknown }).Telegram;
 });
 
-describe("Playlist page — layout (full page, not a popup)", () => {
-  it("renders the cover, title, description, file count and actions on a full page with no modal", async () => {
+describe("Creator playlist page — layout", () => {
+  it("renders header, cover, title, description and facts from real data on a full page (no modal)", async () => {
     await mount();
-    expect(document.querySelector('[data-testid="playlist-page"]')).not.toBeNull();
-    expect(anyModal()).toBeNull(); // not a popup
-    expect(document.querySelector('[data-testid="playlist-title"]')?.textContent).toBe("Accounting");
-    expect(document.querySelector('[data-testid="playlist-description"]')?.textContent).toBe("Intro course");
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("3 files");
+    expect(q('[data-testid="playlist-page"]')).not.toBeNull();
+    expect(anyModal()).toBeNull();
+    expect(q('[data-testid="playlist-title"]')?.textContent).toBe("Accounting");
+    expect(q('[data-testid="playlist-description"]')?.textContent).toBe("Intro course");
+    expect(q('[data-testid="playlist-visibility"]')?.textContent).toBe("Public");
+    expect(q('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("3 files");
+    expect(q('[data-testid="playlist-size"]')?.textContent).toContain("2.9 KB"); // 3 × 1000 B, summed from the files
     expect(coverImg()?.src).toBe("https://cdn/a.webp");
-    expect(byText("Add files from Library")).toBeTruthy();
   });
 
-  it("lists files in order with a drag handle each and marks the first as the cover — rows have no menu of their own", async () => {
+  it("shows the four primary actions in order: Add Files · Preview · Share · More", async () => {
+    await mount();
+    const actions = q('[data-testid="playlist-actions"]')!;
+    const labels = Array.from(actions.querySelectorAll(":scope > button, :scope > div > button")).map((b) => b.textContent?.trim());
+    expect(labels).toEqual(["Add Files", "Preview", "Share", "More"]);
+    expect(actions.className).toContain("grid-cols-4"); // all four share one row on a phone
+  });
+
+  it("has no large decorative 'Playlist' heading; the compact header says 'Manage' and the title is the only <h1>", async () => {
+    await mount();
+    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("Manage");
+    expect(qa("h1").map((h) => h.textContent)).toEqual(["Accounting"]);
+    expect(qa("h1, h2, p").some((e) => e.textContent?.trim() === "Playlist")).toBe(false);
+  });
+
+  it("lists files in the saved order with handle, position, type, size, status and a ⋮ menu each; the first is the cover", async () => {
     await mount();
     expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]);
-    expect(document.body.querySelectorAll('[data-testid="drag-handle"]')).toHaveLength(3);
+    expect(qa('[data-testid="drag-handle"]')).toHaveLength(3);
+    const row = rowFor("Two.pdf");
+    expect(row.querySelector('[data-testid="file-position"]')?.textContent).toBe("2");
+    expect(row.textContent).toContain("1000 B");
+    expect(row.querySelector('[data-testid="file-published"]')).not.toBeNull();
+    expect(row.querySelector('[aria-haspopup="menu"]')).not.toBeNull();
+    expect(row.textContent).not.toMatch(/\d+:\d{2}/); // no invented duration
     expect(rowFor("One.pdf").textContent).toContain("Cover");
-    expect(document.body.querySelector('[aria-label^="Actions for"]')).toBeNull();
-    expect(rows().some((r) => r.querySelector('[aria-haspopup="menu"]'))).toBe(false); // the ⋮ menu belongs to the playlist header
   });
 
-  it("shows an empty-playlist message and the default cover", async () => {
+  it("shows an empty-playlist state with an Add Files button and the default cover", async () => {
     members = [];
     await mount();
-    expect(document.body.textContent).toContain("This playlist is empty");
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("0 files");
-    expect(document.querySelector('[data-testid="playlist-default-art"]')).not.toBeNull();
+    expect(q('[data-testid="playlist-empty"]')?.textContent).toContain("This playlist is empty");
+    expect(q('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("0 files");
+    expect(q('[data-testid="playlist-size"]')).toBeNull();
+    expect(q('[data-testid="playlist-default-art"]')).not.toBeNull();
+    await click(q('[data-testid="playlist-empty"] button'));
+    expect(q('[data-testid="add-files"]')).not.toBeNull();
+  });
+
+  it("marks a total as a lower bound when some sizes are unknown, and hides it when none are known", async () => {
+    members = [mk(1, "A.pdf"), { ...mk(2, "B.pdf"), fileSize: null as unknown as number }];
+    await mount();
+    expect(q('[data-testid="playlist-size"]')?.textContent).toContain("1000 B+");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    members = [{ ...mk(1, "A.pdf"), fileSize: null as unknown as number }];
+    await mount();
+    expect(q('[data-testid="playlist-size"]')).toBeNull();
+  });
+
+  it("notes files that visitors can't open (not published) and shows Private / password / Stars status", async () => {
+    members = [{ ...mk(1, "Draft.pdf"), isPublished: false, smartLinkSlug: null }, mk(2, "Live.pdf")];
+    playlistMeta = { ...playlistMeta, isPublished: false, hasPassword: true, starsPrice: 50 };
+    await mount();
+    expect(q('[data-testid="playlist-unpublished-note"]')?.textContent).toContain("1 file isn't published");
+    expect(q('[data-testid="playlist-visibility"]')?.textContent).toBe("Private");
+    expect(q('[data-testid="playlist-password-chip"]')).not.toBeNull();
+    expect(q('[data-testid="playlist-stars-chip"]')?.textContent).toContain("50");
   });
 
   it("shows a friendly state when the playlist doesn't exist", async () => {
     await mount({ id: 404 });
-    expect(document.querySelector('[data-testid="playlist-error"]')?.textContent).toContain("Playlist not found");
+    expect(q('[data-testid="playlist-error"]')?.textContent).toContain("Playlist not found");
   });
 
-  it("opens straight into the edit form when asked (?edit=1)", async () => {
+  it("opens straight into Edit details when asked (?edit=1)", async () => {
     await mount({ initialView: "edit" });
     expect(document.getElementById("pl-edit-title")).not.toBeNull();
-    expect(document.querySelector('[data-testid="playlist-header-title"]')?.textContent).toBe("Edit playlist");
+    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("Edit details");
   });
 });
 
-describe("Playlist page — navigation", () => {
-  const pressNativeBack = async (tg: ReturnType<typeof installTelegramBackButton>) => act(async () => tg.press());
-
-  it("has NO in-page back arrow (Telegram's native Back Button is the only back control)", async () => {
+describe("Creator playlist page — analytics (real data only)", () => {
+  it("shows the file-request count the backend records and says what isn't tracked", async () => {
     await mount();
-    expect(document.querySelector('[data-testid="playlist-back"]')).toBeNull();
-    expect(document.querySelector("svg.lucide-chevron-left")).toBeNull();
+    expect(wrote("GET", /\/api\/playlists\/1\/stats$/)).toHaveLength(1);
+    expect(q('[data-testid="stat-file-requests"]')?.textContent).toBe("7");
+    const text = q('[data-testid="playlist-stats"]')!.textContent!;
+    expect(text).toContain("not confirmed Telegram deliveries");
+    expect(text).toContain("aren't tracked yet");
+    expect(text).not.toMatch(/\$|USDT|revenue/i); // never shows invented money
   });
 
-  it("Back returns to the Library with real history when it came from the Library", async () => {
+  it("degrades gracefully when analytics can't be loaded", async () => {
+    failNext = { match: /stats$/, status: 500 };
+    await mount();
+    expect(q('[data-testid="playlist-stats"]')?.textContent).toContain("unavailable");
+    expect(q('[data-testid="stat-file-requests"]')).toBeNull();
+    expect(rowTitles()).toHaveLength(3); // the rest of the page is unaffected
+  });
+});
+
+describe("Creator playlist page — navigation", () => {
+  const pressNativeBack = async (tg: ReturnType<typeof installTelegramBackButton>) => act(async () => tg.press());
+
+  it("outside Telegram the header has its own Back button that returns to the Library", async () => {
+    sessionStorage.setItem(FROM_LIBRARY_KEY, "1");
+    await mount();
+    const back = q('[data-testid="page-back"]') as HTMLButtonElement;
+    expect(back.getAttribute("aria-label")).toBe("Back to your playlists");
+    expect(back.offsetParent === null && false).toBe(false);
+    await click(back);
+    expect(setActiveTab).toHaveBeenCalledWith("files");
+    expect(router.back).toHaveBeenCalledTimes(1);
+  });
+
+  it("inside Telegram the native Back Button is the only back control (no duplicate arrow)", async () => {
+    installTelegramBackButton();
+    await mount();
+    expect(q('[data-testid="page-back"]')).toBeNull();
+  });
+
+  it("native Back returns to the Library with real history when it came from the Library", async () => {
     const tg = installTelegramBackButton();
     sessionStorage.setItem(FROM_LIBRARY_KEY, "1");
     await mount();
@@ -236,21 +321,32 @@ describe("Playlist page — navigation", () => {
     await pressNativeBack(tg);
     expect(router.replace).toHaveBeenCalledWith("/");
     expect(router.back).not.toHaveBeenCalled();
-    expect(setActiveTab).toHaveBeenCalledWith("files");
   });
 
-  it("Back inside a sub-screen (add files) returns to the playlist first, not the Library", async () => {
+  it("Back inside a sub-screen returns to the playlist first, not the Library", async () => {
     const tg = installTelegramBackButton();
     await mount();
-    await act(async () => byText("Add files from Library")!.click());
-    expect(document.querySelector('[data-testid="playlist-header-title"]')?.textContent).toBe("Add files");
+    await click(q('[data-testid="action-add-files"]'));
+    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("Add files");
     await pressNativeBack(tg);
-    expect(document.querySelector('[data-testid="playlist-title"]')).not.toBeNull();
+    expect(q('[data-testid="playlist-title"]')).not.toBeNull();
     expect(router.back).not.toHaveBeenCalled();
     expect(router.replace).not.toHaveBeenCalled();
   });
 
-  it("drives Telegram's native BackButton (Android back gesture) and hides it when leaving", async () => {
+  it("the in-page Back and Escape also leave a sub-screen, and focus moves to the screen heading", async () => {
+    await mount();
+    await click(q('[data-testid="action-add-files"]'));
+    expect(document.activeElement).toBe(q('[data-testid="playlist-header-title"]'));
+    await click(q('[data-testid="page-back"]'));
+    expect(q('[data-testid="playlist-title"]')).not.toBeNull();
+    await click(q('[data-testid="action-add-files"]'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(q('[data-testid="playlist-title"]')).not.toBeNull();
+    expect(router.back).not.toHaveBeenCalled();
+  });
+
+  it("drives Telegram's native BackButton and hides it when leaving", async () => {
     let handler: (() => void) | undefined;
     const BackButton = { show: vi.fn(), hide: vi.fn(), onClick: vi.fn((cb: () => void) => { handler = cb; }), offClick: vi.fn() };
     (window as unknown as { Telegram: unknown }).Telegram = { WebApp: { BackButton } };
@@ -266,14 +362,12 @@ describe("Playlist page — navigation", () => {
   });
 });
 
-describe("Playlist page — reorder (unchanged behaviour)", () => {
+describe("Creator playlist page — reordering", () => {
   it("uses mouse + touch + keyboard sensors and keeps the drag on the handle only", async () => {
     await mount();
     expect(dnd.sensors).toHaveLength(3);
-    const handle = document.body.querySelector('[data-testid="drag-handle"]') as HTMLElement;
+    const handle = q('[data-testid="drag-handle"]') as HTMLElement;
     expect(handle.style.touchAction).toBe("none");
-    expect(handle.hasAttribute("data-no-swipe")).toBe(true); // the swipe gesture never starts here
-    expect(handle.textContent).toBe("");
     expect(handle.getAttribute("aria-label")).toMatch(/Reorder One\.pdf/);
   });
 
@@ -282,11 +376,29 @@ describe("Playlist page — reorder (unchanged behaviour)", () => {
     await act(async () => dnd.onDragEnd!({ active: { id: 3 }, over: { id: 1 } }));
     expect(rowTitles()).toEqual(["Three.pdf", "One.pdf", "Two.pdf"]);
     await flush();
-    const put = calls.find((c) => c.method === "PUT")!;
+    const put = wrote("PUT")[0];
     expect(put.url).toBe("/api/playlists/1/files");
     expect(put.body).toEqual({ fileIds: [3, 1, 2] });
     expect(coverImg()).toBeNull(); // new first file (Three.pdf) has no thumbnail → default art
-    expect(document.querySelector('[data-testid="playlist-default-art"]')).not.toBeNull();
+    expect(q('[data-testid="playlist-default-art"]')).not.toBeNull();
+  });
+
+  it("shows a loading state while saving the order and disables further changes", async () => {
+    await mount();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const original = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") await gate;
+      return (original as typeof fetch)(url, init);
+    }));
+    await act(async () => { void dnd.onDragEnd!({ active: { id: 3 }, over: { id: 1 } }); });
+    expect(document.body.textContent).toContain("Saving…");
+    expect((q('[data-testid="drag-handle"]') as HTMLButtonElement).disabled).toBe(true);
+    expect((q('[data-testid="action-add-files"]') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { release(); await gate; });
+    await flush();
+    expect(document.body.textContent).not.toContain("Saving…");
   });
 
   it("rolls the order back and shows an error when saving fails", async () => {
@@ -310,391 +422,542 @@ describe("Playlist page — reorder (unchanged behaviour)", () => {
   it("dropping a row on itself does nothing (no request)", async () => {
     await mount();
     await act(async () => dnd.onDragEnd!({ active: { id: 2 }, over: { id: 2 } }));
-    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(wrote("PUT")).toHaveLength(0);
+  });
+
+  it("a drag never removes or deletes anything", async () => {
+    await mount();
+    await act(async () => dnd.onDragEnd!({ active: { id: 1 }, over: { id: 3 } }));
+    await flush();
+    expect(wrote("DELETE")).toHaveLength(0);
   });
 });
 
-describe("Playlist page — swipe to remove", () => {
-  it("a right-to-left swipe slides the row left and reveals the Remove action on the right", async () => {
+describe("Creator playlist page — Add Files (existing channel Library workflow)", () => {
+  const open = async () => {
     await mount();
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-    await swipeLeft("Two.pdf");
-    const row = rowFor("Two.pdf");
-    expect(isOpen(row)).toBe(true);
-    expect(layerOf(row).style.transform).toContain("translate3d(-92px");
-    const remove = row.querySelector('[data-testid="swipe-remove"]') as HTMLButtonElement;
-    expect(remove.textContent).toContain("Remove");
-    expect(remove.getAttribute("aria-label")).toBe("Remove Two.pdf from playlist");
-    expect(remove.parentElement?.className).toContain("right-0");
-    expect(remove.parentElement?.className).toContain("bg-red-600");
-    // nothing was removed just by swiping
-    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
-  });
-
-  it("a left-to-right swipe closes an open row", async () => {
-    await mount();
-    await swipeLeft("Two.pdf");
-    expect(isOpen(rowFor("Two.pdf"))).toBe(true);
-    await drag(layerOf(rowFor("Two.pdf")), 80);
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-    expect(layerOf(rowFor("Two.pdf")).style.transform).toContain("translate3d(0px");
-  });
-
-  it("a short swipe springs back (below the threshold); a cancelled gesture restores the rest state", async () => {
-    await mount();
-    await swipeLeft("Two.pdf", -20);
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-    expect(layerOf(rowFor("Two.pdf")).style.transform).toContain("translate3d(0px");
-
-    await drag(layerOf(rowFor("Two.pdf")), -90, { end: "cancel" });
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-    expect(layerOf(rowFor("Two.pdf")).style.transform).toContain("translate3d(0px");
-  });
-
-  it("a fast flick opens even over a short distance", async () => {
-    await mount();
-    const layer = layerOf(rowFor("Two.pdf"));
-    await pointer(layer, "pointerdown", 220, 20, 0);
-    await pointer(layer, "pointermove", 205, 21, 10);
-    await pointer(layer, "pointermove", 190, 21, 20);
-    await pointer(layer, "pointerup", 190, 21, 30);
-    expect(isOpen(rowFor("Two.pdf"))).toBe(true);
-  });
-
-  it("vertical scrolling never moves the row, reveals Remove or removes anything", async () => {
-    await mount();
-    await drag(layerOf(rowFor("Two.pdf")), 6, { dy: 90 }); // mostly vertical, drifting sideways
-    await drag(layerOf(rowFor("Two.pdf")), -12, { dy: -70 });
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-    expect(layerOf(rowFor("Two.pdf")).style.transform).toContain("translate3d(0px");
-    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
-    expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]);
-  });
-
-  it("the sliding layer keeps vertical scrolling native (touch-action: pan-y)", async () => {
-    await mount();
-    expect(layerOf(rowFor("One.pdf")).style.touchAction).toBe("pan-y");
-  });
-
-  it("only one row is open at a time", async () => {
-    await mount();
-    await swipeLeft("One.pdf");
-    expect(isOpen(rowFor("One.pdf"))).toBe(true);
-    await swipeLeft("Three.pdf");
-    expect(isOpen(rowFor("Three.pdf"))).toBe(true);
-    expect(isOpen(rowFor("One.pdf"))).toBe(false);
-  });
-
-  it("starting a swipe on another row closes the open one straight away", async () => {
-    await mount();
-    await swipeLeft("One.pdf");
-    const other = layerOf(rowFor("Two.pdf"));
-    await pointer(other, "pointerdown", 220, 20, 0);
-    await pointer(other, "pointermove", 200, 20, 100);
-    expect(isOpen(rowFor("One.pdf"))).toBe(false);
-    await pointer(other, "pointerup", 200, 20, 1500);
-  });
-
-  it("pressing outside an open row closes it", async () => {
-    await mount();
-    await swipeLeft("Two.pdf");
-    await act(async () => {
-      document.querySelector('[data-testid="playlist-title"]')!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
-    });
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-  });
-
-  it("a swipe that starts on the drag handle never opens the row (reorder stays separate)", async () => {
-    await mount();
-    const handle = rowFor("Two.pdf").querySelector('[data-testid="drag-handle"]')!;
-    await drag(handle, -90);
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-  });
-
-  it("the click that ends a swipe is not treated as a tap; tapping an open row only closes it", async () => {
-    await mount();
-    await swipeLeft("Two.pdf");
-    const info = rowFor("Two.pdf").querySelector('button[aria-label^="Add or move"]') as HTMLButtonElement;
-    await act(async () => info.click()); // synthetic click right after the swipe → swallowed
-    expect(document.querySelector('[data-testid="playlist-title"]')).not.toBeNull(); // still on the list
-    await new Promise((r) => setTimeout(r, 80));
-    await act(async () => info.click()); // row is open → tap closes it instead of opening the transfer view
-    expect(isOpen(rowFor("Two.pdf"))).toBe(false);
-    expect(document.querySelector('[data-testid="playlist-title"]')).not.toBeNull();
-  });
-
-  it("removes ONLY the membership of that file (DELETE membership endpoint, never /api/files) and updates count + rows immediately", async () => {
-    await mount();
-    await swipeLeft("Two.pdf");
-    await act(async () => (rowFor("Two.pdf").querySelector('[data-testid="swipe-remove"]') as HTMLButtonElement).click());
-    // optimistic: gone before the server answers
-    expect(rowTitles()).toEqual(["One.pdf", "Three.pdf"]);
+    await click(q('[data-testid="action-add-files"]'));
     await flush();
-    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.url)).toEqual(["/api/playlists/1/files/2"]);
-    expect(calls.some((c) => /^\/api\/files\//.test(c.url))).toBe(false); // the original file is never touched
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("2 files");
-    expect(document.body.textContent).toContain("still in your Library");
-  });
+  };
+  const box = (title: string) => q(`input[aria-label="Select ${title}"]`) as HTMLInputElement;
 
-  it("removing the FIRST file updates the playlist cover to the new first file", async () => {
-    members = [mk(1, "One.pdf", "https://cdn/a.webp"), mk(2, "Two.pdf", "https://cdn/b.webp"), mk(3, "Three.pdf")];
-    await mount();
-    expect(coverImg()?.src).toBe("https://cdn/a.webp");
-    await swipeLeft("One.pdf");
-    await act(async () => (rowFor("One.pdf").querySelector('[data-testid="swipe-remove"]') as HTMLButtonElement).click());
-    expect(coverImg()?.src).toBe("https://cdn/b.webp"); // optimistic
-    await flush();
-    expect(coverImg()?.src).toBe("https://cdn/b.webp"); // confirmed by the server snapshot
-    expect(rowFor("Two.pdf").textContent).toContain("Cover");
-  });
-
-  it("restores the row, the count and the cover when the request fails", async () => {
-    await mount();
-    // Hold the server's answer so the optimistic state can be observed before the failure arrives.
-    let release!: () => void;
-    const gate = new Promise<void>((r) => { release = r; });
-    const original = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === "DELETE") {
-        await gate;
-        return json({ error: "boom" }, 500);
-      }
-      return original(url, init);
-    }));
-    await swipeLeft("One.pdf");
-    await act(async () => (rowFor("One.pdf").querySelector('[data-testid="swipe-remove"]') as HTMLButtonElement).click());
-    expect(rowTitles()).toEqual(["Two.pdf", "Three.pdf"]); // removed immediately
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("2 files");
-    await act(async () => release());
-    await flush();
-    expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]); // back where it was
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("3 files");
-    expect(coverImg()?.src).toBe("https://cdn/a.webp");
-    expect(document.body.textContent).toContain("Couldn't remove it from the playlist");
-  });
-
-  it("a network error also restores the row", async () => {
-    await mount();
-    const original = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === "DELETE") throw new TypeError("offline");
-      return original(url, init);
-    }));
-    await swipeLeft("Three.pdf");
-    await act(async () => (rowFor("Three.pdf").querySelector('[data-testid="swipe-remove"]') as HTMLButtonElement).click());
-    await flush();
-    expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]);
-  });
-
-  it("is accessible without swiping: the Remove button is a labelled, focusable control that reveals itself on focus", async () => {
-    await mount();
-    const row = rowFor("Two.pdf");
-    const remove = row.querySelector('[data-testid="swipe-remove"]') as HTMLButtonElement;
-    expect(remove.tabIndex).toBe(0);
-    expect(remove.getAttribute("aria-label")).toBe("Remove Two.pdf from playlist");
-    await act(async () => remove.focus());
-    expect(isOpen(row)).toBe(true);
-    // keyboard: ArrowRight/Escape closes, ArrowLeft opens
-    await act(async () => { layerOf(row).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
-    expect(isOpen(row)).toBe(false);
-    await act(async () => { layerOf(row).dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); });
-    expect(isOpen(row)).toBe(true);
-  });
-});
-
-describe("Playlist page — edit, add, transfer, delete (unchanged behaviour)", () => {
-  it("edits the name and description and shows the update immediately", async () => {
-    await mount();
-    await choose("edit");
-    const title = document.getElementById("pl-edit-title") as HTMLInputElement;
-    const desc = document.getElementById("pl-edit-desc") as HTMLTextAreaElement;
-    expect(title.value).toBe("Accounting");
-    expect((byText("Save changes") as HTMLButtonElement).disabled).toBe(true);
-    await act(async () => typeInto(title, "Accounting 101"));
-    await act(async () => typeInto(desc, "Updated text"));
-    await act(async () => byText("Save changes")!.click());
-    await flush();
-    expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({ title: "Accounting 101", description: "Updated text" });
-    expect(document.querySelector('[data-testid="playlist-title"]')?.textContent).toBe("Accounting 101");
-    expect(document.querySelector('[data-testid="playlist-description"]')?.textContent).toBe("Updated text");
-  });
-
-  it("validates an empty name without calling the API", async () => {
-    await mount({ initialView: "edit" });
-    await act(async () => typeInto(document.getElementById("pl-edit-title") as HTMLInputElement, "   "));
-    await act(async () => byText("Save changes")!.click());
-    expect(document.body.textContent).toContain("Playlist name is required.");
-    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
-  });
-
-  it("adds several Library files at once and disables the ones already in the playlist", async () => {
-    await mount();
-    await act(async () => byText("Add files from Library")!.click());
-    await flush();
-    const boxes = Array.from(document.body.querySelectorAll('[data-testid="library-picker"] input[type="checkbox"]')) as HTMLInputElement[];
-    expect(boxes).toHaveLength(5);
-    expect(boxes.slice(0, 3).every((b) => b.disabled)).toBe(true);
+  it("lists the channel's files, disables the ones already in the playlist and keeps the Add button inert until something is selected", async () => {
+    await open();
+    expect(q('[data-testid="library-picker"]')).not.toBeNull();
+    expect(box("One.pdf").disabled).toBe(true);
+    expect(box("Four.pdf").disabled).toBe(false);
     expect(document.body.textContent).toContain("In playlist");
-    expect((byText("Select files to add") as HTMLButtonElement).disabled).toBe(true);
-    await act(async () => boxes[3].click());
-    await act(async () => boxes[4].click());
-    await act(async () => byText("Add 2 files")!.click());
+    expect((q('[data-testid="add-files-submit"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(document.body.textContent).toContain("never copied");
+  });
+
+  it("adds several files at once by id (references only) and returns to the updated list", async () => {
+    await open();
+    await click(box("Four.pdf"));
+    await click(box("Five.docx"));
+    expect(q('[data-testid="add-files-submit"]')?.textContent).toContain("Add 2 files");
+    await click(q('[data-testid="add-files-submit"]'));
     await flush();
-    const post = calls.find((c) => c.method === "POST" && c.url === "/api/playlists/1/files")!;
+    const post = wrote("POST", /\/api\/playlists\/1\/files$/)[0];
     expect(post.body).toEqual({ fileIds: [4, 5] });
+    expect(q('[data-testid="playlist-title"]')).not.toBeNull();
     expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf", "New 4", "New 5"]);
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("5 files");
+    expect(document.body.textContent).toContain("Added 2 files");
+    expect(wrote("POST").every((c) => !/\/api\/files/.test(c.url))).toBe(true); // nothing uploaded
   });
 
-  it("the Add-files search uses a flex row (icon + input) and filters the Library", async () => {
-    await mount();
-    await act(async () => byText("Add files from Library")!.click());
+  it("never sends files that are already members (duplicates are skipped client-side as well as server-side)", async () => {
+    await open();
+    await click(q('[data-testid="select-all"]'));
+    await click(q('[data-testid="add-files-submit"]'));
     await flush();
-    const input = document.querySelector('input[type="search"]') as HTMLInputElement;
-    expect(input.parentElement?.className).toContain("flex");
-    expect(input.className).not.toContain("absolute");
-    await act(async () => typeInto(input, "five"));
-    expect(document.body.querySelectorAll('[data-testid="library-picker"] input[type="checkbox"]')).toHaveLength(1);
+    expect(wrote("POST", /\/api\/playlists\/1\/files$/)[0].body).toEqual({ fileIds: [4, 5] });
   });
 
-  it("shows an error toast when adding fails and keeps the selection", async () => {
-    await mount();
-    await act(async () => byText("Add files from Library")!.click());
-    await flush();
-    failNext = { match: /^POST \/api\/playlists\/1\/files$/, status: 404, body: { error: "One or more files weren't found in your library." } };
-    const boxes = Array.from(document.body.querySelectorAll('[data-testid="library-picker"] input[type="checkbox"]')) as HTMLInputElement[];
-    await act(async () => boxes[3].click());
-    await act(async () => byText("Add 1 file")!.click());
-    await flush();
-    expect(document.body.textContent).toContain("weren't found in your library");
-    expect(byText("Add 1 file")).toBeTruthy();
+  it("filters by search and 'Select all results' only selects what is shown", async () => {
+    await open();
+    await type('input[type="search"]', "docx");
+    expect(qa('[data-testid="library-picker"] li')).toHaveLength(1);
+    await click(q('[data-testid="select-all"]'));
+    expect(box("Five.docx").checked).toBe(true);
+    await type('input[type="search"]', "");
+    expect(box("Four.pdf").checked).toBe(false);
   });
 
-  it("tapping a file offers 'Add to another playlist' and 'Move to another playlist' (multi-playlist membership preserved)", async () => {
+  it("shows an error and keeps the selection when adding fails", async () => {
+    await open();
+    await click(box("Four.pdf"));
+    failNext = { match: /^POST \/api\/playlists\/1\/files/, status: 403, body: { error: "One or more files weren't found in your library." } };
+    await click(q('[data-testid="add-files-submit"]'));
+    await flush();
+    expect(q('[role="alert"]')?.textContent).toContain("weren't found");
+    expect(box("Four.pdf").checked).toBe(true);
+    expect(q('[data-testid="add-files"]')).not.toBeNull();
+  });
+
+  it("shows a loading state, then an error with retry when the channel files can't be loaded", async () => {
     await mount();
-    const tap = (title: string) => act(async () => (rowFor(title).querySelector('button[aria-label^="Add or move"]') as HTMLButtonElement).click());
-    await tap("One.pdf");
-    expect(byText("Add to another playlist")).toBeTruthy();
-    expect(byText("Move to another playlist")).toBeTruthy();
-
-    // Add: stays in the source list
-    expect(document.body.textContent).toContain("the file stays in this playlist");
-    await act(async () => (document.body.querySelector('input[type="radio"]') as HTMLInputElement).click());
-    await act(async () => byText("Add here")!.click());
+    failNext = { match: /^GET \/api\/files/, status: 500 };
+    await click(q('[data-testid="action-add-files"]'));
     await flush();
-    let t = calls.find((c) => /\/transfer$/.test(c.url))!;
-    expect(t.url).toBe("/api/playlists/1/files/1/transfer");
-    expect(t.body).toEqual({ toPlaylistId: 2, mode: "add" });
-    expect(rowTitles()).toContain("One.pdf");
-
-    // Move: leaves the source list
-    calls = [];
-    await tap("One.pdf");
-    await act(async () => byText("Move to another playlist")!.click());
-    expect(document.body.textContent).toContain("the file leaves this playlist");
-    await act(async () => (document.body.querySelector('input[type="radio"]') as HTMLInputElement).click());
-    await act(async () => byText("Move here")!.click());
+    expect(q('[role="alert"]')?.textContent).toContain("Couldn't load");
+    await click(byText("Try again"));
     await flush();
-    t = calls.find((c) => /\/transfer$/.test(c.url))!;
+    expect(q('[data-testid="library-picker"]')).not.toBeNull();
+  });
+
+  it("explains an empty connected channel and links to Create", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/files" ? json({ files: [] }) : url === "/api/playlists" ? json({ playlists: [summary()] }) : url.endsWith("/stats") ? json({ stats: { fileRequests: 0 } }) : json({ files: members }))));
+    await mount();
+    await click(q('[data-testid="action-add-files"]'));
+    await flush();
+    expect(q('[data-testid="add-files-empty-channel"]')?.textContent).toContain("No files from your channel yet");
+    await click(byText("Go to Create"));
+    expect(setActiveTab).toHaveBeenCalledWith("create");
+    expect(router.replace).toHaveBeenCalledWith("/");
+  });
+
+  it("tells the creator when every channel file is already in the playlist", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (url === "/api/files" ? json({ files: [mk(1, "One.pdf"), mk(2, "Two.pdf"), mk(3, "Three.pdf")] }) : url === "/api/playlists" ? json({ playlists: [summary()] }) : url.endsWith("/stats") ? json({ stats: { fileRequests: 0 } }) : json({ files: members }))));
+    await mount();
+    await click(q('[data-testid="action-add-files"]'));
+    await flush();
+    expect(document.body.textContent).toContain("Every file is already in this playlist");
+    expect(q('[data-testid="select-all"]')).toBeNull();
+  });
+});
+
+describe("Creator playlist page — file actions", () => {
+  it("each row's ⋮ menu offers Preview, File settings, Move, Unpublish, Use as cover and Remove (and nothing unsupported)", async () => {
+    await mount();
+    await click(rowFor("Two.pdf").querySelector('[data-testid="action-menu-button"]'));
+    const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim());
+    expect(labels).toEqual(["Preview", "File settings", "Move to another playlist", "Unpublish", "Use as playlist cover", "Remove from playlist"]);
+    expect(q('[data-testid="menu-item-remove"]')!.className).toContain("text-red-500");
+  });
+
+  it("the first file has no 'Use as cover' (it already is the cover)", async () => {
+    await mount();
+    await click(rowFor("One.pdf").querySelector('[data-testid="action-menu-button"]'));
+    expect(q('[data-testid="menu-item-cover"]')).toBeNull();
+  });
+
+  it("Preview opens the existing public file page with the playlist context (list token + position)", async () => {
+    await mount();
+    await chooseRow("Two.pdf", "preview");
+    await flush();
+    expect(router.push).toHaveBeenCalledWith(`/f/slug-2?list=${SHARE_SLUG}&i=2`);
+  });
+
+  it("tapping a row previews it too", async () => {
+    await mount();
+    await click(rowFor("Three.pdf").querySelector('[data-testid="playlist-file-open"]'));
+    await flush();
+    expect(router.push).toHaveBeenCalledWith(`/f/slug-3?list=${SHARE_SLUG}&i=3`);
+  });
+
+  it("position counts only published files (matching the public list); unpublished files can't be previewed", async () => {
+    members = [{ ...mk(1, "Draft.pdf"), isPublished: false, smartLinkSlug: null }, mk(2, "Live.pdf"), mk(3, "Live 2.pdf")];
+    await mount();
+    expect(rowFor("Draft.pdf").querySelector('[data-testid="file-unpublished"]')).not.toBeNull();
+    await click(rowFor("Draft.pdf").querySelector('[data-testid="playlist-file-open"]'));
+    expect(router.push).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("isn't published yet");
+    await click(rowFor("Draft.pdf").querySelector('[data-testid="action-menu-button"]'));
+    expect((q('[data-testid="menu-item-preview"]') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => menuEl()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await chooseRow("Live 2.pdf", "preview");
+    await flush();
+    expect(router.push).toHaveBeenCalledWith(`/f/slug-3?list=${SHARE_SLUG}&i=2`);
+  });
+
+  it("when the playlist can't be shared the file still previews plainly (no playlist context)", async () => {
+    shareResult = { status: 409, body: { error: "private", reason: "private" } };
+    await mount();
+    await chooseRow("One.pdf", "preview");
+    await flush();
+    expect(router.push).toHaveBeenCalledWith("/f/slug-1");
+  });
+
+  it("Remove from playlist asks first; Cancel does nothing", async () => {
+    await mount();
+    await chooseRow("Two.pdf", "remove");
+    expect(q('[role="dialog"]')?.textContent).toContain("removed from this playlist only");
+    expect(q('[role="dialog"]')?.textContent).toContain("stays in your Telegram channel");
+    expect(wrote("DELETE")).toHaveLength(0);
+    await click(cancelBtn());
+    expect(wrote("DELETE")).toHaveLength(0);
+    expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]);
+  });
+
+  it("confirming removes ONLY the membership (never /api/files) and updates rows and count at once", async () => {
+    await mount();
+    await chooseRow("Two.pdf", "remove");
+    await click(confirmBtn());
+    await flush();
+    expect(wrote("DELETE").map((c) => c.url)).toEqual(["/api/playlists/1/files/2"]);
+    expect(rowTitles()).toEqual(["One.pdf", "Three.pdf"]);
+    expect(q('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("2 files");
+    expect(document.body.textContent).toContain("original file is untouched");
+  });
+
+  it("removing the FIRST file moves the cover to the next file; a failed request restores row, count and cover", async () => {
+    members = [mk(1, "One.pdf", "https://cdn/a.webp"), mk(2, "Two.pdf", "https://cdn/b.webp")];
+    await mount();
+    failNext = { match: /^DELETE /, status: 500 };
+    await chooseRow("One.pdf", "remove");
+    await click(confirmBtn());
+    await flush();
+    expect(rowTitles()).toEqual(["One.pdf", "Two.pdf"]);
+    expect(q('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("2 files");
+    expect(coverImg()?.src).toBe("https://cdn/a.webp");
+    expect(document.body.textContent).toContain("Couldn't remove it");
+  });
+
+  it("Unpublish asks first (it affects every playlist and the file's own link); confirming sends one PATCH and keeps the row", async () => {
+    await mount();
+    await chooseRow("Two.pdf", "publish");
+    expect(q('[role="dialog"]')?.textContent).toContain("isn't deleted");
+    expect(wrote("PATCH")).toHaveLength(0);
+    await click(cancelBtn());
+    expect(wrote("PATCH")).toHaveLength(0);
+    await chooseRow("Two.pdf", "publish");
+    await click(confirmBtn());
+    await flush();
+    const patches = wrote("PATCH");
+    expect(patches).toHaveLength(1);
+    expect(patches[0].url).toBe("/api/files/2");
+    expect(patches[0].body).toEqual({ isPublished: false });
+    expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]); // never silently deleted
+    expect(rowFor("Two.pdf").querySelector('[data-testid="file-unpublished"]')).not.toBeNull();
+    expect(wrote("DELETE")).toHaveLength(0);
+  });
+
+  it("Publish needs no confirmation and flips the status", async () => {
+    members = [mk(1, "One.pdf"), { ...mk(2, "Draft.pdf"), isPublished: false }];
+    await mount();
+    await chooseRow("Draft.pdf", "publish");
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ isPublished: true });
+    expect(rowFor("Draft.pdf").querySelector('[data-testid="file-published"]')).not.toBeNull();
+  });
+
+  it("a failed publish change is reported and the row is unchanged", async () => {
+    members = [mk(1, "One.pdf"), { ...mk(2, "Draft.pdf"), isPublished: false }];
+    await mount();
+    failNext = { match: /^PATCH /, status: 500 };
+    await chooseRow("Draft.pdf", "publish");
+    await flush();
+    expect(document.body.textContent).toContain("Couldn't publish");
+    expect(rowFor("Draft.pdf").querySelector('[data-testid="file-unpublished"]')).not.toBeNull();
+  });
+
+  it("'Use as playlist cover' moves that file to the top through the existing reorder endpoint", async () => {
+    await mount();
+    await chooseRow("Three.pdf", "cover");
+    await flush();
+    expect(wrote("PUT")[0].body).toEqual({ fileIds: [3, 1, 2] });
+    expect(rowTitles()).toEqual(["Three.pdf", "One.pdf", "Two.pdf"]);
+  });
+
+  it("Move to another playlist opens the transfer screen with 'Move' preselected and posts to the existing endpoint", async () => {
+    await mount();
+    await chooseRow("Two.pdf", "move");
+    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("Move to another playlist");
+    expect(buttons().find((b) => b.getAttribute("aria-pressed") === "true")?.textContent).toContain("Move");
+    await click(q('input[aria-label="BBA Materials"]'));
+    await click(byText("Move here"));
+    await flush();
+    const t = wrote("POST", /transfer$/)[0];
+    expect(t.url).toBe("/api/playlists/1/files/2/transfer");
     expect(t.body).toEqual({ toPlaylistId: 2, mode: "move" });
-    expect(rowTitles()).not.toContain("One.pdf");
-    expect(document.querySelector('[data-testid="playlist-count"]')?.textContent?.trim()).toBe("2 files");
+    expect(rowTitles()).toEqual(["One.pdf", "Three.pdf"]);
+    expect(wrote("DELETE")).toHaveLength(0);
   });
 
-  it("asks for confirmation before deleting, explains the files are kept, then leaves the page", async () => {
+  it("File settings edits the title and Stars price with the existing file PATCH (password untouched → not sent)", async () => {
     await mount();
-    await choose("delete");
-    expect(document.body.textContent).toContain("will NOT be deleted");
-    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
-    const confirm = buttons().filter((b) => b.textContent?.trim() === "Delete").pop()!;
-    await act(async () => confirm.click());
+    await chooseRow("Two.pdf", "settings");
+    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("File settings");
+    const [pw, stars] = qa('[role="switch"]');
+    expect(pw.getAttribute("aria-checked")).toBe("false");
+    await click(stars);
+    await type('input[inputmode="numeric"]', "25");
+    const title = q('input[maxlength="120"]') as HTMLInputElement;
+    await act(async () => typeInto(title, "Two (final).pdf"));
+    await click(byText("Save changes"));
     await flush();
-    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.url)).toEqual(["/api/playlists/1"]);
-    expect(router.replace).toHaveBeenCalledWith("/");
-    expect(setActiveTab).toHaveBeenCalledWith("files");
+    const patch = wrote("PATCH", /\/api\/files\/2$/)[0];
+    expect(patch.body).toEqual({ title: "Two (final).pdf", starsPrice: 25 });
+    expect(rowTitles()).toContain("Two (final).pdf");
+    expect(q('[data-testid="playlist-title"]')).not.toBeNull(); // back on the list
+  });
+
+  it("File settings validates before calling the API", async () => {
+    await mount();
+    await chooseRow("Two.pdf", "settings");
+    await click(qa('[role="switch"]')[0]); // password on, nothing typed
+    await click(qa('[role="switch"]')[1]); // Stars on
+    await type('input[inputmode="numeric"]', "5");
+    await click(byText("Save changes"));
+    expect(q('[role="alert"]')?.textContent).toContain("Enter a password");
+    await click(qa('[role="switch"]')[0]); // password off again
+    await type('input[inputmode="numeric"]', "20000"); // above the maximum
+    await click(byText("Save changes"));
+    expect(q('[role="alert"]')?.textContent).toContain("whole number of Stars");
+    expect(wrote("PATCH")).toHaveLength(0);
   });
 });
 
-describe("Playlist page — modern header (no 'Playlist' label, no bottom delete)", () => {
-  it("has NO 'Playlist' label above the title and no other eyebrow/top label in the list view", async () => {
+describe("Creator playlist page — playlist More menu", () => {
+  it("both the header ⋮ and the More tile open the same accessible menu with the supported actions, Delete last and destructive", async () => {
     await mount();
-    const texts = Array.from(document.body.querySelectorAll("*")).filter((el) => el.children.length === 0).map((el) => el.textContent?.trim());
-    expect(texts).not.toContain("Playlist");
-    expect(document.querySelector('[data-testid="playlist-header-title"]')).toBeNull();
-    const title = document.querySelector('[data-testid="playlist-title"]')!;
-    expect(title.tagName).toBe("H1");
-    expect(title.previousElementSibling).toBeNull(); // nothing sits above the title inside its block
+    await click(headerMenuButton());
+    const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim());
+    expect(labels).toEqual(["Edit details", "Make private", "Monetization settings", "Share settings", "Copy public link", "Duplicate playlist", "Delete playlist"]);
+    expect(menuEl()?.getAttribute("role")).toBe("menu");
+    expect(q('[data-testid="menu-item-delete"]')!.className).toContain("text-red-500");
+    expect(qa('[role="separator"]').length).toBeGreaterThanOrEqual(2);
+    expect(headerMenuButton().getAttribute("aria-expanded")).toBe("true");
+    // Escape closes it and focus returns to the trigger
+    await act(async () => menuEl()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(menuEl()).toBeNull();
+    expect(document.activeElement).toBe(headerMenuButton());
+    await click(moreTile());
+    expect(qa('[data-testid="action-menu"] [role="menuitem"]')).toHaveLength(7);
   });
 
-  it("shows cover, title, description, count, total size and visibility facts", async () => {
+  it("Edit details saves title and description with the existing PATCH and shows them at once", async () => {
     await mount();
-    expect(document.querySelector('[data-testid="playlist-meta"]')?.textContent).toContain("3 files");
-    expect(document.querySelector('[data-testid="playlist-meta"]')?.textContent).toContain("2.9 KB"); // 3 × 1000 B
-    expect(document.querySelector('[data-testid="playlist-visibility"]')?.textContent).toBe("Private"); // base fixture has no isPublished flag
-    expect(coverImg()?.src).toBe("https://cdn/a.webp"); // derived cover only — nothing uploaded
+    await choose("edit");
+    await type("#pl-edit-title", "Accounting 101");
+    await type("#pl-edit-desc", "New description");
+    await click(byText("Save changes"));
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ title: "Accounting 101", description: "New description" });
+    expect(q('[data-testid="playlist-title"]')?.textContent).toBe("Accounting 101");
   });
 
-  it("no longer renders the full-width 'Delete playlist' button or a visible 'Edit' button", async () => {
+  it("Edit details validates an empty name without calling the API", async () => {
+    await mount({ initialView: "edit" });
+    await type("#pl-edit-title", "   ");
+    await click(byText("Save changes"));
+    expect(q('[role="alert"]')?.textContent).toContain("name is required");
+    expect(wrote("PATCH")).toHaveLength(0);
+  });
+
+  it("Change cover (on the cover and in Edit details) lets the creator pick a file as cover — no upload", async () => {
     await mount();
-    expect(byText("Delete playlist")).toBeUndefined();
-    expect(buttons().some((b) => b.textContent?.trim() === "Edit")).toBe(false);
-    expect(document.querySelector('[aria-label="Edit playlist name and description"]')).toBeNull();
+    await click(q('[data-testid="change-cover"]'));
+    expect(q('[data-testid="cover-picker"]')).not.toBeNull();
+    expect(q('[data-testid="cover-picker"]')!.textContent).toContain("Nothing is uploaded");
+    expect((qa('[data-testid="cover-option"]')[0] as HTMLButtonElement).disabled).toBe(true); // current cover
+    await click(qa('[data-testid="cover-option"]')[2]);
+    await flush();
+    expect(wrote("PUT")[0].body).toEqual({ fileIds: [3, 1, 2] });
+    expect(wrote("POST").length).toBe(0);
+  });
+
+  it("Make private asks first, then PATCHes isPublished=false and the status updates", async () => {
+    await mount();
+    await choose("visibility");
+    expect(q('[role="dialog"]')?.textContent).toContain("public link stops working");
+    expect(wrote("PATCH")).toHaveLength(0);
+    await click(confirmBtn());
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ isPublished: false });
+    expect(q('[data-testid="playlist-visibility"]')?.textContent).toBe("Private");
+  });
+
+  it("Make public (when private) needs no confirmation", async () => {
+    playlistMeta = { ...playlistMeta, isPublished: false };
+    await mount();
+    await choose("visibility");
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ isPublished: true });
+    expect(q('[data-testid="playlist-visibility"]')?.textContent).toBe("Public");
+  });
+
+  it("Monetization settings: free by default; password and Stars are independent and use the existing PATCH fields", async () => {
+    await mount();
+    await choose("monetization");
+    expect(q('[data-testid="access-summary"]')?.textContent).toContain("Free access");
+    const [pw, stars] = qa('[role="switch"]');
+    await click(pw);
+    await type('input[type="password"]', "s3cret");
+    await click(stars);
+    await type('input[inputmode="numeric"]', "100");
+    expect(q('[data-testid="access-summary"]')?.textContent).toContain("Password + Stars");
+    expect(document.body.textContent).toContain("can't be shared yet"); // honest note about Stars playlists
+    await click(byText("Save changes"));
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ password: "s3cret", starsPrice: 100 });
+    expect(q('[data-testid="playlist-password-chip"]')).not.toBeNull();
+    expect(q('[data-testid="playlist-stars-chip"]')?.textContent).toContain("100");
+  });
+
+  it("Monetization settings: switching both off clears them; an empty new password is rejected client-side", async () => {
+    playlistMeta = { ...playlistMeta, hasPassword: true, starsPrice: 10 };
+    await mount();
+    await choose("monetization");
+    await click(qa('[role="switch"]')[0]);
+    await click(qa('[role="switch"]')[1]);
+    expect(q('[data-testid="access-summary"]')?.textContent).toContain("Free access");
+    await click(byText("Save changes"));
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ password: null, starsPrice: 0 });
+    expect(q('[data-testid="playlist-password-chip"]')).toBeNull();
+    // new playlist without password: turning it on and saving blank is refused
+    await choose("monetization");
+    await click(qa('[role="switch"]')[0]);
+    await click(qa('[role="switch"]')[1]);
+    await type('input[inputmode="numeric"]', "5");
+    await click(byText("Save changes"));
+    expect(q('[role="alert"]')?.textContent).toContain("Enter a password");
+    expect(wrote("PATCH")).toHaveLength(1);
+  });
+
+  it("an existing password is kept when the field is left blank (only other changes are sent)", async () => {
+    playlistMeta = { ...playlistMeta, hasPassword: true };
+    await mount();
+    await choose("monetization");
+    await click(qa('[role="switch"]')[1]);
+    await type('input[inputmode="numeric"]', "7");
+    await click(byText("Save changes"));
+    await flush();
+    expect(wrote("PATCH")[0].body).toEqual({ starsPrice: 7 }); // no `password` key
+  });
+
+  it("Share settings opens the existing share dialog", async () => {
+    await mount();
+    await choose("share");
+    await flush();
+    expect(q('[data-testid="share-sheet"]')).not.toBeNull();
+  });
+
+  it("Duplicate asks first, then creates a copy of the structure through the existing endpoints (no files copied)", async () => {
+    await mount();
+    await choose("duplicate");
+    expect(q('[role="dialog"]')?.textContent).toContain("Copy of Accounting");
+    expect(q('[role="dialog"]')?.textContent).toContain("aren't copied");
+    expect(wrote("POST")).toHaveLength(0);
+    await click(confirmBtn());
+    await flush();
+    const create = wrote("POST", /^\/api\/playlists$/)[0];
+    expect(create.body).toMatchObject({ title: "Copy of Accounting", description: "Intro course" });
+    expect(wrote("POST", /\/api\/playlists\/3\/files$/)[0].body).toEqual({ fileIds: [1, 2, 3] });
+    expect(wrote("DELETE")).toHaveLength(0);
+    expect(document.body.textContent).toContain("Duplicated as");
+    expect(q('[data-testid="playlist-title"]')?.textContent).toBe("Accounting"); // stays on the original
+  });
+
+  it("a private playlist's copy is made private too", async () => {
+    playlistMeta = { ...playlistMeta, isPublished: false };
+    await mount();
+    await choose("duplicate");
+    await click(confirmBtn());
+    await flush();
+    expect(wrote("PATCH", /playlists\/3$/)[0].body).toEqual({ isPublished: false });
+  });
+
+  it("if adding files to the copy fails, the half-built copy is deleted again", async () => {
+    await mount();
+    await choose("duplicate");
+    failNext = { match: /^POST \/api\/playlists\/3\/files/, status: 500 };
+    await click(confirmBtn());
+    await flush();
+    expect(wrote("DELETE").map((c) => c.url)).toEqual(["/api/playlists/3"]);
+    expect(document.body.textContent).toContain("Nothing was created");
+  });
+
+  it("if a same-named playlist was just created, nothing is added to it", async () => {
+    duplicateCreate = true;
+    await mount();
+    await choose("duplicate");
+    await click(confirmBtn());
+    await flush();
+    expect(wrote("POST", /playlists\/3\/files$/)).toHaveLength(0);
+  });
+
+  it("Delete goes through a confirmation that says Telegram files are not deleted; Cancel deletes nothing, confirming deletes only the playlist", async () => {
+    await mount();
+    await choose("delete");
+    expect(q('[role="dialog"]')?.textContent).toContain("NOT deleted");
+    expect(q('[role="dialog"]')?.textContent).toContain("Telegram channel");
+    expect(wrote("DELETE")).toHaveLength(0);
+    await click(cancelBtn());
+    expect(wrote("DELETE")).toHaveLength(0);
+    await choose("delete");
+    await click(buttons().filter((b) => b.textContent?.trim() === "Delete").pop());
+    await flush();
+    expect(wrote("DELETE").map((c) => c.url)).toEqual(["/api/playlists/1"]); // never /api/files/*
+    expect(router.replace).toHaveBeenCalledWith("/");
+  });
+
+  it("a failed delete keeps the page and reports it", async () => {
+    await mount();
+    failNext = { match: /^DELETE /, status: 500 };
+    await choose("delete");
+    await click(buttons().filter((b) => b.textContent?.trim() === "Delete").pop());
+    await flush();
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Couldn't delete");
+  });
+
+  it("dialogs close on Escape and focus Cancel first", async () => {
+    await mount();
+    await choose("delete");
+    expect(document.activeElement?.textContent?.trim()).toBe("Cancel");
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    expect(q('[role="dialog"]')).toBeNull();
   });
 });
 
-describe("Playlist page — three-dot menu", () => {
-  it("opens with Edit, Share, Copy link and a separated destructive Delete; icons + labels; ARIA menu semantics", async () => {
+describe("Creator playlist page — Preview (real public viewer)", () => {
+  it("opens the actual public playlist route /p/<token> and changes nothing", async () => {
     await mount();
-    expect(menuEl()).toBeNull();
-    expect(menuButton().getAttribute("aria-haspopup")).toBe("menu");
-    expect(menuButton().getAttribute("aria-expanded")).toBe("false");
-    await act(async () => menuButton().click());
-    expect(menuButton().getAttribute("aria-expanded")).toBe("true");
-    const items = Array.from(menuEl()!.querySelectorAll('[role="menuitem"]'));
-    expect(items.map((i) => i.textContent?.trim())).toEqual(["Edit playlist", "Share playlist", "Copy playlist link", "Delete playlist"]);
-    expect(items.every((i) => i.querySelector("svg"))).toBe(true);
-    expect(items[3].className).toContain("text-red-500"); // destructive is visually distinguished
-    expect(menuEl()!.querySelector('[role="separator"]')).not.toBeNull();
-    expect(menuEl()!.className).toContain("max-w-[calc(100vw-2rem)]"); // can't overflow a narrow screen
-  });
-
-  it("closes on Escape (focus returns to the button), on an outside tap, and when an item is chosen", async () => {
-    await mount();
-    await act(async () => menuButton().click());
-    await act(async () => { menuEl()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
-    expect(menuEl()).toBeNull();
-    expect(document.activeElement).toBe(menuButton());
-
-    await act(async () => menuButton().click());
-    await act(async () => { document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })); });
-    expect(menuEl()).toBeNull();
-
-    await choose("edit");
-    expect(menuEl()).toBeNull();
-  });
-
-  it("Edit playlist opens the existing edit form and saving uses the existing PATCH", async () => {
-    await mount();
-    await choose("edit");
-    expect(document.querySelector('[data-testid="playlist-header-title"]')?.textContent).toBe("Edit playlist");
-    await act(async () => typeInto(document.getElementById("pl-edit-title") as HTMLInputElement, "Renamed"));
-    await act(async () => byText("Save changes")!.click());
+    await click(q('[data-testid="action-preview"]'));
     await flush();
-    expect(calls.find((c) => c.method === "PATCH")!.body).toMatchObject({ title: "Renamed" });
+    expect(router.push).toHaveBeenCalledWith(`/p/${SHARE_SLUG}`);
+    expect(wrote("PATCH")).toHaveLength(0);
+    expect(wrote("PUT")).toHaveLength(0);
+    expect(wrote("DELETE")).toHaveLength(0);
+    expect(String(router.push.mock.calls[0][0])).not.toMatch(/\/playlists\/|\b1\b/); // no numeric id, no creator route
   });
 
-  it("Delete playlist goes through the existing confirmation modal; cancelling deletes nothing, confirming deletes only the playlist", async () => {
+  it("a private playlist has no public page: explains it, offers the share dialog, and does NOT publish it", async () => {
+    playlistMeta = { ...playlistMeta, isPublished: false };
     await mount();
-    await choose("delete");
-    expect(document.body.textContent).toContain("will NOT be deleted");
-    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
-    await act(async () => buttons().find((b) => b.textContent?.trim() === "Cancel")!.click());
-    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
-    await choose("delete");
-    await act(async () => buttons().filter((b) => b.textContent?.trim() === "Delete").pop()!.click());
+    await click(q('[data-testid="action-preview"]'));
     await flush();
-    expect(calls.filter((c) => c.method === "DELETE").map((c) => c.url)).toEqual(["/api/playlists/1"]); // never /api/files/*
-    expect(router.replace).toHaveBeenCalledWith("/");
+    expect(router.push).not.toHaveBeenCalled();
+    expect(wrote("PATCH")).toHaveLength(0);
+    expect(document.body.textContent).toContain("is private");
+    expect(q('[data-testid="share-sheet"]')).not.toBeNull();
+  });
+
+  it("a Stars-priced playlist has no public page yet and says so", async () => {
+    playlistMeta = { ...playlistMeta, starsPrice: 50 };
+    await mount();
+    await click(q('[data-testid="action-preview"]'));
+    await flush();
+    expect(router.push).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("nothing to preview");
+  });
+
+  it("reports a failure to create the link", async () => {
+    shareResult = { status: 500, body: { error: "Couldn't create the share link. Please try again." } };
+    await mount();
+    await click(q('[data-testid="action-preview"]'));
+    await flush();
+    expect(router.push).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Couldn't create the share link");
+  });
+
+  it("the creator page contains no public-viewer UI, and the public viewer has no creator controls", () => {
+    const fs = require("fs") as typeof import("fs");
+    const pub = fs.readFileSync(`${__dirname}/PublicPlaylistView.tsx`, "utf8");
+    expect(pub).not.toMatch(/manage\/|ManageFileRow|DndContext|api\/playlists\/\$\{/);
   });
 });
 
@@ -837,82 +1100,37 @@ describe("Playlist page — sharing", () => {
   });
 });
 
-describe("Playlist page — opening content (sequential viewing entry points)", () => {
-  it("tapping a published file opens the existing file page with the playlist context (list token + position)", async () => {
-    await mount();
-    await act(async () => (rowFor("Two.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
-    await flush();
-    expect(router.push).toHaveBeenCalledWith(`/f/slug-2?list=${SHARE_SLUG}&i=2`);
-  });
 
-  it("'Play first' opens the first published file", async () => {
-    await mount();
-    await act(async () => (document.querySelector('[data-testid="playlist-play"]') as HTMLButtonElement).click());
-    await flush();
-    expect(router.push).toHaveBeenCalledWith(`/f/slug-1?list=${SHARE_SLUG}&i=1`);
-  });
 
-  it("position counts only published files (matching the public list); unpublished files can't be opened and say so", async () => {
-    members = [{ ...mk(1, "Draft.pdf"), isPublished: false, smartLinkSlug: null }, mk(2, "Live.pdf"), mk(3, "Live 2.pdf")];
+describe("Creator playlist page — layout safety & themes", () => {
+  it("caps the column and wraps text so a 320px screen can't overflow horizontally", async () => {
     await mount();
-    expect(rowFor("Draft.pdf").querySelector('[data-testid="file-unpublished"]')).not.toBeNull();
-    await act(async () => (rowFor("Draft.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
-    expect(router.push).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain("isn't published yet");
-    await act(async () => (rowFor("Live 2.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
-    await flush();
-    expect(router.push).toHaveBeenCalledWith(`/f/slug-3?list=${SHARE_SLUG}&i=2`);
-    await act(async () => (document.querySelector('[data-testid="playlist-play"]') as HTMLButtonElement).click());
-    await flush();
-    expect(router.push).toHaveBeenLastCalledWith(`/f/slug-2?list=${SHARE_SLUG}&i=1`);
-  });
-
-  it("when the playlist can't be shared the file still opens plainly (no playlist context)", async () => {
-    shareResult = { status: 409, body: { error: "private", reason: "private" } };
-    await mount();
-    await act(async () => (rowFor("One.pdf").querySelector('[data-testid="playlist-file-open"]') as HTMLButtonElement).click());
-    await flush();
-    expect(router.push).toHaveBeenCalledWith("/f/slug-1");
-  });
-
-  it("hides 'Play first' when nothing is published (no dead button) and the empty state is unchanged", async () => {
-    members = [{ ...mk(1, "Draft.pdf"), isPublished: false, smartLinkSlug: null }];
-    await mount();
-    expect(document.querySelector('[data-testid="playlist-play"]')).toBeNull();
-    members = [];
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await mount();
-    expect(document.querySelector('[data-testid="playlist-play"]')).toBeNull();
-    expect(document.body.textContent).toContain("This playlist is empty");
-  });
-
-  it("each row shows position, type, size and a transfer button that still opens add/move", async () => {
-    await mount();
-    const row = rowFor("Two.pdf");
-    expect(row.querySelector('[data-testid="file-position"]')?.textContent).toBe("2");
-    expect(row.textContent).toContain("1000 B");
-    expect(row.textContent).not.toMatch(/\d+:\d{2}/); // no invented duration
-    await act(async () => (row.querySelector('[data-testid="file-transfer"]') as HTMLButtonElement).click());
-    expect(byText("Add to another playlist")).toBeTruthy();
-  });
-});
-
-describe("Playlist page — layout safety & themes", () => {
-  it("uses min-w-0 / wrapping on text blocks and a width-capped column so a 320px screen can't overflow horizontally", async () => {
-    await mount();
-    const page = document.querySelector('[data-testid="playlist-page"] > div') as HTMLElement;
-    expect(page.className).toContain("max-w-2xl");
-    expect(page.className).toContain("w-full");
-    expect(document.querySelector('[data-testid="playlist-title"]')!.className).toContain("break-words");
-    expect(document.querySelector('[data-testid="playlist-title"]')!.parentElement!.className).toContain("min-w-0");
+    const page = q('[data-testid="playlist-page"]')!;
+    expect(page.className).toContain("overflow-x-hidden");
+    const col = page.firstElementChild as HTMLElement;
+    expect(col.className).toContain("max-w-2xl");
+    expect(col.className).toContain("w-full");
+    expect(q('[data-testid="playlist-title"]')!.className).toContain("break-words");
+    expect(q('[data-testid="playlist-title"]')!.parentElement!.className).toContain("min-w-0");
     expect(rowFor("One.pdf").querySelector('[data-testid="playlist-file-open"]')!.className).toContain("min-w-0");
-    expect(document.querySelector('[data-testid="playlist-cover"]')!.className).toContain("overflow-hidden");
+    expect(q('[data-testid="playlist-cover"]')!.className).toContain("overflow-hidden");
+    // four equal columns of ≥60px tiles fit a 320px viewport (320 − 32 padding − 3×8 gaps = 264 → 66px each)
+    expect(q('[data-testid="playlist-actions"]')!.className).toContain("grid-cols-4");
+  });
+
+  it("touch targets are at least 44px", async () => {
+    await mount();
+    for (const el of [q('[data-testid="action-add-files"]'), q('[data-testid="action-preview"]'), q('[data-testid="playlist-share"]'), moreTile()]) {
+      expect(el!.className).toMatch(/min-h-\[3\.75rem\]/); // 60px on phones
+    }
+    expect(rowFor("One.pdf").querySelector('[data-testid="action-menu-button"]')!.className).toContain("w-11 h-11");
+    expect(rowFor("One.pdf").querySelector('[data-testid="drag-handle"]')!.className).toContain("h-11");
   });
 
   it("styles only through theme tokens (bg-card/bg-secondary/text-primary…), never hard-coded light/dark colours", () => {
-    const fs = require("fs") as typeof import("fs"); // eslint-disable-line @typescript-eslint/no-require-imports
-    for (const f of ["PlaylistPage.tsx", "ShareSheet.tsx", "PublicPlaylistView.tsx", "../viewer/FileViewer.tsx", "../viewer/ActionRow.tsx", "../viewer/PlaylistList.tsx", "../viewer/SavedItemsWidget.tsx", "../viewer/ReportDialog.tsx", "../viewer/DescriptionBlock.tsx", "../ui/ActionMenu.tsx"]) {
+    const fs = require("fs") as typeof import("fs");
+    const manage = fs.readdirSync(`${__dirname}/manage`).filter((f: string) => f.endsWith(".tsx")).map((f: string) => `manage/${f}`);
+    for (const f of ["PlaylistPage.tsx", "ShareSheet.tsx", "PublicPlaylistView.tsx", "../viewer/FileViewer.tsx", "../viewer/ActionRow.tsx", "../viewer/PlaylistList.tsx", "../viewer/SavedItemsWidget.tsx", "../viewer/ReportDialog.tsx", "../viewer/DescriptionBlock.tsx", "../ui/ActionMenu.tsx", ...manage]) {
       const src = fs.readFileSync(`${__dirname}/${f}`, "utf8");
       expect(src, f).not.toMatch(/\b(bg-white|bg-black|bg-gray-\d+|text-gray-\d+|text-black|bg-slate-\d+)/);
     }

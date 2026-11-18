@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useSyncExternalStore } from "react";
+import React, { useEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,37 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  // Focus management: move focus into the dialog when it opens ([data-autofocus] first, else the first control),
+  // keep Tab inside while it is open, and hand focus back to whatever opened it when it closes.
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open || !mounted) return;
+    const opener = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    const focusables = () =>
+      Array.from(panel?.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? []);
+    (panel?.querySelector<HTMLElement>("[data-autofocus]") ?? focusables()[0] ?? panel)?.focus();
+    const onTab = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || !panel) return;
+      const nodes = focusables();
+      if (nodes.length === 0) return e.preventDefault();
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onTab);
+    return () => {
+      document.removeEventListener("keydown", onTab);
+      if (opener && document.contains(opener)) opener.focus();
+    };
+  }, [open, mounted]);
+
   useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden";
@@ -59,8 +90,13 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
 
       {/* Modal */}
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
         className={cn(
-          "relative w-full bg-card rounded-2xl shadow-app-lg animate-slide-up overflow-hidden",
+          "relative w-full bg-card rounded-2xl shadow-app-lg animate-slide-up overflow-hidden outline-none",
           sizeClass
         )}
         style={{ background: "var(--color-bg-card)" }}

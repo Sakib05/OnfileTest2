@@ -17,6 +17,9 @@ const ALLOWED: Record<string, string> = {
   "components/setup/guide/GuideIllustrations.tsx": "illustration of Telegram's UI",
   // Swipe row: ArrowLeft is a keyboard key name, not an icon.
   "components/playlists/SwipeableRow.tsx": "keyboard key name",
+  // Creator playlist page: the header Back button is rendered ONLY outside Telegram (plain browser), where there is no
+  // native BackButton. Inside the Mini App the native button is the single back control (see `insideTelegram`).
+  "components/playlists/PlaylistPage.tsx": "browser-only fallback back button; hidden inside Telegram",
 };
 
 function walk(dir: string): string[] {
