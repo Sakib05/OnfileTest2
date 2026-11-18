@@ -47,6 +47,7 @@ export const reportReasonEnum = pgEnum("report_reason", [
   "broken_link",
   "spam",
   "other",
+  "inappropriate",
 ]);
 
 export const reportStatusEnum = pgEnum("report_status", [
@@ -443,6 +444,8 @@ export const referrals = pgTable("referrals", {
 export const reports = pgTable("reports", {
   id: serial("id").primaryKey(),
   fileId: integer("file_id"),
+  /** Set when the report targets a whole shared playlist (then `fileId` is null). */
+  playlistId: integer("playlist_id"),
   reporterIp: varchar("reporter_ip", { length: 64 }),
   reason: reportReasonEnum("reason").notNull(),
   description: text("description"),

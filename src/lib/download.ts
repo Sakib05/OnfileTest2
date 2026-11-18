@@ -9,11 +9,13 @@
  */
 
 export interface DownloadFileInfo {
-  id: number;
+  /** Internal id — optional: the playlist viewer never has (or needs) it; reports and unlocks use the public slug. */
+  id?: number;
   title: string;
   description?: string | null;
   fileType: string;
   mimeType?: string | null;
+  fileSize?: number | null;
   starsPrice?: number;
   hasPassword?: boolean;
   views?: number;

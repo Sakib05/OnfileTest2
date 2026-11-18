@@ -1,65 +1,48 @@
 "use client";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2, Lock, Play, RotateCcw, SearchX, Share2, ShieldCheck, Star, WifiOff } from "lucide-react";
+import { Loader2, Lock, SearchX, Star, WifiOff } from "lucide-react";
 import CreatorRow from "@/components/download/CreatorRow";
-import FileThumb from "@/components/ui/FileThumb";
 import PlaylistThumb from "@/components/ui/PlaylistThumb";
-import { useToast } from "@/components/ui/Toast";
-import { fileKindLabel } from "@/lib/fileKinds";
-import { buildShareUrl, itemHref, recallPosition, type PublicPlaylistPayload } from "@/lib/playlistSharing";
-import { canNativeShare, copyText, nativeShare } from "@/lib/playlistShareClient";
+import FileViewer from "@/components/viewer/FileViewer";
+import SavedItemsWidget from "@/components/viewer/SavedItemsWidget";
+import { ViewerFrame, ViewerMessage, ViewerSkeleton } from "@/components/viewer/ViewerMessage";
+import type { DownloadFileInfo } from "@/lib/download";
+import type { PublicPlaylistPayload } from "@/lib/playlistSharing";
 import { getTelegramWebApp } from "@/lib/telegramWebApp";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
-import { formatBytes } from "@/lib/utils";
+import { parseFileParam, resolveSelected, selectionUrl } from "@/lib/viewer";
 
 type Load = { name: "loading" } | { name: "ready"; data: PublicPlaylistPayload } | { name: "not_found" } | { name: "error" };
 
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen bg-app" data-testid="public-playlist-page">
-      <div className="mx-auto w-full max-w-2xl px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2rem)] flex flex-col gap-5">
-        <header className="flex items-center">
-          <Link href="/" className="flex items-center gap-2 min-h-10" aria-label="Onfile home">
-            <span className="w-8 h-8 rounded-[10px] bg-brand flex items-center justify-center text-white text-sm font-black">O</span>
-            <span className="font-bold text-primary text-base tracking-tight">Onfile</span>
-          </Link>
-        </header>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Message({ icon, title, text, action }: { icon: React.ReactNode; title: string; text: string; action?: React.ReactNode }) {
-  return (
-    <Shell>
-      <div className="flex flex-col items-center justify-center gap-4 text-center py-16 px-4" data-testid="public-playlist-message">
-        <div className="w-20 h-20 rounded-3xl bg-secondary border border-app flex items-center justify-center text-muted">{icon}</div>
-        <div>
-          <h1 className="text-xl font-bold text-primary mb-1">{title}</h1>
-          <p className="text-sm text-secondary">{text}</p>
-        </div>
-        {action}
-      </div>
-    </Shell>
-  );
+/** Public details of ONE file (GET /api/link/<slug>): description + stats. Authorisation is unchanged and server-side. */
+interface FileDetail {
+  description: string | null;
+  views: number | null;
+  downloads: number | null;
 }
 
 /**
- * Public, recipient-facing playlist page. Read-only: no edit / delete / reorder / membership controls and no
- * owner data — the API never sends any. Items are real links into the existing /f/<slug> file page, so each
- * file's own password / price rules still apply, and the playlist context (?list=…&i=…) enables Previous / Next.
+ * Unified public playlist page (route: /p/<token>). One page, two parts:
+ *   top    — the SELECTED file (thumbnail, title, uploader, description, Get File / Save / Share / Report)
+ *   bottom — the playlist's file list
+ * Clicking a file only changes the selection: the top section updates in place, the URL becomes /p/<token>?f=<file slug>
+ * (history.pushState — no navigation, no reload), refresh restores it and Back/Forward walk through earlier selections.
+ *
+ * Authorisation never depends on this selection: the playlist payload only contains files the server decided the
+ * visitor may see (published, unlocked playlist), an unknown `?f=` falls back to the first item, and Get File still
+ * asks the server to authorise that file's own password / advertisement / price rules.
  */
 export default function PublicPlaylistView({ slug }: { slug: string }) {
-  const { toast } = useToast();
   const router = useRouter();
   const [load, setLoad] = useState<Load>({ name: "loading" });
   const [password, setPassword] = useState("");
   const [unlocking, setUnlocking] = useState(false);
   const [unlockError, setUnlockError] = useState("");
-  const [continueAt, setContinueAt] = useState<number | null>(null);
+  /** `?f=` as last read from the address bar. The effective selection is derived from it (see resolveSelected). */
+  const [wanted, setWanted] = useState<string | null>(() => (typeof window === "undefined" ? null : parseFileParam(window.location.search)));
+  const [details, setDetails] = useState<Record<string, FileDetail | null>>({});
 
   const fetchPlaylist = useCallback(async () => {
     try {
@@ -78,11 +61,12 @@ export default function PublicPlaylistView({ slug }: { slug: string }) {
     void fetchPlaylist();
   }, [fetchPlaylist]);
 
+  // Browser Back / Forward: re-read the address bar.
   useEffect(() => {
-    // Last opened item on THIS device (localStorage; read after mount to stay SSR-safe).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setContinueAt(recallPosition(slug));
-  }, [slug]);
+    const onPop = () => setWanted(parseFileParam(window.location.search));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
   // Telegram browser / Mini App: tell Telegram we're ready, use the full height, and wire the native Back button.
   useEffect(() => {
@@ -98,6 +82,46 @@ export default function PublicPlaylistView({ slug }: { slug: string }) {
     if (window.history.length > 1) router.back();
     else router.replace("/");
   });
+
+  const items = useMemo(() => (load.name === "ready" ? load.data.items : []), [load]);
+  const selected = useMemo(() => resolveSelected(items, wanted), [items, wanted]);
+  const selectedSlug = selected?.slug ?? null;
+  const haveDetail = selectedSlug ? selectedSlug in details : true;
+
+  // Load description + stats of the selected file once (cached per file for this visit).
+  useEffect(() => {
+    if (!selectedSlug || haveDetail) return;
+    const ac = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(`/api/link/${encodeURIComponent(selectedSlug)}`, { signal: ac.signal });
+        const data = res.ok ? ((await res.json()) as { file?: { description?: string | null; views?: number | null; downloads?: number | null } }) : null;
+        setDetails((d) => ({
+          ...d,
+          [selectedSlug]: data?.file ? { description: data.file.description ?? null, views: data.file.views ?? null, downloads: data.file.downloads ?? null } : null,
+        }));
+      } catch {
+        /* aborted (selection changed) or offline: the description simply stays hidden */
+      }
+    })();
+    return () => ac.abort();
+  }, [selectedSlug, haveDetail]);
+
+  const onSelect = useCallback(
+    (fileSlug: string) => {
+      if (fileSlug !== selectedSlug) {
+        window.history.pushState(null, "", selectionUrl(slug, fileSlug));
+        setWanted(fileSlug);
+      }
+      // The selected-file section is at the top: bring it into view.
+      try {
+        window.scrollTo({ top: 0, behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      } catch {
+        /* non-browser environment */
+      }
+    },
+    [slug, selectedSlug]
+  );
 
   const unlock = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,21 +147,11 @@ export default function PublicPlaylistView({ slug }: { slug: string }) {
     }
   };
 
-  if (load.name === "loading") {
-    return (
-      <Shell>
-        <div className="flex flex-col gap-5 animate-pulse-brand" aria-busy="true" aria-label="Loading playlist" role="status">
-          <div className="w-full aspect-video rounded-2xl bg-secondary border border-app" />
-          <div className="h-7 w-2/3 rounded-lg bg-secondary" />
-          <div className="h-4 w-1/2 rounded-lg bg-secondary" />
-          {[1, 2, 3].map((i) => <div key={i} className="h-20 rounded-xl bg-secondary border border-app" />)}
-        </div>
-      </Shell>
-    );
-  }
+  if (load.name === "loading") return <ViewerSkeleton label="Loading playlist" />;
   if (load.name === "not_found") {
     return (
-      <Message
+      <ViewerMessage
+        testId="public-playlist-message"
         icon={<SearchX size={34} />}
         title="Playlist not found"
         text="This link may have expired, or the creator made the playlist private."
@@ -147,7 +161,8 @@ export default function PublicPlaylistView({ slug }: { slug: string }) {
   }
   if (load.name === "error") {
     return (
-      <Message
+      <ViewerMessage
+        testId="public-playlist-message"
         icon={<WifiOff size={34} />}
         title="Couldn’t load this playlist"
         text="Check your connection and try again."
@@ -156,130 +171,90 @@ export default function PublicPlaylistView({ slug }: { slug: string }) {
     );
   }
 
-  const { playlist, creator, items } = load.data;
-  const first = items[0];
-  const resume = continueAt && continueAt > 1 ? (items.find((i) => i.position === continueAt) ?? null) : null;
+  const { playlist, creator } = load.data;
 
-  const share = async () => {
-    const url = buildShareUrl(window.location.origin, slug);
-    if (canNativeShare()) {
-      const r = await nativeShare({ title: playlist.title, url });
-      if (r === "failed") toast("Couldn't open the share sheet.", "error");
-      return;
-    }
-    const ok = await copyText(url);
-    toast(ok ? "Playlist link copied" : "Couldn't copy the link.", ok ? "success" : "error");
+  // ── Locked playlists: only title + description until the server accepts the password ─────────────
+  if (playlist.locked) {
+    return (
+      <>
+        <ViewerFrame testId="public-playlist-page">
+          <div className="relative w-full aspect-video rounded-3xl overflow-hidden bg-secondary border border-app shadow-app-md" data-testid="public-playlist-cover">
+            <PlaylistThumb url={null} />
+          </div>
+          <div className="min-w-0 flex flex-col gap-3">
+            <h1 className="text-2xl font-bold text-primary leading-tight break-words" data-testid="public-playlist-title">{playlist.title}</h1>
+            <CreatorRow creator={creator} />
+            {playlist.description && <p className="text-sm text-secondary whitespace-pre-wrap break-words" data-testid="public-playlist-description">{playlist.description}</p>}
+          </div>
+
+          {playlist.locked === "password" && (
+            <form onSubmit={unlock} className="rounded-2xl border border-app bg-card p-4 flex flex-col gap-3 shadow-app-sm" data-testid="public-playlist-locked">
+              <div className="flex items-start gap-3">
+                <span className="w-11 h-11 rounded-2xl bg-brand-10 flex items-center justify-center flex-shrink-0"><Lock size={20} className="text-brand" /></span>
+                <div className="min-w-0">
+                  <p className="font-semibold text-primary text-sm">Password protected</p>
+                  <p className="text-xs text-secondary mt-0.5">Enter the password from the creator to see this playlist.</p>
+                </div>
+              </div>
+              <label htmlFor="pl-unlock" className="sr-only">Playlist password</label>
+              <input id="pl-unlock" type="password" className="input-app" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" placeholder="Password" />
+              {unlockError && <p role="alert" className="text-xs text-red-500">{unlockError}</p>}
+              <button type="submit" disabled={unlocking || !password} className="btn-primary min-h-11 text-sm flex items-center justify-center gap-2 disabled:opacity-60">
+                {unlocking && <Loader2 size={15} className="animate-spin" />} Unlock playlist
+              </button>
+            </form>
+          )}
+
+          {playlist.locked === "stars" && (
+            <div className="rounded-2xl border border-app bg-card p-4 flex items-start gap-3" data-testid="public-playlist-paid">
+              <span className="w-11 h-11 rounded-2xl bg-brand-10 flex items-center justify-center flex-shrink-0"><Star size={20} className="text-brand" /></span>
+              <div className="min-w-0">
+                <p className="font-semibold text-primary text-sm">Paid playlist</p>
+                <p className="text-xs text-secondary mt-0.5">This playlist needs a Telegram Stars payment, which isn&apos;t available yet. Its content stays locked.</p>
+              </div>
+            </div>
+          )}
+        </ViewerFrame>
+        <SavedItemsWidget />
+      </>
+    );
+  }
+
+  if (!selected) {
+    return (
+      <>
+        <ViewerFrame testId="public-playlist-page">
+          <div className="text-center py-10 px-2 rounded-2xl border border-dashed border-app" data-testid="public-playlist-empty">
+            <p className="text-sm font-semibold text-primary mb-1">{playlist.title}</p>
+            <p className="text-sm text-secondary">The creator hasn&apos;t published any files in this playlist yet.</p>
+          </div>
+        </ViewerFrame>
+        <SavedItemsWidget />
+      </>
+    );
+  }
+
+  const detail = details[selected.slug] ?? null;
+  const file: DownloadFileInfo = {
+    slug: selected.slug,
+    title: selected.title,
+    fileType: selected.fileType ?? "other",
+    mimeType: selected.mimeType,
+    fileSize: selected.fileSize,
+    thumbnailUrl: selected.thumbnailUrl,
+    hasPassword: selected.hasPassword,
+    starsPrice: selected.starsPrice,
+    description: detail?.description ?? null,
+    views: detail?.views ?? undefined,
+    downloads: detail?.downloads ?? undefined,
   };
 
   return (
-    <Shell>
-      <main className="flex flex-col gap-5">
-        <section className="flex flex-col gap-4" aria-label="Playlist details">
-          <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-secondary border border-app shadow-app-md" data-testid="public-playlist-cover">
-            <PlaylistThumb url={playlist.thumbnailUrl} />
-          </div>
-          <div className="min-w-0 flex flex-col gap-3">
-            <div>
-              <h1 className="text-2xl font-bold text-primary leading-tight break-words" data-testid="public-playlist-title">{playlist.title}</h1>
-              {playlist.description && (
-                <p className="text-sm text-secondary whitespace-pre-wrap break-words mt-1.5" data-testid="public-playlist-description">{playlist.description}</p>
-              )}
-            </div>
-            {!playlist.locked && (
-              <p className="text-xs font-semibold text-secondary" data-testid="public-playlist-count">
-                {playlist.itemCount} {playlist.itemCount === 1 ? "file" : "files"}
-              </p>
-            )}
-            <CreatorRow creator={creator} className="rounded-2xl border border-app bg-card p-3" />
-
-            {!playlist.locked && first && (
-              <div className="flex items-center gap-2" data-testid="public-playlist-actions">
-                <Link href={itemHref(first.slug, slug, first.position)} className="btn-primary flex-1 min-h-11 px-4 text-sm flex items-center justify-center gap-2" data-testid="public-play">
-                  <Play size={16} aria-hidden="true" /> Play first
-                </Link>
-                {resume && (
-                  <Link href={itemHref(resume.slug, slug, resume.position)} className="min-h-11 px-4 rounded-xl text-sm font-semibold inline-flex items-center justify-center gap-2 border border-app bg-secondary text-primary" data-testid="public-continue">
-                    <RotateCcw size={15} aria-hidden="true" /> Continue ({resume.position})
-                  </Link>
-                )}
-                <button type="button" onClick={() => void share()} aria-label="Share playlist" data-testid="public-share" className="w-11 h-11 flex-shrink-0 inline-flex items-center justify-center rounded-xl border border-app bg-secondary text-primary">
-                  <Share2 size={17} aria-hidden="true" />
-                </button>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {playlist.locked === "password" && (
-          <form onSubmit={unlock} className="rounded-2xl border border-app bg-card p-4 flex flex-col gap-3 shadow-app-sm" data-testid="public-playlist-locked">
-            <div className="flex items-start gap-3">
-              <span className="w-11 h-11 rounded-2xl bg-brand-10 flex items-center justify-center flex-shrink-0"><Lock size={20} className="text-brand" /></span>
-              <div className="min-w-0">
-                <p className="font-semibold text-primary text-sm">Password protected</p>
-                <p className="text-xs text-secondary mt-0.5">Enter the password from the creator to see this playlist.</p>
-              </div>
-            </div>
-            <label htmlFor="pl-unlock" className="sr-only">Playlist password</label>
-            <input id="pl-unlock" type="password" className="input-app" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" placeholder="Password" />
-            {unlockError && <p role="alert" className="text-xs text-red-500">{unlockError}</p>}
-            <button type="submit" disabled={unlocking || !password} className="btn-primary min-h-11 text-sm flex items-center justify-center gap-2 disabled:opacity-60">
-              {unlocking && <Loader2 size={15} className="animate-spin" />} Unlock playlist
-            </button>
-          </form>
-        )}
-
-        {playlist.locked === "stars" && (
-          <div className="rounded-2xl border border-app bg-card p-4 flex items-start gap-3" data-testid="public-playlist-paid">
-            <span className="w-11 h-11 rounded-2xl bg-brand-10 flex items-center justify-center flex-shrink-0"><Star size={20} className="text-brand" /></span>
-            <div className="min-w-0">
-              <p className="font-semibold text-primary text-sm">Paid playlist</p>
-              <p className="text-xs text-secondary mt-0.5">This playlist needs a Telegram Stars payment, which isn&apos;t available yet. Its content stays locked.</p>
-            </div>
-          </div>
-        )}
-
-        {!playlist.locked && (
-          <section aria-label="Playlist content">
-            {items.length === 0 ? (
-              <div className="text-center py-10 px-2 rounded-2xl border border-dashed border-app" data-testid="public-playlist-empty">
-                <p className="text-sm font-semibold text-primary mb-1">Nothing to show yet</p>
-                <p className="text-sm text-secondary">The creator hasn&apos;t published any files in this playlist.</p>
-              </div>
-            ) : (
-              <ol className="flex flex-col gap-2" data-testid="public-playlist-items">
-                {items.map((item) => (
-                  <li key={item.slug}>
-                    <Link
-                      href={itemHref(item.slug, slug, item.position)}
-                      className="flex items-center gap-3 p-2 rounded-xl border border-app bg-card active:bg-secondary transition-colors"
-                      data-testid="public-playlist-item"
-                      aria-label={`Open ${item.title}, ${item.position} of ${items.length}`}
-                    >
-                      <span className="w-5 flex-shrink-0 text-center text-xs font-semibold text-muted tabular-nums">{item.position}</span>
-                      <span className="w-28 aspect-video rounded-lg bg-secondary relative overflow-hidden flex-shrink-0 border border-app">
-                        <FileThumb url={item.thumbnailUrl} fileType={item.fileType} title={item.title} mimeType={item.mimeType} />
-                      </span>
-                      <span className="min-w-0 flex-1 block">
-                        <span className="block text-sm font-semibold text-primary line-clamp-2 leading-snug">{item.title}</span>
-                        <span className="mt-0.5 text-xs text-secondary flex items-center gap-x-1.5 gap-y-0.5 flex-wrap">
-                          <span>{fileKindLabel(item)}</span>
-                          {item.fileSize ? <span>· {formatBytes(item.fileSize)}</span> : null}
-                          {item.hasPassword && <span className="chip bg-secondary text-secondary" aria-label="Password protected"><Lock size={10} aria-hidden="true" /></span>}
-                          {item.starsPrice > 0 && <span className="chip bg-secondary text-secondary"><Star size={10} aria-hidden="true" /> {item.starsPrice}</span>}
-                        </span>
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-        )}
-      </main>
-
-      <footer className="flex items-center justify-center gap-1.5 text-xs text-muted pt-2">
-        <ShieldCheck size={13} /> Delivered through Telegram · Onfile doesn’t store your files
-      </footer>
-    </Shell>
+    <FileViewer
+      file={file}
+      creator={creator}
+      detailLoading={!haveDetail}
+      playlist={{ slug, title: playlist.title, items, selectedSlug: selected.slug, onSelect }}
+    />
   );
 }

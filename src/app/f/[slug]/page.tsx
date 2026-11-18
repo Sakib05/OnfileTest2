@@ -1,95 +1,32 @@
 "use client";
 import React, { useState, useEffect, useCallback, use } from "react";
 import Link from "next/link";
-import { Eye, Download, Flag, SearchX, WifiOff, ShieldCheck } from "lucide-react";
-import { cn, formatNumber, getFileTypeBadgeColor } from "@/lib/utils";
-import { fileKindLabel } from "@/lib/fileKinds";
+import { useRouter } from "next/navigation";
+import { SearchX, WifiOff } from "lucide-react";
 import type { DownloadCreatorInfo, DownloadFileInfo } from "@/lib/download";
-import FileHero from "@/components/download/FileHero";
-import UnlockPanel from "@/components/download/UnlockPanel";
-import SuccessPanel from "@/components/download/SuccessPanel";
-import CreatorRow from "@/components/download/CreatorRow";
-import ReportModal from "@/components/download/ReportModal";
-import PlaylistNavBar from "@/components/playlists/PlaylistNavBar";
-import { parseListParam } from "@/lib/playlistSharing";
+import FileViewer from "@/components/viewer/FileViewer";
+import { ViewerMessage, ViewerSkeleton } from "@/components/viewer/ViewerMessage";
+import { parseListParam, type PublicPlaylistPayload } from "@/lib/playlistSharing";
+import { selectionUrl } from "@/lib/viewer";
 
 type LoadState = "loading" | "ready" | "not_found" | "error";
 
-function BrandMark() {
-  return (
-    <Link href="/" className="flex items-center gap-2 min-h-10" aria-label="Onfile home">
-      <span className="w-8 h-8 rounded-[10px] bg-brand flex items-center justify-center text-white text-sm font-black">O</span>
-      <span className="font-bold text-primary text-base tracking-tight">Onfile</span>
-    </Link>
-  );
-}
-
-function PageShell({ children, onReport }: { children: React.ReactNode; onReport?: () => void }) {
-  return (
-    <div className="min-h-screen bg-app safe-bottom">
-      <div className="mx-auto w-full max-w-md md:max-w-4xl px-4 pt-3 pb-8 flex flex-col gap-4 md:gap-6">
-        <header className="flex items-center justify-between">
-          <BrandMark />
-          {onReport && (
-            <button
-              type="button"
-              onClick={onReport}
-              aria-label="Report this file"
-              className="h-10 px-3 -mr-2 rounded-xl inline-flex items-center gap-1.5 text-xs font-medium text-muted hover:text-red-500 transition-colors"
-            >
-              <Flag size={14} />
-              Report
-            </button>
-          )}
-        </header>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function PageSkeleton() {
-  return (
-    <PageShell>
-      <div className="grid gap-5 md:grid-cols-2 md:gap-8 animate-pulse-brand" aria-busy="true" aria-label="Loading file">
-        <div className="aspect-video rounded-3xl bg-secondary border border-app" />
-        <div className="flex flex-col gap-4">
-          <div className="h-7 w-3/4 rounded-lg bg-secondary" />
-          <div className="h-4 w-1/2 rounded-lg bg-secondary" />
-          <div className="h-52 rounded-3xl bg-secondary border border-app" />
-        </div>
-      </div>
-    </PageShell>
-  );
-}
-
-function Message({ icon, title, text, action }: { icon: React.ReactNode; title: string; text: string; action: React.ReactNode }) {
-  return (
-    <PageShell>
-      <div className="flex flex-col items-center justify-center gap-4 text-center py-20 px-4">
-        <div className="w-20 h-20 rounded-3xl bg-secondary border border-app flex items-center justify-center text-muted">{icon}</div>
-        <div>
-          <h1 className="text-xl font-bold text-primary mb-1">{title}</h1>
-          <p className="text-sm text-secondary">{text}</p>
-        </div>
-        {action}
-      </div>
-    </PageShell>
-  );
-}
-
+/**
+ * Standalone public file page (/f/<slug>): the same viewer as the playlist route, in single-file mode.
+ *
+ * Old playlist links of the form /f/<slug>?list=<token> are forwarded to the unified playlist page
+ * (/p/<token>?f=<slug>) — but ONLY when the public playlist endpoint confirms that this file is one of the items the
+ * visitor may see. Anything else (unknown token, private/locked playlist, file not in it) simply stays a standalone file.
+ */
 export default function SmartLinkPage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams?: Promise<{ list?: string | string[] }> }) {
   const { slug } = use(params);
-  // Optional playlist context (?list=<share token>): adds "3 of 12 · Previous · Next · Back to playlist".
-  // It only ever ADDS navigation; the file below is unlocked exactly as before (password / price rules unchanged).
   const listSlug = parseListParam(searchParams ? use(searchParams).list : undefined);
+  const router = useRouter();
   const [file, setFile] = useState<DownloadFileInfo | null>(null);
   const [creator, setCreator] = useState<DownloadCreatorInfo | null>(null);
   const [state, setState] = useState<LoadState>("loading");
-  /** Set only from a successful server unlock response. */
-  const [unlocked, setUnlocked] = useState<{ link: string | null } | null>(null);
-  const [showReport, setShowReport] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  /** The playlist token whose membership check has finished (null until then). */
+  const [checkedList, setCheckedList] = useState<string | null>(null);
 
   const fetchFile = useCallback(async () => {
     setState("loading");
@@ -116,11 +53,34 @@ export default function SmartLinkPage({ params, searchParams }: { params: Promis
     void fetchFile();
   }, [fetchFile]);
 
-  if (state === "loading") return <PageSkeleton />;
+  useEffect(() => {
+    if (!listSlug) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/p/${encodeURIComponent(listSlug)}`, { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as PublicPlaylistPayload;
+          if (!cancelled && data.items?.some((i) => i.slug === slug)) {
+            router.replace(selectionUrl(listSlug, slug));
+            return;
+          }
+        }
+      } catch {
+        /* stay standalone */
+      }
+      if (!cancelled) setCheckedList(listSlug);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [listSlug, slug, router]);
+
+  if (state === "loading" || (listSlug && checkedList !== listSlug)) return <ViewerSkeleton label="Loading file" />;
 
   if (state === "not_found" || (state === "ready" && !file)) {
     return (
-      <Message
+      <ViewerMessage
         icon={<SearchX size={34} />}
         title="File not found"
         text="This link may have expired or been removed."
@@ -131,7 +91,7 @@ export default function SmartLinkPage({ params, searchParams }: { params: Promis
 
   if (state === "error" || !file) {
     return (
-      <Message
+      <ViewerMessage
         icon={<WifiOff size={34} />}
         title="Couldn’t load this file"
         text="Check your connection and try again."
@@ -140,60 +100,5 @@ export default function SmartLinkPage({ params, searchParams }: { params: Promis
     );
   }
 
-  const description = file.description?.trim() || "";
-  const longDescription = description.length > 160;
-
-  return (
-    <PageShell onReport={() => setShowReport(true)}>
-      {listSlug && <PlaylistNavBar listSlug={listSlug} fileSlug={slug} />}
-      <main className="grid gap-5 md:grid-cols-2 md:gap-8 md:items-start">
-        {/* Artwork */}
-        <div className="md:sticky md:top-6">
-          <FileHero file={file} />
-        </div>
-
-        <div className="flex flex-col gap-5 min-w-0">
-          {/* Title & facts */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={cn("chip capitalize", getFileTypeBadgeColor(file.fileType))}>{fileKindLabel(file)}</span>
-            </div>
-            <h1 className="text-2xl font-bold text-primary leading-tight break-words">{file.title}</h1>
-            <div className="flex items-center gap-4 text-xs text-secondary">
-              <span className="inline-flex items-center gap-1.5"><Eye size={13} />{formatNumber(file.views ?? 0)} views</span>
-              <span className="inline-flex items-center gap-1.5"><Download size={13} />{formatNumber(file.downloads ?? 0)} downloads</span>
-            </div>
-          </div>
-
-          {/* Primary action */}
-          {unlocked ? <SuccessPanel telegramMessageLink={unlocked.link} /> : <UnlockPanel slug={slug} file={file} onUnlocked={(link) => setUnlocked({ link })} />}
-
-          {/* Creator */}
-          <CreatorRow creator={creator} className="rounded-2xl border border-app bg-card p-3" />
-
-          {/* About */}
-          {description && (
-            <div className="flex flex-col gap-1.5">
-              <h2 className="text-sm font-semibold text-primary">About this file</h2>
-              <p className={cn("text-sm text-secondary leading-relaxed whitespace-pre-line break-words", !expanded && longDescription && "line-clamp-3")}>
-                {description}
-              </p>
-              {longDescription && (
-                <button type="button" onClick={() => setExpanded((v) => !v)} aria-expanded={expanded} className="self-start min-h-10 text-xs font-semibold text-brand">
-                  {expanded ? "Show less" : "Show more"}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </main>
-
-      <footer className="flex items-center justify-center gap-1.5 text-xs text-muted pt-2">
-        <ShieldCheck size={13} />
-        Delivered through Telegram · Onfile doesn’t store your files
-      </footer>
-
-      {showReport && <ReportModal open fileId={file.id} onClose={() => setShowReport(false)} />}
-    </PageShell>
-  );
+  return <FileViewer file={file} creator={creator} />;
 }

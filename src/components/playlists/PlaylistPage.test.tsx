@@ -912,7 +912,7 @@ describe("Playlist page — layout safety & themes", () => {
 
   it("styles only through theme tokens (bg-card/bg-secondary/text-primary…), never hard-coded light/dark colours", () => {
     const fs = require("fs") as typeof import("fs"); // eslint-disable-line @typescript-eslint/no-require-imports
-    for (const f of ["PlaylistPage.tsx", "ShareSheet.tsx", "PublicPlaylistView.tsx", "PlaylistNavBar.tsx", "../ui/ActionMenu.tsx"]) {
+    for (const f of ["PlaylistPage.tsx", "ShareSheet.tsx", "PublicPlaylistView.tsx", "../viewer/FileViewer.tsx", "../viewer/ActionRow.tsx", "../viewer/PlaylistList.tsx", "../viewer/SavedItemsWidget.tsx", "../viewer/ReportDialog.tsx", "../viewer/DescriptionBlock.tsx", "../ui/ActionMenu.tsx"]) {
       const src = fs.readFileSync(`${__dirname}/${f}`, "utf8");
       expect(src, f).not.toMatch(/\b(bg-white|bg-black|bg-gray-\d+|text-gray-\d+|text-black|bg-slate-\d+)/);
     }

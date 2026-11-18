@@ -3,7 +3,8 @@
  *
  * A shared playlist is addressed ONLY by an unguessable token (`playlists.share_slug`), never by its numeric id:
  *   public page : /p/<token>
- *   item viewer : /f/<file smart-link slug>?list=<token>&i=<position>   (the existing, secure file page)
+ *   selected file : /p/<token>?f=<file smart-link slug>   (same page, selection only — see src/lib/viewer.ts)
+ *   legacy item link: /f/<file smart-link slug>?list=<token>&i=<position> — still produced by `itemHref`; the file page forwards it to the line above
  */
 
 /** Token alphabet/length produced by `generateShareSlug` (base64url). Anything else is rejected before touching the DB. */
