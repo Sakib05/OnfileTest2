@@ -2,16 +2,13 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Edit2, ExternalLink, Share2, BarChart2, Trash2, Grid, List, Search,
-  Eye, Download, SearchX,
+  Edit2, Share2, Trash2, Grid, List, Search, Eye, SearchX,
+  Pencil, ImagePlus, ListPlus, Link2, QrCode, Info,
 } from "lucide-react";
-import { cn, formatNumber } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
-import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
-import FileThumb from "@/components/ui/FileThumb";
 import FileTypeArt from "@/components/ui/FileTypeArt";
-import { fileKindLabel } from "@/lib/fileKinds";
 import {
   LIBRARY_FILTERS, buildHomeSections, filesForFilter, filterByQuery, sortNewestFirst,
   type HomeSection, type LibraryFilter,
@@ -19,12 +16,21 @@ import {
 import { FileCard, PlaylistCard, LibrarySkeleton } from "@/components/library/LibraryCards";
 import HomeSections from "@/components/library/HomeSections";
 import LibrarySearch from "@/components/library/LibrarySearch";
-import RelativeTime from "@/components/library/RelativeTime";
-import { parseTimestamp } from "@/lib/relativeTime";
 import { markNavigatedFromLibrary } from "@/lib/playlistNav";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import LibraryMenu, { type MenuAction } from "@/components/library/LibraryMenu";
 import type { FileItem, MenuTarget, PlaylistItem } from "@/components/library/types";
+import EditDetailsDialog from "@/components/library/file/EditDetailsDialog";
+import ChangeThumbnailDialog from "@/components/library/file/ChangeThumbnailDialog";
+import ManagePlaylistsDialog from "@/components/library/file/ManagePlaylistsDialog";
+import ShareFileDialog from "@/components/library/file/ShareFileDialog";
+import QrCodeDialog from "@/components/library/file/QrCodeDialog";
+import FileDetailsDialog from "@/components/library/file/FileDetailsDialog";
+import DeleteFileDialog from "@/components/library/file/DeleteFileDialog";
+import { copyText } from "@/lib/playlistShareClient";
+import { fileShareAvailability, fileShareUrl } from "@/lib/fileShare";
+
+type FileDialogKind = "edit" | "thumbnail" | "playlists" | "share" | "qr" | "details" | "delete";
 
 const CATEGORY_LABEL: Record<LibraryFilter, string> = {
   Home: "All files",
@@ -58,9 +64,14 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   /** Home → "Recently Added" → See all: a flat, newest-first list of every file. */
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [menu, setMenu] = useState<MenuTarget | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ id: number; type: "file" | "playlist" } | null>(null);
+  // Playlist deletion keeps the generic confirm; file deletion has its own dialog that lists the affected playlists.
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  const [detailFile, setDetailFile] = useState<FileItem | null>(null);
+  // One file dialog at a time (edit / thumbnail / playlists / share / qr / details / delete). Holds the id only, so the
+  // dialog always shows the live record from `files` (e.g. the new thumbnail right after saving).
+  const [fileDialog, setFileDialog] = useState<{ kind: FileDialogKind; id: number } | null>(null);
+
+  const activeFile = useMemo(() => (fileDialog ? files.find((f) => f.id === fileDialog.id) ?? null : null), [fileDialog, files]);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const chipBarRef = useRef<HTMLDivElement>(null);
@@ -148,14 +159,13 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const libraryEmpty = files.length === 0 && playlists.length === 0;
 
   // ── Actions ─────────────────────────────────────────────────────────────
-  const handleDelete = async () => {
+  const handleDeletePlaylist = async () => {
     if (!deleteTarget) return;
     setDeleteLoading(true);
     try {
-      const url = deleteTarget.type === "file" ? `/api/files/${deleteTarget.id}` : `/api/playlists/${deleteTarget.id}`;
-      const res = await fetch(url, { method: "DELETE" });
+      const res = await fetch(`/api/playlists/${deleteTarget.id}`, { method: "DELETE" });
       if (res.ok) {
-        toast(`${deleteTarget.type === "file" ? "File" : "Playlist"} deleted successfully`);
+        toast("Playlist deleted successfully");
         void fetchAll();
         setDeleteTarget(null);
       } else {
@@ -168,16 +178,21 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     }
   };
 
-  const smartLink = (slug: string) => `${window.location.origin}/f/${slug}`;
+  const openFileDialog = useCallback((kind: FileDialogKind, f: FileItem) => setFileDialog({ kind, id: f.id }), []);
+  const openDetails = useCallback((f: FileItem) => setFileDialog({ kind: "details", id: f.id }), []);
+  const closeFileDialog = useCallback(() => setFileDialog(null), []);
+  const patchFile = useCallback((id: number, patch: Partial<FileItem>) => setFiles((cur) => cur.map((f) => (f.id === id ? { ...f, ...patch } : f))), []);
 
-  const handleShare = async (slug?: string) => {
-    if (!slug) return;
-    try {
-      await navigator.clipboard.writeText(smartLink(slug));
-      toast("Smart link copied to clipboard! 🔗");
-    } catch {
-      toast("Couldn't copy the link. Please copy it manually from File Details.", "error");
+  /** Copy Link: only a valid public smart link, never anything else; private files get an explanation instead. */
+  const copyFileLink = async (f: FileItem) => {
+    const availability = fileShareAvailability(f);
+    const url = availability.ok ? fileShareUrl(window.location.origin, f) : null;
+    if (!availability.ok || !url) {
+      toast(availability.ok ? "Couldn't build the link." : availability.message, "error");
+      return;
     }
+    const ok = await copyText(url);
+    toast(ok ? "Link copied to clipboard 🔗" : "Couldn't copy the link. Open Share to copy it manually.", ok ? "success" : "error");
   };
 
   const onMenuFile = useCallback((f: FileItem, anchor: DOMRect) => setMenu({ id: f.id, type: "file", anchor }), []);
@@ -192,18 +207,26 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
       return [
         { icon: Eye, label: "View posts", action: () => openPlaylist(pl) },
         { icon: Edit2, label: "Edit", action: () => openPlaylist(pl, "edit") },
-        { icon: Trash2, label: "Delete", color: "text-red-500", action: () => setDeleteTarget({ id: pl.id, type: "playlist" }) },
+        { icon: Trash2, label: "Delete", color: "text-red-500", action: () => setDeleteTarget({ id: pl.id }) },
       ];
     }
     const fi = files.find((f) => f.id === menu.id);
     if (!fi) return [];
+    // Share / Copy link / QR need a valid public link: a private (unpublished) file has none, so those items stay
+    // visible but dimmed, say why, and explain it when tapped instead of producing a dead or unrestricted link.
+    const shareable = fileShareAvailability(fi).ok;
+    const privateHint = shareable ? undefined : "Private — publish to share";
     return [
-      { icon: ExternalLink, label: "Open Link", color: "text-blue-500", action: () => { if (fi.smartLinkSlug) window.open(`/f/${fi.smartLinkSlug}`, "_blank"); } },
-      { icon: Share2, label: "Share", color: "text-green-500", action: () => void handleShare(fi.smartLinkSlug) },
-      { icon: BarChart2, label: "Analytics", color: "text-brand", action: () => setDetailFile(fi) },
-      { icon: Trash2, label: "Delete", color: "text-red-500", action: () => setDeleteTarget({ id: fi.id, type: "file" }) },
+      { icon: Pencil, label: "Edit Details", action: () => openFileDialog("edit", fi) },
+      { icon: ImagePlus, label: "Change Thumbnail", action: () => openFileDialog("thumbnail", fi) },
+      { icon: ListPlus, label: "Manage Playlists", action: () => openFileDialog("playlists", fi) },
+      { icon: Share2, label: "Share", separated: true, unavailable: !shareable, hint: privateHint, action: () => openFileDialog("share", fi) },
+      { icon: Link2, label: "Copy Link", unavailable: !shareable, hint: privateHint, action: () => void copyFileLink(fi) },
+      { icon: QrCode, label: "Generate QR Code", unavailable: !shareable, hint: privateHint, action: () => openFileDialog("qr", fi) },
+      { icon: Info, label: "File Details", separated: true, action: () => openFileDialog("details", fi) },
+      { icon: Trash2, label: "Delete File", destructive: true, action: () => openFileDialog("delete", fi) },
     ];
-    // handleShare only depends on stable inputs (toast); intentionally not a dependency.
+    // copyFileLink only depends on stable inputs (toast); intentionally not a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menu, files, playlists, openPlaylist]);
 
@@ -211,7 +234,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const renderFlat = () => (
     <div className={cn(viewMode === "grid" ? "grid grid-cols-2 gap-3" : "flex flex-col gap-3")} data-testid="library-items" data-view={viewMode}>
       {flat.files.map((fi) => (
-        <FileCard key={`f-${fi.id}`} file={fi} layout={viewMode} onOpen={setDetailFile} onMenu={onMenuFile} />
+        <FileCard key={`f-${fi.id}`} file={fi} layout={viewMode} onOpen={openDetails} onMenu={onMenuFile} />
       ))}
       {flat.playlists.map((pl) => (
         <PlaylistCard key={`pl-${pl.id}`} playlist={pl} layout={viewMode} onOpen={openPlaylist} onMenu={onMenuPlaylist} />
@@ -315,7 +338,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         sections.length === 0 ? renderEmpty() : (
           <HomeSections
             sections={sections}
-            onOpenFile={setDetailFile}
+            onOpenFile={openDetails}
             onMenuFile={onMenuFile}
             onOpenPlaylist={openPlaylist}
             onMenuPlaylist={onMenuPlaylist}
@@ -355,62 +378,56 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
       {/* Item action menu */}
       {menu && menuActions.length > 0 && <LibraryMenu anchor={menu.anchor} actions={menuActions} onClose={closeMenu} />}
 
-      {/* Delete Modal */}
+      {/* Playlist delete confirmation (files use DeleteFileDialog below) */}
       <DeleteConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
-        onConfirm={handleDelete}
+        onConfirm={handleDeletePlaylist}
         loading={deleteLoading}
-        title={`Delete ${deleteTarget?.type === "file" ? "File" : "Playlist"}`}
-        description={deleteTarget?.type === "file"
-          ? "Are you sure you want to delete this file? It will also disappear from every playlist. This action cannot be undone."
-          : "Delete this playlist? Its files will NOT be deleted — they stay in your Library and in any other playlist. Only the playlist itself is removed."}
+        title="Delete Playlist"
+        description="Delete this playlist? Its files will NOT be deleted — they stay in your Library and in any other playlist. Only the playlist itself is removed."
       />
 
-      {/* Detail Modal */}
-      <Modal open={!!detailFile} onClose={() => setDetailFile(null)} title="File Details" size="md">
-        {detailFile && (
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-24 aspect-[4/3] rounded-xl bg-secondary relative overflow-hidden flex-shrink-0">
-                <FileThumb url={detailFile.thumbnailUrl} fileType={detailFile.fileType} title={detailFile.title} mimeType={detailFile.mimeType} />
-              </div>
-              <div className="min-w-0">
-                <p className="font-bold text-primary break-words">{detailFile.title}</p>
-                <p className="text-sm text-secondary">{fileKindLabel(detailFile)}</p>
-                {parseTimestamp(detailFile.createdAt) !== null && (
-                  <p className="text-xs text-muted mt-0.5">Uploaded <RelativeTime value={detailFile.createdAt} /></p>
-                )}
-              </div>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: "Views", value: formatNumber(detailFile.views ?? 0), icon: Eye },
-                { label: "Downloads", value: formatNumber(detailFile.downloads ?? 0), icon: Download },
-                { label: "Earnings", value: `$${Number(detailFile.earnings ?? 0).toFixed(2)}`, icon: BarChart2 },
-              ].map(({ label, value, icon: Icon }) => (
-                <div key={label} className="bg-secondary rounded-xl p-3 text-center">
-                  <Icon size={16} className="text-brand mx-auto mb-1" />
-                  <p className="font-bold text-primary text-base">{value}</p>
-                  <p className="text-xs text-secondary">{label}</p>
-                </div>
-              ))}
-            </div>
-            {detailFile.smartLinkSlug && (
-              <div className="bg-secondary rounded-xl p-3">
-                <p className="text-xs text-secondary mb-1 font-medium">Smart Link</p>
-                <p className="text-xs text-brand break-all">{`${typeof window !== "undefined" ? window.location.origin : ""}/f/${detailFile.smartLinkSlug}`}</p>
-              </div>
-            )}
-            <button
-              onClick={() => { void handleShare(detailFile.smartLinkSlug); setDetailFile(null); }}
-              className="btn-primary w-full py-3 text-sm text-center"
-            >
-              Copy Smart Link
-            </button>
-          </div>
-        )}
-      </Modal>
+      {/* File dialogs (opened from the file ⋮ menu or by tapping a card) */}
+      {activeFile && fileDialog?.kind === "edit" && (
+        <EditDetailsDialog
+          key={activeFile.id}
+          file={activeFile}
+          onClose={closeFileDialog}
+          onSaved={(d) => patchFile(activeFile.id, { title: d.title, description: d.description ?? undefined, updatedAt: d.updatedAt ?? activeFile.updatedAt })}
+        />
+      )}
+      {activeFile && fileDialog?.kind === "thumbnail" && (
+        <ChangeThumbnailDialog
+          key={activeFile.id}
+          file={activeFile}
+          onClose={closeFileDialog}
+          onChanged={(t) => {
+            patchFile(activeFile.id, { thumbnailUrl: t.url, thumbnailWidth: t.width, thumbnailHeight: t.height });
+            void fetchAll(); // playlist covers derive from the first file's thumbnail
+          }}
+        />
+      )}
+      {activeFile && fileDialog?.kind === "playlists" && (
+        <ManagePlaylistsDialog key={activeFile.id} file={activeFile} onClose={closeFileDialog} onChanged={() => void fetchAll()} />
+      )}
+      {activeFile && fileDialog?.kind === "share" && (
+        <ShareFileDialog file={activeFile} onClose={closeFileDialog} onQr={() => openFileDialog("qr", activeFile)} />
+      )}
+      {activeFile && fileDialog?.kind === "qr" && <QrCodeDialog file={activeFile} onClose={closeFileDialog} />}
+      {activeFile && fileDialog?.kind === "details" && <FileDetailsDialog key={activeFile.id} file={activeFile} onClose={closeFileDialog} />}
+      {activeFile && fileDialog?.kind === "delete" && (
+        <DeleteFileDialog
+          key={activeFile.id}
+          file={activeFile}
+          onClose={closeFileDialog}
+          onDeleted={(id) => {
+            setFiles((cur) => cur.filter((f) => f.id !== id));
+            setFileDialog(null);
+            void fetchAll(); // playlist counts / covers may have changed
+          }}
+        />
+      )}
     </div>
   );
 }

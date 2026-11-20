@@ -18,7 +18,7 @@
  *   - (playlist_id, file_id) is unique in the database, so a duplicate can never
  *     be stored even under a race.
  */
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { fileThumbnails, files, playlistFiles, playlists } from "@/db/schema";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
@@ -218,6 +218,42 @@ export async function listPlaylistFiles(userId: number, playlistId: number): Pro
       thumbnailHeight: t?.height ?? null,
     };
   });
+}
+
+export interface FilePlaylistMembership {
+  id: number;
+  title: string;
+  isPublished: boolean;
+  hasPassword: boolean;
+  fileCount: number;
+  /** True when the file is currently a member of this playlist. */
+  isMember: boolean;
+}
+
+/**
+ * Every playlist owned by `userId`, flagged with whether `fileId` is in it (newest playlist first).
+ * Returns null when the file doesn't exist / isn't the caller's. Pure read; never exposes other users' data.
+ */
+export async function listFilePlaylistMemberships(userId: number, fileId: number): Promise<FilePlaylistMembership[] | null> {
+  const [file] = await db.select({ id: files.id }).from(files).where(and(eq(files.id, fileId), eq(files.userId, userId))).limit(1);
+  if (!file) return null;
+  await backfillLegacyMemberships(userId);
+
+  const rows = await db
+    .select({ playlist: playlists, memberRowId: playlistFiles.id })
+    .from(playlists)
+    .leftJoin(playlistFiles, and(eq(playlistFiles.playlistId, playlists.id), eq(playlistFiles.fileId, fileId)))
+    .where(eq(playlists.userId, userId))
+    .orderBy(desc(playlists.createdAt), desc(playlists.id));
+  const counts = await getPlaylistFileCounts(rows.map((r) => r.playlist.id));
+  return rows.map(({ playlist: p, memberRowId }) => ({
+    id: p.id,
+    title: p.title,
+    isPublished: !!p.isPublished,
+    hasPassword: !!p.password,
+    fileCount: counts.get(p.id) ?? 0,
+    isMember: memberRowId !== null,
+  }));
 }
 
 // ─── writes ───────────────────────────────────────────────────────────────────

@@ -45,6 +45,7 @@ const byLabel = (l: string) => container.querySelector(`[aria-label="${l}"]`);
 const chip = (name: string) => Array.from(container.querySelectorAll('[role="group"][aria-label="Library categories"] button')).find((b) => b.textContent === name)!;
 const sec = (k: string) => container.querySelector(`[data-testid="home-section-${k}"]`);
 const SIZE_RE = /Unknown size|\b\d+(\.\d+)?\s?(B|KB|MB|GB)\b/;
+const FILE_MENU_LABELS = ["Edit Details", "Change Thumbnail", "Manage Playlists", "Share", "Copy Link", "Generate QR Code", "File Details", "Delete File"];
 
 async function type(input: HTMLInputElement, value: string) {
   await act(async () => {
@@ -203,7 +204,11 @@ describe("My Library — cards", () => {
     await click(chip("Document"));
     const card = container.querySelector('[data-testid="file-card"]')!;
     expect(card.textContent).toContain("Report.pdf");
-    expect(card.textContent).toContain("document"); // the type tag (now on the thumbnail)
+    const tag = card.querySelector('[data-testid="file-type-badge"]') as HTMLElement; // the type tag on the thumbnail is an icon, not text
+    expect(tag.getAttribute("data-file-type")).toBe("document");
+    expect(tag.getAttribute("aria-label")).toBe("Document");
+    expect(tag.textContent).toBe("");
+    expect(tag.querySelector("svg")).not.toBeNull();
     expect(card.textContent).toContain("+$0.50");
     expect(card.querySelectorAll("svg").length).toBeGreaterThanOrEqual(3);
   });
@@ -229,17 +234,18 @@ describe("My Library — cards", () => {
     expect(container.querySelectorAll('[data-testid="file-type-art"]')).toHaveLength(1);
   });
 
-  it("opens the item menu without clipping (fixed position) and Analytics shows details without a size", async () => {
+  it("opens the item menu without clipping (fixed position); File Details shows the stored size and no internal ids", async () => {
     await mount();
     await click(chip("Document"));
     await click(byLabel("More actions for Report.pdf"));
     const menu = document.querySelector('[role="menu"]') as HTMLElement;
     expect(menu.style.position === "" ? menu.className : "fixed").toContain("fixed");
     const labels = Array.from(menu.querySelectorAll('[role="menuitem"]')).map((m) => m.textContent);
-    expect(labels).toEqual(["Open Link", "Share", "Analytics", "Delete"]); // no "Thumbnail" item any more
-    await click(Array.from(menu.querySelectorAll("button")).find((b) => b.textContent === "Analytics")!);
+    expect(labels).toEqual(FILE_MENU_LABELS);
+    await click(Array.from(menu.querySelectorAll("button")).find((b) => b.textContent === "File Details")!);
     expect(document.body.textContent).toContain("File Details");
-    expect(document.body.textContent).not.toMatch(SIZE_RE);
+    expect(document.body.textContent).toContain("2.0 KB"); // real stored size (Report.pdf = 2048 bytes)
+    expect(document.body.textContent).not.toMatch(/Unknown size/);
   });
 
   it("playlist cards open the manager menu with the playlist actions", async () => {
@@ -288,18 +294,19 @@ describe("My Library — file type tag on the thumbnail", () => {
       // old placement removed: only ONE type tag per card, and none in the text block
       expect(card.querySelectorAll('[data-testid="file-type-badge"]')).toHaveLength(1);
       expect(card.querySelector("span.text-left")?.textContent ?? "").not.toMatch(/^(video|audio|document|image|archive)\b/i);
+      expect(badge.textContent).toBe(""); // icon only — no IMAGE / VIDEO / AUDIO / DOCUMENT text
       expect(card.querySelector(".chip.capitalize")).toBeNull();
       return badge;
     };
     await mount([mkFile(1, "video", "Clip")], []);
     check(); // Home row
     await click(chip("Video"));
-    expect(check().textContent).toBe("video"); // list
+    expect(check().getAttribute("data-file-type")).toBe("video"); // list
     await click(byLabel("Grid view"));
     check(); // grid
   });
 
-  it("is readable on any artwork (translucent dark pill with white text), so it works in light and dark themes", async () => {
+  it("is readable on any artwork (translucent dark pill with a light, category-coloured icon), so it works in light and dark themes", async () => {
     await mount([mkFile(1, "image", "Photo", { thumbnailUrl: "https://cdn.example/p.jpg" })], []);
     const badge = container.querySelector('[data-testid="file-type-badge"]') as HTMLElement;
     expect(badge.className).toContain("bg-black/60");
@@ -368,15 +375,17 @@ describe("My Library — relative upload time", () => {
   });
 });
 
-describe("My Library — file menu has no Thumbnail option", () => {
-  it("omits Thumbnail but keeps every other file action, and no thumbnail modal is mounted", async () => {
+describe("My Library — file menu", () => {
+  it("offers the eight file actions in order, with Delete File last, separated and destructive", async () => {
     await mount();
     await click(chip("Document"));
     await click(byLabel("More actions for Report.pdf"));
-    const labels = Array.from(document.querySelectorAll('[role="menuitem"]')).map((m) => m.textContent);
-    expect(labels).not.toContain("Thumbnail");
-    expect(labels).toEqual(["Open Link", "Share", "Analytics", "Delete"]);
-    expect(document.body.textContent).not.toContain("Replace thumbnail");
+    const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+    expect(items.map((m) => m.textContent)).toEqual(FILE_MENU_LABELS);
+    expect(items[items.length - 1].querySelector("span")!.innerHTML).toContain("text-red-500");
+    expect(document.querySelectorAll('[role="menu"] [role="separator"]').length).toBeGreaterThanOrEqual(2);
+    expect(document.body.textContent).not.toContain("Replace thumbnail"); // no thumbnail dialog until chosen
+    for (const el of items) expect(parseInt((el as HTMLElement).style.minHeight, 10)).toBeGreaterThanOrEqual(44);
   });
 
   it("still renders thumbnails and the FileTypeArt fallback", async () => {

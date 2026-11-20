@@ -46,10 +46,13 @@ export async function GET(req: NextRequest) {
     // Thumbnails are looked up separately (and never throw) so a thumbnail
     // problem can never break the library listing itself.
     const thumbs = await getThumbnailsForFiles(result.map((f) => f.id));
-    const withThumbs = result.map((f) => {
+    const withThumbs = result.map((row) => {
+      // The Library never needs the Telegram post link / file id or the password hash: they stay server-side.
+      const { telegramMessageLink, telegramFileId, password, ...f } = row;
       const t = thumbs.get(f.id);
       return {
         ...f,
+        hasPassword: !!password,
         thumbnailUrl: t ? buildThumbnailUrl(t.objectKey) : null,
         thumbnailWidth: t?.width ?? null,
         thumbnailHeight: t?.height ?? null,

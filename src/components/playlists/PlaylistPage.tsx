@@ -14,10 +14,11 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { ChevronLeft, CircleDollarSign, Copy, EyeOff, Globe, GripVertical, Link2, ListPlus, Loader2, Pencil, Share2, Trash2 } from "lucide-react";
-import ActionMenu, { type ActionMenuItem } from "@/components/ui/ActionMenu";
+import { type ActionMenuItem } from "@/components/ui/ActionMenu";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ShareSheet from "@/components/playlists/ShareSheet";
 import { useToast } from "@/components/ui/Toast";
+import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts/AppContext";
 import { itemHref } from "@/lib/playlistSharing";
 import { copyText, requestShareLink } from "@/lib/playlistShareClient";
@@ -26,7 +27,6 @@ import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
 import { consumeFromLibraryFlag } from "@/lib/playlistNav";
 import PlaylistHero from "@/components/playlists/manage/PlaylistHero";
-import PlaylistStats from "@/components/playlists/manage/PlaylistStats";
 import ManageFileRow from "@/components/playlists/manage/ManageFileRow";
 import AddFilesView from "@/components/playlists/manage/AddFilesView";
 import EditDetailsView from "@/components/playlists/manage/EditDetailsView";
@@ -80,7 +80,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
   const [working, setWorking] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [previewing, setPreviewing] = useState(false);
-  const [statsKey, setStatsKey] = useState(0);
   const savingRef = useRef(false);
   const headingRef = useRef<HTMLElement>(null);
   const firstViewRender = useRef(true);
@@ -186,7 +185,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
       setPlaylist((cur) => ({ ...cur, ...next }));
       setAllPlaylists((cur) => cur.map((p) => (p.id === next.id ? { ...p, ...next } : p)));
     }
-    setStatsKey((k) => k + 1);
   };
 
   const patchPlaylistState = (p: Partial<PlaylistSummary>) => {
@@ -454,7 +452,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     : view.name === "monetization" ? "Monetization"
     : view.name === "fileSettings" ? "File settings"
     : view.name === "transfer" ? "Move to another playlist"
-    : "Manage";
+    : "";
 
   // ── Render ─────────────────────────────────────────────────────────────────
   const menuItems: ActionMenuItem[] = playlist
@@ -471,34 +469,38 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
       ]
     : [];
 
-  const Heading = view.name === "list" ? "p" : "h1";
-  const shell = (children: React.ReactNode, withMenu = false) => (
+  const Heading = "h1" as const;
+  const shell = (children: React.ReactNode) => (
     <div className="min-h-screen bg-app overflow-x-hidden" data-testid="playlist-page">
       <div className="max-w-2xl mx-auto w-full px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-[calc(env(safe-area-inset-bottom)+2.5rem)]">
-        <header className="flex items-center gap-1 min-h-12 mb-3">
-          {insideTelegram ? (
-            <span className="w-11 flex-shrink-0" aria-hidden="true" />
-          ) : (
-            <button
-              type="button"
-              onClick={handleBack}
-              aria-label={view.name === "list" ? "Back to your playlists" : "Back to playlist"}
-              data-testid="page-back"
-              className="w-11 h-11 -ml-2 flex-shrink-0 inline-flex items-center justify-center rounded-xl text-primary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
-            >
-              <ChevronLeft size={22} aria-hidden="true" />
-            </button>
-          )}
-          {/* The playlist's own <h1> is its title; sub-screens name themselves with the page <h1>. */}
-          <Heading ref={headingRef as never} tabIndex={-1} className="min-w-0 flex-1 text-center text-base font-semibold text-primary truncate outline-none" data-testid="playlist-header-title">
-            {headerTitle}
-          </Heading>
-          {withMenu ? (
-            <ActionMenu label="Playlist options" items={menuItems} disabled={locked} className="flex-shrink-0" triggerClassName="w-11 h-11 -mr-2 inline-flex items-center justify-center rounded-xl text-primary hover:bg-secondary disabled:opacity-60" />
-          ) : (
-            <span className="w-11 flex-shrink-0" aria-hidden="true" />
-          )}
-        </header>
+        {/* The playlist screen has no title bar: inside Telegram the native Back Button is the only back control
+            (nothing to render); in a plain browser a compact back arrow sits above the cover. Sub-screens keep
+            their own title (<h1>) with a spacer opposite the back control so it stays centred. */}
+        {(view.name !== "list" || !insideTelegram) && (
+          <header className={cn("flex items-center gap-1", view.name === "list" ? "min-h-11 mb-1" : "min-h-12 mb-3")}>
+            {insideTelegram ? (
+              <span className="w-11 flex-shrink-0" aria-hidden="true" />
+            ) : (
+              <button
+                type="button"
+                onClick={handleBack}
+                aria-label={view.name === "list" ? "Back to your playlists" : "Back to playlist"}
+                data-testid="page-back"
+                className="w-11 h-11 -ml-2 flex-shrink-0 inline-flex items-center justify-center rounded-xl text-primary hover:bg-secondary focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
+              >
+                <ChevronLeft size={22} aria-hidden="true" />
+              </button>
+            )}
+            {view.name !== "list" && (
+              <>
+                <Heading ref={headingRef as never} tabIndex={-1} className="min-w-0 flex-1 text-center text-base font-semibold text-primary truncate outline-none" data-testid="playlist-header-title">
+                  {headerTitle}
+                </Heading>
+                <span className="w-11 flex-shrink-0" aria-hidden="true" />
+              </>
+            )}
+          </header>
+        )}
         {children}
       </div>
     </div>
@@ -593,7 +595,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
           onDone={async () => {
             setView({ name: "list" });
             await Promise.all([loadFiles(), loadPlaylists()]).catch(() => undefined); // count + derived cover may have changed
-            setStatsKey((k) => k + 1);
           }}
         />
       )}
@@ -611,8 +612,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
             onShare={() => setShareOpen(true)}
             onChangeCover={() => setView({ name: "edit" })}
           />
-
-          <PlaylistStats playlistId={pid} refreshKey={statsKey} />
 
           <section aria-label="Playlist files">
             <div className="flex items-center justify-between gap-2 mb-1 min-h-6">
@@ -750,8 +749,7 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
         title="Delete playlist"
         description={`Delete “${playlist.title}”? Only the playlist is removed. Its ${count || playlist.totalFiles || 0} file(s) are NOT deleted — they stay in your Telegram channel, your Library and any other playlist.`}
       />
-    </>,
-    view.name === "list"
+    </>
   );
 }
 

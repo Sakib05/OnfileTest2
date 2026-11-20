@@ -82,7 +82,6 @@ export default function ManageFileRow({
           data-testid="playlist-file-open"
           className="min-w-0 flex-1 flex items-center gap-2.5 self-stretch text-left disabled:opacity-60 rounded-lg focus-visible:outline-2 focus-visible:outline-[var(--color-primary)]"
         >
-          <span className="w-5 flex-shrink-0 text-center text-xs font-semibold text-muted tabular-nums" data-testid="file-position">{index + 1}</span>
           <span className="w-20 sm:w-24 aspect-video rounded-lg bg-secondary relative overflow-hidden flex-shrink-0 border border-app">
             <FileThumb url={file.thumbnailUrl} fileType={file.fileType} title={file.title} mimeType={file.mimeType} />
           </span>

@@ -133,7 +133,7 @@ export const FileCard = memo(function FileCard({ file, layout, onOpen, onMenu }:
       layout={layout}
       testId="file-card"
       title={file.title}
-      titleSuffix={file.password ? <Lock size={11} className="text-brand flex-shrink-0" aria-label="Password protected" /> : null}
+      titleSuffix={(file.hasPassword ?? !!file.password) ? <Lock size={11} className="text-brand flex-shrink-0" aria-label="Password protected" /> : null}
       openLabel={`Open details for ${file.title}`}
       menuLabel={`More actions for ${file.title}`}
       onOpen={() => onOpen(file)}

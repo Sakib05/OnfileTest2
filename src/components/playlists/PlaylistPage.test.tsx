@@ -117,12 +117,11 @@ const byText = (t: string) => buttons().find((b) => b.textContent?.trim().includ
 const q = (sel: string) => document.body.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => Array.from(document.body.querySelectorAll(sel)) as HTMLElement[];
 const click = (el: Element | null | undefined) => act(async () => (el as HTMLElement).click());
-const headerMenuButton = () => q('[aria-label="Playlist options"]') as HTMLButtonElement;
 const moreTile = () => q('[data-testid="playlist-actions"] [data-testid="action-menu-button"]') as HTMLButtonElement;
 const menuEl = () => q('[data-testid="action-menu"]');
-/** Opens the playlist ⋮ menu in the header and picks an item. */
+/** Opens the playlist "More" menu (beside Share) and picks an item. */
 const choose = async (key: string) => {
-  await click(headerMenuButton());
+  await click(moreTile());
   await click(q(`[data-testid="menu-item-${key}"]`));
 };
 const rows = () => qa('[data-testid="playlist-file-row"]');
@@ -200,19 +199,44 @@ describe("Creator playlist page — layout", () => {
     expect(actions.className).toContain("grid-cols-4"); // all four share one row on a phone
   });
 
-  it("has no large decorative 'Playlist' heading; the compact header says 'Manage' and the title is the only <h1>", async () => {
+  it("has no 'Manage' heading above the cover: the playlist title is the only heading and the list view has no header title", async () => {
     await mount();
-    expect(q('[data-testid="playlist-header-title"]')?.textContent).toBe("Manage");
+    expect(q('[data-testid="playlist-header-title"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Manage");
     expect(qa("h1").map((h) => h.textContent)).toEqual(["Accounting"]);
     expect(qa("h1, h2, p").some((e) => e.textContent?.trim() === "Playlist")).toBe(false);
   });
 
-  it("lists files in the saved order with handle, position, type, size, status and a ⋮ menu each; the first is the cover", async () => {
+  it("inside Telegram there is no header row at all (the cover starts right under the page padding); in a browser only a compact Back arrow", async () => {
+    installTelegramBackButton();
+    await mount();
+    expect(q("header")).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    delete (window as unknown as { Telegram?: unknown }).Telegram;
+    await mount();
+    const header = q("header")!;
+    expect(header.textContent?.trim()).toBe(""); // arrow only, no title text
+    expect(header.className).toContain("min-h-11");
+    expect(header.querySelector('[data-testid="page-back"]')).not.toBeNull();
+  });
+
+  it("has no top-right ⋮ menu; the only playlist menu is the More tile beside Share", async () => {
+    await mount();
+    expect(q('[aria-label="Playlist options"]')).toBeNull();
+    expect(q("header [aria-haspopup=\"menu\"]")).toBeNull();
+    expect(qa('[data-testid="playlist-actions"] [aria-haspopup="menu"]')).toHaveLength(1);
+    // per-file menus are untouched: one per row
+    expect(qa('[data-testid="playlist-file-row"] [aria-haspopup="menu"]')).toHaveLength(3);
+  });
+
+  it("lists files in the saved order with handle, type, size, status and a ⋮ menu each (no sequential numbers); the first is the cover", async () => {
     await mount();
     expect(rowTitles()).toEqual(["One.pdf", "Two.pdf", "Three.pdf"]);
     expect(qa('[data-testid="drag-handle"]')).toHaveLength(3);
     const row = rowFor("Two.pdf");
-    expect(row.querySelector('[data-testid="file-position"]')?.textContent).toBe("2");
+    expect(row.querySelector('[data-testid="file-position"]')).toBeNull();
+    expect(row.querySelector('[data-testid="playlist-file-open"]')!.textContent).not.toMatch(/^\s*\d/); // no leading 1 / 2 / 3
     expect(row.textContent).toContain("1000 B");
     expect(row.querySelector('[data-testid="file-published"]')).not.toBeNull();
     expect(row.querySelector('[aria-haspopup="menu"]')).not.toBeNull();
@@ -264,23 +288,16 @@ describe("Creator playlist page — layout", () => {
   });
 });
 
-describe("Creator playlist page — analytics (real data only)", () => {
-  it("shows the file-request count the backend records and says what isn't tracked", async () => {
+describe("Creator playlist page — no File requests card", () => {
+  it("renders no statistics card, count or description, and never asks the stats endpoint", async () => {
     await mount();
-    expect(wrote("GET", /\/api\/playlists\/1\/stats$/)).toHaveLength(1);
-    expect(q('[data-testid="stat-file-requests"]')?.textContent).toBe("7");
-    const text = q('[data-testid="playlist-stats"]')!.textContent!;
-    expect(text).toContain("not confirmed Telegram deliveries");
-    expect(text).toContain("aren't tracked yet");
-    expect(text).not.toMatch(/\$|USDT|revenue/i); // never shows invented money
-  });
-
-  it("degrades gracefully when analytics can't be loaded", async () => {
-    failNext = { match: /stats$/, status: 500 };
-    await mount();
-    expect(q('[data-testid="playlist-stats"]')?.textContent).toContain("unavailable");
+    expect(q('[data-testid="playlist-stats"]')).toBeNull();
     expect(q('[data-testid="stat-file-requests"]')).toBeNull();
-    expect(rowTitles()).toHaveLength(3); // the rest of the page is unaffected
+    expect(document.body.textContent).not.toMatch(/File requests|not confirmed Telegram deliveries|aren't tracked yet/);
+    expect(wrote("GET", /\/api\/playlists\/1\/stats$/)).toHaveLength(0);
+    // the primary actions and the file list are still there
+    expect(q('[data-testid="playlist-actions"]')).not.toBeNull();
+    expect(rowTitles()).toHaveLength(3);
   });
 });
 
@@ -710,21 +727,19 @@ describe("Creator playlist page — file actions", () => {
 });
 
 describe("Creator playlist page — playlist More menu", () => {
-  it("both the header ⋮ and the More tile open the same accessible menu with the supported actions, Delete last and destructive", async () => {
+  it("the More tile opens an accessible menu with the supported actions, Delete last and destructive", async () => {
     await mount();
-    await click(headerMenuButton());
+    await click(moreTile());
     const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim());
     expect(labels).toEqual(["Edit details", "Make private", "Monetization settings", "Share settings", "Copy public link", "Duplicate playlist", "Delete playlist"]);
     expect(menuEl()?.getAttribute("role")).toBe("menu");
     expect(q('[data-testid="menu-item-delete"]')!.className).toContain("text-red-500");
     expect(qa('[role="separator"]').length).toBeGreaterThanOrEqual(2);
-    expect(headerMenuButton().getAttribute("aria-expanded")).toBe("true");
+    expect(moreTile().getAttribute("aria-expanded")).toBe("true");
     // Escape closes it and focus returns to the trigger
     await act(async () => menuEl()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(menuEl()).toBeNull();
-    expect(document.activeElement).toBe(headerMenuButton());
-    await click(moreTile());
-    expect(qa('[data-testid="action-menu"] [role="menuitem"]')).toHaveLength(7);
+    expect(document.activeElement).toBe(moreTile());
   });
 
   it("Edit details saves title and description with the existing PATCH and shows them at once", async () => {

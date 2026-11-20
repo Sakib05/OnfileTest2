@@ -8,13 +8,16 @@ export interface FileItem {
   /** Kept on the record (backend metadata) but intentionally never rendered in My Library. */
   fileSize?: number;
   starsPrice?: number;
+  /** Legacy shape (tests / older payloads); the API now sends `hasPassword` and never the hash. */
   password?: string;
+  hasPassword?: boolean;
   isPublished: boolean;
   views?: number;
   downloads?: number;
   earnings?: string;
   smartLinkSlug?: string;
   createdAt: string;
+  updatedAt?: string | null;
   category?: string;
   thumbnailUrl?: string | null;
   thumbnailWidth?: number | null;

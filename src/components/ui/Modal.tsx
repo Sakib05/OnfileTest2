@@ -96,14 +96,14 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          "relative w-full bg-card rounded-2xl shadow-app-lg animate-slide-up overflow-hidden outline-none",
+          "relative w-full bg-card rounded-2xl shadow-app-lg animate-slide-up overflow-hidden outline-none flex flex-col max-h-[90dvh]",
           sizeClass
         )}
         style={{ background: "var(--color-bg-card)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {title && (
-          <div className="flex items-center justify-between px-5 py-4 border-b border-app">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-app flex-shrink-0">
             <h2 className="text-base font-semibold text-primary">{title}</h2>
             {!hideClose && (
               <button
@@ -117,7 +117,7 @@ export default function Modal({ open, onClose, title, children, size = "md", hid
             )}
           </div>
         )}
-        <div className="p-5">{children}</div>
+        <div className="p-5 overflow-y-auto overscroll-contain min-h-0">{children}</div>
       </div>
     </div>,
     document.body

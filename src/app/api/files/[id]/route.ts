@@ -5,7 +5,8 @@ import { eq, and } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { hashAccessPassword } from "@/lib/password";
 import { notifyUser } from "@/lib/notifications";
-import { STARS_MAX } from "@/lib/publishing/constants";
+import { DESCRIPTION_MAX, STARS_MAX } from "@/lib/publishing/constants";
+import { parsePositiveId } from "@/lib/playlists";
 import { cleanupThumbnailObject, findThumbnailKeyForCleanup } from "@/lib/thumbnails/cleanup";
 
 /**
@@ -47,7 +48,15 @@ export async function PATCH(
     if (!user) return unauthorized();
 
     const { id } = await params;
-    const body = await req.json();
+    if (!parsePositiveId(id)) return NextResponse.json({ error: "Invalid file id" }, { status: 400 });
+    let body: Record<string, unknown>;
+    try {
+      const parsed: unknown = await req.json();
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("bad body");
+      body = parsed as Record<string, unknown>;
+    } catch {
+      return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+    }
     const allowed = ["title", "description", "category", "fileType", "password", "starsPrice", "isPublished"];
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
@@ -59,6 +68,17 @@ export async function PATCH(
       const t = typeof updates.title === "string" ? updates.title.trim() : "";
       if (!t || t.length > 256) return NextResponse.json({ error: "Title is required (up to 256 characters)." }, { status: 400 });
       updates.title = t;
+    }
+    if ("description" in updates) {
+      // Library → Edit details: free text, optional. Empty clears it; whitespace-only counts as empty.
+      if (updates.description !== null && typeof updates.description !== "string") {
+        return NextResponse.json({ error: "Description must be text." }, { status: 400 });
+      }
+      const d = typeof updates.description === "string" ? updates.description.trim() : "";
+      if (d.length > DESCRIPTION_MAX) {
+        return NextResponse.json({ error: `Description must be ${DESCRIPTION_MAX} characters or fewer.` }, { status: 400 });
+      }
+      updates.description = d || null;
     }
     if ("starsPrice" in updates) {
       const n = Number(updates.starsPrice);
@@ -130,6 +150,7 @@ export async function DELETE(
     if (!user) return unauthorized();
 
     const { id } = await params;
+    if (!parsePositiveId(id)) return NextResponse.json({ error: "Invalid file id" }, { status: 400 });
     // Remember the thumbnail object (if any) before the cascade removes its row.
     const thumbKey = await findThumbnailKeyForCleanup(user.id, parseInt(id));
     const [deleted] = await db
