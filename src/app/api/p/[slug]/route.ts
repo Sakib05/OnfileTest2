@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser, isSameOriginRequest } from "@/lib/auth";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
-import { recordPlaylistView } from "@/lib/playlistAnalytics";
 import {
   UNLOCK_COOKIE_MAX_AGE,
   buildPublicPayload,
@@ -36,10 +35,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     const unlocked = verifyUnlockToken(row, req.cookies.get(unlockCookieName(slug))?.value);
 
     const payload = await buildPublicPayload(row, lockFor(row, { isOwner, unlocked }));
-    const res = NextResponse.json(payload, { headers: NO_STORE });
-    // Playlist analytics: one deduplicated view per anonymous visitor (never the owner, bots or prefetches). Never throws.
-    await recordPlaylistView(req, res, row.id, { isOwner });
-    return res;
+    return NextResponse.json(payload, { headers: NO_STORE });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500, headers: NO_STORE });

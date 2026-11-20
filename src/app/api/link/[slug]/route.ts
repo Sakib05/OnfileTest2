@@ -7,7 +7,6 @@ import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
-import { beginPlaylistUnlock } from "@/lib/playlistAnalytics";
 
 export async function GET(
   req: NextRequest,
@@ -104,15 +103,9 @@ export async function POST(
       .set({ downloads: (file.downloads ?? 0) + 1 })
       .where(eq(files.id, file.id));
 
-    // Playlist analytics: when the unlock was started from a public playlist page, the server re-validates that context
-    // and returns a receipt. The visitor presents it when they actually open the Telegram link (…/delivered). Null =
-    // standalone / not attributable, in which case the response is exactly what it was before.
-    const receipt = await beginPlaylistUnlock(req, file, body?.playlist);
-
     return NextResponse.json({
       success: true,
       telegramMessageLink: file.telegramMessageLink,
-      ...(receipt ? { receipt } : {}),
     });
   } catch (err) {
     console.error(err);

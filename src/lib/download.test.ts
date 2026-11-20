@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { confirmDelivered, getUnlockMethods, previewAspectRatio, requestUnlock, safeExternalLink, unlockErrorMessage } from "./download";
+import { getUnlockMethods, previewAspectRatio, requestUnlock, safeExternalLink, unlockErrorMessage } from "./download";
 
 describe("getUnlockMethods", () => {
   it("offers the ad for plain files", () => {
@@ -39,35 +39,6 @@ describe("requestUnlock (server decides)", () => {
     const down = await requestUnlock("s", "", (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch);
     expect(down).toMatchObject({ ok: false, status: 0 });
     expect(unlockErrorMessage(404)).toMatch(/no longer available/);
-  });
-});
-
-describe("playlist analytics hand-off (receipt)", () => {
-  const res = (status: number, body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status }));
-
-  it("sends the playlist token only when given, and returns the server's receipt only when the server issued one", async () => {
-    const f = vi.fn(() => res(200, { success: true, telegramMessageLink: "https://t.me/c/1/2", receipt: "r".repeat(22) }));
-    const r = await requestUnlock("s", "", f as unknown as typeof fetch, "PlaylistToken123456");
-    expect(r).toEqual({ ok: true, telegramMessageLink: "https://t.me/c/1/2", receipt: "r".repeat(22) });
-    expect(JSON.parse((f.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ password: "", playlist: "PlaylistToken123456" });
-  });
-
-  it("a standalone unlock sends exactly what it always sent", async () => {
-    const f = vi.fn(() => res(200, { success: true, telegramMessageLink: null }));
-    expect(await requestUnlock("s", "x", f as unknown as typeof fetch)).toEqual({ ok: true, telegramMessageLink: null });
-    expect(JSON.parse((f.mock.calls[0] as unknown as [string, RequestInit])[1].body as string)).toEqual({ password: "x" });
-  });
-
-  it("confirmDelivered POSTs the receipt to the file's delivered endpoint (keepalive) and never throws", async () => {
-    const f = vi.fn(() => res(200, { counted: true }));
-    confirmDelivered("my slug", "abc", f as unknown as typeof fetch);
-    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe("/api/link/my%20slug/delivered");
-    expect(init.method).toBe("POST");
-    expect(init.keepalive).toBe(true);
-    expect(JSON.parse(init.body as string)).toEqual({ receipt: "abc" });
-    expect(() => confirmDelivered("s", "r", (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch)).not.toThrow();
-    expect(() => confirmDelivered("s", "r", (() => { throw new Error("sync"); }) as unknown as typeof fetch)).not.toThrow();
   });
 });
 

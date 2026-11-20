@@ -5,7 +5,7 @@ import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import SuccessPanel from "@/components/download/SuccessPanel";
 import ReportDialog from "@/components/viewer/ReportDialog";
-import { AD_SECONDS, confirmDelivered, getUnlockMethods, requestUnlock, type DownloadFileInfo } from "@/lib/download";
+import { AD_SECONDS, getUnlockMethods, requestUnlock, type DownloadFileInfo } from "@/lib/download";
 import { buildShareUrl } from "@/lib/playlistSharing";
 import { canNativeShare, copyText, nativeShare } from "@/lib/playlistShareClient";
 import { useSavedItems } from "@/lib/useSavedItems";
@@ -43,7 +43,7 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState("");
-  const [unlocked, setUnlocked] = useState<{ link: string | null; receipt?: string } | null>(null);
+  const [unlocked, setUnlocked] = useState<{ link: string | null } | null>(null);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -60,11 +60,11 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
     busyRef.current = true;
     setBusy(true);
     setError("");
-    const result = await requestUnlock(file.slug, pwd, undefined, playlist?.slug);
+    const result = await requestUnlock(file.slug, pwd);
     busyRef.current = false;
     setBusy(false);
     if (result.ok) {
-      setUnlocked({ link: result.telegramMessageLink, receipt: result.receipt });
+      setUnlocked({ link: result.telegramMessageLink });
       return true;
     }
     setError(result.message);
@@ -175,12 +175,7 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
         </div>
       )}
 
-      {unlocked && (
-        <SuccessPanel
-          telegramMessageLink={unlocked.link}
-          onOpen={unlocked.receipt ? () => confirmDelivered(file.slug, unlocked.receipt!) : undefined}
-        />
-      )}
+      {unlocked && <SuccessPanel telegramMessageLink={unlocked.link} />}
 
       {hasStars && !unlocked && (
         <p className="text-xs text-secondary text-center" data-testid="stars-note">

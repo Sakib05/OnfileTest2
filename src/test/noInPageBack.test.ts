@@ -20,8 +20,6 @@ const ALLOWED: Record<string, string> = {
   // Creator playlist page: the header Back button is rendered ONLY outside Telegram (plain browser), where there is no
   // native BackButton. Inside the Mini App the native button is the single back control (see `insideTelegram`).
   "components/playlists/PlaylistPage.tsx": "browser-only fallback back button; hidden inside Telegram",
-  // Creator playlist analytics page: same pattern (browser-only Back; native BackButton inside Telegram).
-  "components/playlists/analytics/PlaylistAnalyticsPage.tsx": "browser-only fallback back button; hidden inside Telegram",
 };
 
 function walk(dir: string): string[] {
@@ -54,7 +52,6 @@ describe("no in-page application-level back arrows", () => {
       "components/tabs/FilesTab.tsx",
       "components/tabs/HomeTab.tsx",
       "components/playlists/PlaylistPage.tsx",
-      "components/playlists/analytics/PlaylistAnalyticsPage.tsx",
       "components/setup/ManualConnectGuide.tsx",
       "components/setup/BotConnectInstructions.tsx",
       "components/publish/PublishWizard.tsx",
