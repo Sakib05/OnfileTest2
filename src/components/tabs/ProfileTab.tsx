@@ -1,8 +1,9 @@
 "use client";
 import React, { useState, useCallback, useEffect } from "react";
 import {
-  User, Users, ChevronRight, Moon, Sun, Megaphone, HelpCircle, Copy, Gift, MessageCircle,
-  Shield, CheckCircle2, Plus, XCircle, Clock, Pencil, IdCard, Wallet, FileText, Database,
+  User, Users, Download, DollarSign, ChevronRight, Moon, Sun, Globe, Megaphone,
+  HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle, Settings,
+  Shield, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
 import { cn, formatNumber, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -12,16 +13,11 @@ import Modal from "@/components/ui/Modal";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 import Faq from "@/components/Faq";
-import EditProfile from "@/components/profile/EditProfile";
-import AccountInfo from "@/components/profile/AccountInfo";
-import PrivacySecurityPage from "@/components/legal/PrivacySecurityPage";
-import TermsPage from "@/components/legal/TermsPage";
-import { MIN_WITHDRAWAL_USD } from "@/lib/money";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import Link from "next/link";
 
-type SubPage = null | "referrals" | "advertise" | "channel" | "editProfile" | "account" | "faq" | "privacy" | "terms";
+type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq";
 
 interface ReferralData {
   referrals: Array<{
@@ -39,7 +35,7 @@ interface ReferralData {
 
 export default function ProfileTab() {
   const { dark, toggle } = useTheme();
-  const { user, refreshUser, refreshChannels, profileEntry, setProfileEntry, setActiveTab } = useApp();
+  const { user, refreshUser, refreshChannels, profileEntry, setProfileEntry } = useApp();
   const { toast } = useToast();
   // A notification tap can ask the Profile tab to open directly on a sub-page.
   const [subPage, setSubPage] = useState<SubPage>(() => profileEntry);
@@ -49,9 +45,6 @@ export default function ProfileTab() {
   // Telegram's native Back Button is the ONLY back control: it returns from any Profile
   // sub-page to the Profile root, and stays hidden on the Profile root itself.
   useTelegramBackButton(() => setSubPage(null), subPage !== null);
-  useEffect(() => {
-    window.scrollTo?.(0, 0);
-  }, [subPage]);
   const [referralData, setReferralData] = useState<ReferralData | null>(null);
   const [referralLoading, setReferralLoading] = useState(false);
   const [channels, setChannels] = useState<ConnectedChannel[] | null>(null);
@@ -60,6 +53,8 @@ export default function ProfileTab() {
   const [showConnectNew, setShowConnectNew] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectedChannel | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [editForm, setEditForm] = useState({ firstName: user?.firstName || "", username: user?.username || "" });
+  const [saving, setSaving] = useState(false);
   const [adForm, setAdForm] = useState({
     advertiserName: "", advertiserEmail: "", network: "adsgram",
     campaignName: "", budget: "", targetUrl: "", message: ""
@@ -137,6 +132,25 @@ export default function ProfileTab() {
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink);
     toast("Referral link copied! 🔗");
+  };
+
+  const handleSaveProfile = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/user/me", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      if (res.ok) {
+        toast("Profile updated! ✅");
+        refreshUser();
+      } else {
+        toast("Failed to update profile", "error");
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleAdSubmit = async (e: React.FormEvent) => {
@@ -471,46 +485,66 @@ export default function ProfileTab() {
     return <Faq />;
   }
 
-  if (subPage === "editProfile") {
-    return <EditProfile onDone={() => setSubPage(null)} />;
-  }
-
-  if (subPage === "account") {
-    return <AccountInfo onEditProfile={() => setSubPage("editProfile")} />;
-  }
-
-  if (subPage === "privacy") {
-    return <PrivacySecurityPage />;
-  }
-
-  if (subPage === "terms") {
-    return <TermsPage />;
-  }
-
-  // Main Profile Page — creator account dashboard
-  const displayName = user?.firstName?.trim() || "Creator";
-  return (
-    <div className="flex flex-col gap-5" data-testid="me-root">
-      {/* Profile header */}
-      <section className="bg-card rounded-2xl p-4 border border-app shadow-app-sm" aria-label="Profile">
-        <div className="flex items-center gap-4">
-          <TelegramAvatar photoUrl={user?.avatarUrl} firstName={user?.firstName} username={user?.username} size="lg" />
-          <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-bold text-primary truncate">{displayName}</h2>
-            <p className="text-sm text-secondary truncate">{user?.username ? `@${user.username}` : "No Telegram username"}</p>
-          </div>
+  if (subPage === "settings") {
+    return (
+      <div className="flex flex-col gap-5 animate-fade-in">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold text-primary">Account Settings</h1>
         </div>
-        <button
-          onClick={() => setSubPage("editProfile")}
-          className="btn-secondary w-full min-h-11 mt-4 text-sm font-semibold flex items-center justify-center gap-2"
-        >
-          <Pencil size={14} />
-          Edit Profile
-        </button>
-        <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-app">
+        <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-primary">Edit Profile</h3>
+          <div>
+            <label className="text-xs font-medium text-secondary mb-1.5 block">Display Name</label>
+            <input
+              className="input-app text-sm"
+              value={editForm.firstName}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, firstName: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-secondary mb-1.5 block">Username</label>
+            <input
+              className="input-app text-sm"
+              value={editForm.username}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, username: e.target.value }))}
+            />
+          </div>
+          <button onClick={handleSaveProfile} disabled={saving} className="btn-primary py-2.5 text-sm">
+            {saving ? "Saving..." : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Main Profile Page
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Profile Header */}
+      <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm">
+        <div className="flex items-center gap-4">
+          <TelegramAvatar
+            photoUrl={user?.avatarUrl}
+            firstName={user?.firstName}
+            username={user?.username}
+            size="lg"
+          />
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-bold text-primary truncate">{user?.firstName || "Creator"}</h2>
+            <p className="text-sm text-secondary truncate">@{user?.username || "creator"}</p>
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="chip bg-brand-10 text-brand text-xs">Creator</span>
+            </div>
+          </div>
+          <button onClick={() => setSubPage("settings")} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
+            <Settings size={16} style={{ color: "var(--color-text-secondary)" }} />
+          </button>
+        </div>
+        <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-app">
           {[
+            { label: "Files", value: "—" },
             { label: "Downloads", value: formatNumber(user?.totalDownloads ?? 0) },
-            { label: "Earned", value: `$${Number(user?.totalEarnings ?? 0).toFixed(2)}` },
+            { label: "Earned", value: `$${Number(user?.totalEarnings ?? 0).toFixed(0)}` },
           ].map(({ label, value }) => (
             <div key={label} className="text-center">
               <p className="text-lg font-bold text-primary">{value}</p>
@@ -518,65 +552,134 @@ export default function ProfileTab() {
             </div>
           ))}
         </div>
-      </section>
+      </div>
 
-      <Group title="Account">
-        <ProfileRow icon={Pencil} label="Edit Profile" onClick={() => setSubPage("editProfile")} />
-        <ProfileRow icon={IdCard} label="Account Information" onClick={() => setSubPage("account")} />
-      </Group>
+      {/* Referral Banner */}
+      <button
+        onClick={() => setSubPage("referrals")}
+        className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex items-center gap-3 w-full text-left"
+        style={{ background: "linear-gradient(135deg, rgba(255,97,21,0.05) 0%, rgba(255,140,74,0.08) 100%)", borderColor: "rgba(255,97,21,0.2)" }}
+      >
+        <div className="w-10 h-10 rounded-xl gradient-brand flex items-center justify-center flex-shrink-0">
+          <Gift size={18} color="white" />
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-primary">Referral Program</p>
+          <p className="text-xs text-secondary">Earn 5% lifetime commission. Referral code: <span className="text-brand font-bold">{user?.referralCode || "..."}</span></p>
+        </div>
+        <ChevronRight size={16} className="text-brand flex-shrink-0" />
+      </button>
 
-      <Group title="Creator">
-        <ProfileRow icon={MessageCircle} label="Channel Management" onClick={() => setSubPage("channel")} />
-        <ProfileRow
-          icon={Wallet}
-          label="Earnings & Withdrawals"
-          value={`Min $${MIN_WITHDRAWAL_USD}`}
-          onClick={() => setActiveTab("wallet")}
-        />
-        <ProfileRow icon={Gift} label="Referral Program" value={user?.referralCode || undefined} onClick={() => setSubPage("referrals")} />
-        <ProfileRow icon={Megaphone} label="Advertise with Us" onClick={() => setSubPage("advertise")} />
-        {/* Admin-only: thumbnail storage status (shown only when the server says this session is an admin) */}
-        {user?.isAdmin && <ProfileRow icon={Database} label="Thumbnail Storage (admin)" href="/admin/storage" />}
-      </Group>
+      {/* Advertise */}
+      <button
+        onClick={() => setSubPage("advertise")}
+        className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex items-center gap-3 w-full text-left"
+      >
+        <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center flex-shrink-0">
+          <Megaphone size={18} className="text-purple-600 dark:text-purple-400" />
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-primary">Advertise with Us</p>
+          <p className="text-xs text-secondary">Adsgram · Adsonar · Monitag TG Ads</p>
+        </div>
+        <ChevronRight size={16} className="text-secondary flex-shrink-0" />
+      </button>
 
-      <Group title="Support & Information">
-        <ProfileRow icon={HelpCircle} label="FAQ & Help" onClick={() => setSubPage("faq")} />
-        <ProfileRow icon={Shield} label="Privacy & Security" onClick={() => setSubPage("privacy")} />
-        <ProfileRow icon={FileText} label="Terms & Conditions" onClick={() => setSubPage("terms")} />
-      </Group>
+      {/* Admin-only: thumbnail storage status (shown only when the server says this session is an admin) */}
+      {user?.isAdmin && (
+        <Link
+          href="/admin/storage"
+          className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex items-center gap-3 w-full text-left"
+        >
+          <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0 text-lg">🗄️</div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-primary">Thumbnail Storage</p>
+            <p className="text-xs text-secondary">DBByte usage &amp; status (admin)</p>
+          </div>
+          <ChevronRight size={16} className="text-secondary flex-shrink-0" />
+        </Link>
+      )}
 
-      <Group title="Other">
+      {/* Sections */}
+      <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-app">
+          <p className="text-xs font-semibold text-secondary uppercase tracking-wide">Preferences</p>
+        </div>
         <ProfileRow
           icon={dark ? Sun : Moon}
-          label={dark ? "Switch to Light Mode" : "Switch to Dark Mode"}
-          onClick={toggle}
-          role="switch"
-          checked={dark}
+          iconBg="bg-indigo-50 dark:bg-indigo-900/20"
+          iconColor="text-indigo-500"
+          label={dark ? "Light Mode" : "Dark Mode"}
           action={
-            <span
-              aria-hidden
-              className={cn("w-11 h-6 rounded-full transition-colors relative flex-shrink-0", dark ? "bg-brand" : "bg-gray-200 dark:bg-gray-700")}
+            <div
+              onClick={toggle}
+              className={cn(
+                "w-11 h-6 rounded-full transition-colors relative cursor-pointer flex-shrink-0",
+                dark ? "bg-brand" : "bg-gray-200 dark:bg-gray-700"
+              )}
             >
-              <span className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform", dark ? "translate-x-5" : "translate-x-0.5")} />
-            </span>
+              <div className={cn(
+                "absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform",
+                dark ? "translate-x-5" : "translate-x-0.5"
+              )} />
+            </div>
           }
           noChevron
         />
-      </Group>
+        <ProfileRow
+          icon={Globe}
+          iconBg="bg-blue-50 dark:bg-blue-900/20"
+          iconColor="text-blue-500"
+          label="Language"
+          value="English"
+          onClick={() => {}}
+        />
+      </div>
+
+      <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-app">
+          <p className="text-xs font-semibold text-secondary uppercase tracking-wide">Management</p>
+        </div>
+        <ProfileRow
+          icon={MessageCircle}
+          iconBg="bg-cyan-50 dark:bg-cyan-900/20"
+          iconColor="text-cyan-500"
+          label="Channel Management"
+          onClick={() => setSubPage("channel")}
+        />
+        <ProfileRow
+          icon={Shield}
+          iconBg="bg-green-50 dark:bg-green-900/20"
+          iconColor="text-green-500"
+          label="Privacy & Security"
+          onClick={() => {}}
+        />
+      </div>
+
+      <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-app">
+          <p className="text-xs font-semibold text-secondary uppercase tracking-wide">Support</p>
+        </div>
+        <ProfileRow
+          icon={HelpCircle}
+          iconBg="bg-yellow-50 dark:bg-yellow-900/20"
+          iconColor="text-yellow-500"
+          label="FAQ & Help"
+          onClick={() => setSubPage("faq")}
+        />
+        <ProfileRow
+          icon={MessageCircle}
+          iconBg="bg-teal-50 dark:bg-teal-900/20"
+          iconColor="text-teal-500"
+          label="Contact Support"
+          onClick={() => {}}
+        />
+      </div>
 
       <div className="text-center">
-        <p className="text-xs text-muted">Onfile v1.0.0</p>
+        <p className="text-xs text-muted">Onfile v1.0.0 · Made with ❤️</p>
       </div>
     </div>
-  );
-}
-
-function Group({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section aria-label={title} className="flex flex-col gap-2">
-      <h3 className="px-1 text-xs font-semibold text-secondary uppercase tracking-wide">{title}</h3>
-      <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">{children}</div>
-    </section>
   );
 }
 
@@ -598,47 +701,35 @@ function ChannelStatusBadge({ status }: { status: ConnectedChannel["status"] }) 
 
 function ProfileRow({
   icon: Icon,
+  iconBg,
+  iconColor,
   label,
   value,
   action,
   onClick,
-  href,
   noChevron,
-  role,
-  checked,
 }: {
-  icon: React.ComponentType<{ size?: number; className?: string }>;
+  icon: React.FC<{ size: number; className: string }>;
+  iconBg: string;
+  iconColor: string;
   label: string;
   value?: string;
   action?: React.ReactNode;
   onClick?: () => void;
-  href?: string;
   noChevron?: boolean;
-  role?: "switch";
-  checked?: boolean;
 }) {
-  const classes = "w-full flex items-center gap-3 px-4 min-h-[52px] py-2.5 border-b border-app last:border-0 text-left transition-colors active:bg-secondary hover:bg-secondary";
-  const inner = (
-    <>
-      <span className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 bg-brand-10">
-        <Icon size={15} className="text-brand" />
-      </span>
-      <span className="flex-1 min-w-0 text-sm font-medium text-primary truncate">{label}</span>
-      {value && <span className="text-xs text-secondary flex-shrink-0 max-w-[40%] truncate">{value}</span>}
+  return (
+    <div
+      className={cn("flex items-center gap-3 px-4 py-3.5 border-b border-app last:border-0 transition-colors", onClick && "hover:bg-secondary cursor-pointer")}
+      onClick={onClick}
+    >
+      <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0", iconBg)}>
+        <Icon size={15} className={iconColor} />
+      </div>
+      <span className="flex-1 text-sm font-medium text-primary">{label}</span>
+      {value && <span className="text-xs text-secondary">{value}</span>}
       {action}
       {!noChevron && !action && <ChevronRight size={14} className="text-muted flex-shrink-0" />}
-    </>
-  );
-  if (href) {
-    return (
-      <Link href={href} className={classes}>
-        {inner}
-      </Link>
-    );
-  }
-  return (
-    <button type="button" onClick={onClick} className={classes} role={role} aria-checked={role === "switch" ? checked : undefined}>
-      {inner}
-    </button>
+    </div>
   );
 }

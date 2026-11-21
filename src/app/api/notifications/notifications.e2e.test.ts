@@ -285,12 +285,12 @@ describe("genuine backend events create notifications for the right user", () =>
       new NextRequest("http://localhost/api/wallet/withdraw", {
         method: "POST",
         headers: { host: "localhost", cookie: `onfile_session=${tokenA}`, "content-type": "application/json", "x-forwarded-for": `10.9.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}` },
-        body: JSON.stringify({ amount: 12, walletAddress: "TXyz1234567890abcdef", network: "TRC20", currency: "USDT" }),
+        body: JSON.stringify({ amount: 5, walletAddress: "TXyz1234567890abcdef", network: "TRC20", currency: "USDT" }),
       })
     );
     expect(res.status).toBe(201);
     const a = (await (await list(tokenA)).json()).notifications;
     expect(a[0]).toMatchObject({ type: "withdrawal_requested", destination: { type: "wallet", available: true } });
-    expect(a[0].body).toContain("12.00 USDT");
+    expect(a[0].body).toContain("5.00 USDT");
   });
 });
