@@ -9,6 +9,9 @@ export interface UserProfile {
   firstName?: string;
   lastName?: string;
   avatarUrl?: string;
+  /** True when the creator uploaded their own profile picture (otherwise the default avatar is shown). */
+  hasCustomAvatar?: boolean;
+  createdAt?: string;
   balance: string;
   pendingBalance: string;
   referralEarnings: string;

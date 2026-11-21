@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
   // function for the ONE route that uses it. No other route loads sharp.
   outputFileTracingIncludes: {
     "/api/files/[id]/thumbnail": ["./node_modules/sharp/**/*", "./node_modules/@img/**/*"],
+    // Profile picture upload also decodes/re-encodes with sharp.
+    "/api/user/avatar": ["./node_modules/sharp/**/*", "./node_modules/@img/**/*"],
   },
 };
 

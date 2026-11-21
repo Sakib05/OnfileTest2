@@ -7,7 +7,8 @@
  * authentication/authorization.
  */
 
-const ALLOWED_AVATAR_HOST_SUFFIXES = ["t.me", "telegram.org", "telegram-cdn.org", "cdn-telegram.org"];
+// "dbbyte.com": creator-uploaded profile pictures are served from the same CDN as thumbnails (src/lib/profileImage.ts).
+const ALLOWED_AVATAR_HOST_SUFFIXES = ["t.me", "telegram.org", "telegram-cdn.org", "cdn-telegram.org", "dbbyte.com"];
 
 /**
  * Returns the URL unchanged when it is a well-formed https URL on a Telegram

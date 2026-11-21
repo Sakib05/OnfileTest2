@@ -8,6 +8,7 @@ import { cn, formatCurrency, timeAgo } from "@/lib/utils";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
+import { checkWithdrawalAmount, MIN_WITHDRAWAL_MESSAGE, MIN_WITHDRAWAL_MICRO, MIN_WITHDRAWAL_USD, parseMoneyToMicro } from "@/lib/money";
 
 interface Transaction {
   id: number;
@@ -66,6 +67,7 @@ export default function WalletTab() {
     currency: "USDT",
   });
   const [withdrawLoading, setWithdrawLoading] = useState(false);
+  const [amountError, setAmountError] = useState<string | null>(null);
 
   const fetchWallet = useCallback(async () => {
     try {
@@ -88,6 +90,14 @@ export default function WalletTab() {
       toast("Please fill all required fields", "error");
       return;
     }
+    // Client-side check is for fast feedback only — the server enforces the same $10 minimum independently.
+    const amountCheck = checkWithdrawalAmount(withdrawForm.amount);
+    if (!amountCheck.ok) {
+      setAmountError(amountCheck.message);
+      toast(amountCheck.message, "error");
+      return;
+    }
+    setAmountError(null);
     setWithdrawLoading(true);
     try {
       const res = await fetch("/api/wallet/withdraw", {
@@ -118,6 +128,9 @@ export default function WalletTab() {
   };
 
   const balance = Number(user?.balance ?? 0);
+  // Exact (string-based) comparison against the minimum; display-only Number() is used elsewhere.
+  const balanceMicro = parseMoneyToMicro(user?.balance ?? "0") ?? 0;
+  const belowMinimum = balanceMicro < MIN_WITHDRAWAL_MICRO;
   const pending = Number(user?.pendingBalance ?? 0);
   const referralEarnings = Number(user?.referralEarnings ?? 0);
   const totalEarnings = Number(user?.totalEarnings ?? 0);
@@ -148,6 +161,9 @@ export default function WalletTab() {
           >
             Withdraw Now
           </button>
+          <p className="text-xs opacity-80 mt-2" data-testid="min-withdrawal-note">
+            Minimum withdrawal: ${MIN_WITHDRAWAL_USD} USD{belowMinimum ? ` · You need at least $${MIN_WITHDRAWAL_USD} available to withdraw.` : ""}
+          </p>
         </div>
       </div>
 
@@ -314,10 +330,13 @@ export default function WalletTab() {
         title="Withdraw Funds"
         size="md"
       >
-        <form onSubmit={handleWithdraw} className="flex flex-col gap-4">
+        <form onSubmit={handleWithdraw} noValidate className="flex flex-col gap-4">
           <div className="p-3 rounded-xl bg-brand-10 border border-brand text-xs">
             <p className="font-semibold text-brand mb-0.5">Available: {balance.toFixed(4)} USDT</p>
-            <p className="text-secondary">Minimum withdrawal: 1 USDT</p>
+            <p className="text-secondary">Minimum withdrawal: ${MIN_WITHDRAWAL_USD} USD ({MIN_WITHDRAWAL_USD} USDT)</p>
+            {belowMinimum && (
+              <p className="text-red-500 mt-1" role="alert">{MIN_WITHDRAWAL_MESSAGE} Your available balance is below this amount.</p>
+            )}
           </div>
 
           <div>
@@ -326,13 +345,15 @@ export default function WalletTab() {
               className="input-app text-sm"
               type="number"
               step="0.0001"
-              min="1"
+              min={MIN_WITHDRAWAL_USD}
               max={balance}
               placeholder="0.0000"
               value={withdrawForm.amount}
-              onChange={(e) => setWithdrawForm((prev) => ({ ...prev, amount: e.target.value }))}
+              onChange={(e) => { setAmountError(null); setWithdrawForm((prev) => ({ ...prev, amount: e.target.value })); }}
+              aria-invalid={!!amountError}
               required
             />
+            {amountError && <p className="text-xs text-red-500 mt-1" role="alert">{amountError}</p>}
           </div>
 
           <div>
@@ -371,7 +392,7 @@ export default function WalletTab() {
             <button type="button" onClick={() => setShowWithdrawModal(false)} className="flex-1 btn-secondary py-3 text-sm">
               Cancel
             </button>
-            <button type="submit" disabled={withdrawLoading} className="flex-1 btn-primary py-3 text-sm">
+            <button type="submit" disabled={withdrawLoading || belowMinimum} className="flex-1 btn-primary py-3 text-sm disabled:opacity-50">
               {withdrawLoading ? "Submitting..." : "Submit Request"}
             </button>
           </div>

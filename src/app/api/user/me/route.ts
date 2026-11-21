@@ -3,7 +3,8 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest } from "@/lib/auth";
-import { isAdminUser } from "@/lib/adminAuth";
+import { validateDisplayName } from "@/lib/profile";
+import { serializeUser } from "@/lib/userSerializer";
 
 /**
  * Returns the profile of the currently authenticated creator, derived
@@ -20,43 +21,28 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ user: null }, { status: 200 });
     }
 
-    return NextResponse.json({
-      user: {
-        id: user.id,
-        telegramId: user.telegramId ?? undefined,
-        username: user.username ?? undefined,
-        firstName: user.firstName ?? undefined,
-        lastName: user.lastName ?? undefined,
-        avatarUrl: user.avatarUrl ?? undefined,
-        balance: user.balance ?? "0",
-        pendingBalance: user.pendingBalance ?? "0",
-        referralEarnings: user.referralEarnings ?? "0",
-        totalDownloads: user.totalDownloads ?? 0,
-        totalEarnings: user.totalEarnings ?? "0",
-        referralCode: user.referralCode ?? undefined,
-        darkMode: user.darkMode ?? false,
-        language: user.language ?? "en",
-        isAdmin: isAdminUser(user),
-      },
-    });
+    return NextResponse.json({ user: serializeUser(user, { includeAdmin: true }) });
   } catch (err) {
     console.error("user_me_failed", err instanceof Error ? err.message : "unknown_error");
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-const PATCHABLE_FIELDS = ["username", "firstName", "lastName", "language", "darkMode"] as const;
-type PatchableField = (typeof PATCHABLE_FIELDS)[number];
-
-function isValidPatchBody(body: unknown): body is Partial<Record<PatchableField, unknown>> {
+function isValidPatchBody(body: unknown): body is Record<string, unknown> {
   return !!body && typeof body === "object" && !Array.isArray(body);
 }
 
 /**
- * Updates a small set of self-service profile fields for the authenticated
- * creator. Requires a valid session (never a client-supplied user id) and a
- * same-origin request (defense in depth against CSRF on this
- * cookie-authenticated, state-changing endpoint).
+ * Updates the small set of self-service profile fields for the authenticated creator: Display Name, language and
+ * dark mode. Requires a valid session (never a client-supplied user id) and a same-origin request (defense in depth
+ * against CSRF on this cookie-authenticated, state-changing endpoint).
+ *
+ * What this endpoint can NEVER change: the Telegram username, the Telegram id, balances, referral data or any other
+ * column — those keys are not read at all. A request that tries to set `username` is rejected explicitly.
+ *
+ * Display Name is stored in the existing `first_name` column (the name every Onfile screen already shows) and the
+ * creator's `display_name_custom` flag is set so the Telegram login sync stops overwriting it. Accepted as
+ * `displayName` (preferred) or `firstName` (legacy alias).
  */
 export async function PATCH(req: NextRequest) {
   if (!isSameOriginRequest(req)) {
@@ -79,25 +65,23 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const updates: Record<string, unknown> = {};
+  if ("username" in body || "telegramId" in body) {
+    return NextResponse.json(
+      { error: "Your Telegram username can't be changed in Onfile. It follows your Telegram account.", code: "username_read_only" },
+      { status: 400 }
+    );
+  }
 
-  if ("username" in body) {
-    if (typeof body.username !== "string" || body.username.length > 128) {
-      return NextResponse.json({ error: "Invalid username" }, { status: 400 });
+  const updates: Partial<typeof users.$inferInsert> = {};
+
+  if ("displayName" in body || "firstName" in body) {
+    const check = validateDisplayName("displayName" in body ? body.displayName : body.firstName);
+    if (!check.ok) {
+      return NextResponse.json({ error: check.error, code: "invalid_display_name" }, { status: 400 });
     }
-    updates.username = body.username.trim() || null;
-  }
-  if ("firstName" in body) {
-    if (typeof body.firstName !== "string" || body.firstName.length > 128) {
-      return NextResponse.json({ error: "Invalid firstName" }, { status: 400 });
-    }
-    updates.firstName = body.firstName.trim() || null;
-  }
-  if ("lastName" in body) {
-    if (typeof body.lastName !== "string" || body.lastName.length > 128) {
-      return NextResponse.json({ error: "Invalid lastName" }, { status: 400 });
-    }
-    updates.lastName = body.lastName.trim() || null;
+    updates.firstName = check.value;
+    updates.lastName = null; // the Display Name is the whole visible name
+    updates.displayNameCustom = true;
   }
   if ("language" in body) {
     if (typeof body.language !== "string" || body.language.length > 10) {
@@ -123,24 +107,7 @@ export async function PATCH(req: NextRequest) {
       .where(eq(users.id, user.id))
       .returning();
 
-    return NextResponse.json({
-      user: {
-        id: updated.id,
-        telegramId: updated.telegramId ?? undefined,
-        username: updated.username ?? undefined,
-        firstName: updated.firstName ?? undefined,
-        lastName: updated.lastName ?? undefined,
-        avatarUrl: updated.avatarUrl ?? undefined,
-        balance: updated.balance ?? "0",
-        pendingBalance: updated.pendingBalance ?? "0",
-        referralEarnings: updated.referralEarnings ?? "0",
-        totalDownloads: updated.totalDownloads ?? 0,
-        totalEarnings: updated.totalEarnings ?? "0",
-        referralCode: updated.referralCode ?? undefined,
-        darkMode: updated.darkMode ?? false,
-        language: updated.language ?? "en",
-      },
-    });
+    return NextResponse.json({ user: serializeUser(updated) });
   } catch (err) {
     console.error("user_me_patch_failed", err instanceof Error ? err.message : "unknown_error");
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

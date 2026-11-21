@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { files, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { sanitizeAvatarUrl } from "@/lib/avatar";
+import { resolveAvatarUrl } from "@/lib/profileImage";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
@@ -30,6 +30,7 @@ export async function GET(
         firstName: users.firstName,
         username: users.username,
         avatarUrl: users.avatarUrl,
+        profileImageKey: users.profileImageKey,
       })
       .from(users)
       .where(eq(users.id, file.userId));
@@ -43,7 +44,7 @@ export async function GET(
         ? {
             firstName: creator.firstName ?? null,
             username: creator.username ?? null,
-            avatarUrl: sanitizeAvatarUrl(creator.avatarUrl),
+            avatarUrl: resolveAvatarUrl(creator),
           }
         : null,
       file: {

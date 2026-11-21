@@ -95,6 +95,13 @@ export const users = pgTable(
     firstName: varchar("first_name", { length: 128 }),
     lastName: varchar("last_name", { length: 128 }),
     avatarUrl: text("avatar_url"),
+    // Creator-chosen profile picture (see src/lib/profileImage.ts). Only the storage OBJECT KEY is kept (never
+    // bytes/base64); the delivery URL is derived at runtime like thumbnails. NULL => the existing default
+    // (Telegram photo `avatar_url`, or the initial-letter fallback) is shown, exactly as before.
+    profileImageKey: varchar("profile_image_key", { length: 255 }),
+    // TRUE once the creator has edited their Display Name in Onfile: the Telegram login sync then stops
+    // overwriting first_name/last_name. Username is never creator-editable and always follows Telegram.
+    displayNameCustom: boolean("display_name_custom").default(false).notNull(),
     email: varchar("email", { length: 256 }),
     language: varchar("language", { length: 10 }).default("en"),
     darkMode: boolean("dark_mode").default(false),

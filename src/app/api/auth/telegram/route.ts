@@ -70,8 +70,10 @@ export async function POST(req: NextRequest) {
         .update(users)
         .set({
           username: tgUser.username ?? existing.username,
-          firstName: tgUser.first_name ?? existing.firstName,
-          lastName: tgUser.last_name ?? existing.lastName,
+          // A Display Name the creator edited inside Onfile is never overwritten by the Telegram sync.
+          // (The @username is NOT creator-editable and always follows Telegram.)
+          firstName: existing.displayNameCustom ? existing.firstName : (tgUser.first_name ?? existing.firstName),
+          lastName: existing.displayNameCustom ? existing.lastName : (tgUser.last_name ?? existing.lastName),
           avatarUrl: tgUser.photo_url ?? existing.avatarUrl,
           language: tgUser.language_code ?? existing.language,
           updatedAt: new Date(),
