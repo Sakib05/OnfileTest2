@@ -5,7 +5,7 @@ import { channels, files, playlists } from "@/db/schema";
 import { hashAccessPassword } from "@/lib/password";
 import { appendMembershipInTx } from "@/lib/playlistMembers";
 import { claimStagedThumbnail } from "@/lib/thumbnails/staged";
-import { resolvePublicChatId } from "@/lib/telegramBot";
+import { checkChannelPostExists, resolvePublicChatId } from "@/lib/telegramBot";
 import { parseTelegramPostLink, postIdentityKey } from "@/lib/telegramPostLink";
 import { isPaidPublishingAvailable } from "./payments";
 import type { PublishDeps } from "./publishPost";
@@ -44,6 +44,8 @@ export const dbPublishDeps: PublishDeps = {
   },
 
   resolvePublicChat: resolvePublicChatId,
+
+  checkPostExists: checkChannelPostExists,
 
   async insertUnlessDuplicate(record) {
     try {

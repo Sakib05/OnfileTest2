@@ -731,7 +731,7 @@ describe("Creator playlist page — playlist More menu", () => {
     await mount();
     await click(moreTile());
     const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim());
-    expect(labels).toEqual(["Edit details", "Make private", "Monetization settings", "Share settings", "Copy public link", "Duplicate playlist", "Delete playlist"]);
+    expect(labels).toEqual(["Edit details", "Make private", "Monetization settings", "Share settings", "Duplicate playlist", "Delete playlist"]);
     expect(menuEl()?.getAttribute("role")).toBe("menu");
     expect(q('[data-testid="menu-item-delete"]')!.className).toContain("text-red-500");
     expect(qa('[role="separator"]').length).toBeGreaterThanOrEqual(2);
@@ -1069,14 +1069,13 @@ describe("Playlist page — sharing", () => {
     expect(share).toHaveBeenCalledWith(expect.objectContaining({ url: `https://onfile.test/p/${SHARE_SLUG}`, title: "Accounting" }));
   });
 
-  it("'Copy playlist link' in the menu copies the link without opening the dialog", async () => {
-    const writeText = clip();
+  it("the ⋮ menu no longer has a separate Copy Link action (Share settings → Copy playlist link is the only place)", async () => {
     await mount();
-    await choose("copy");
-    await flush();
-    expect(writeText).toHaveBeenCalledWith(`https://onfile.test/p/${SHARE_SLUG}`);
-    expect(sheet()).toBeNull();
-    expect(document.body.textContent).toContain("Playlist link copied");
+    await click(moreTile());
+    const labels = qa('[data-testid="action-menu"] [role="menuitem"]').map((i) => i.textContent?.trim().toLowerCase() ?? "");
+    expect(labels.some((l) => l.includes("copy") && l.includes("link"))).toBe(false);
+    expect(q('[data-testid="menu-item-copy"]')).toBeNull();
+    expect(q('[data-testid="menu-item-share"]')).not.toBeNull();
   });
 
   it("a private playlist explains why it can't be shared and offers 'Make public & share' (existing PATCH isPublished)", async () => {
@@ -1098,10 +1097,10 @@ describe("Playlist page — sharing", () => {
     expect((shareBtn("share-url") as unknown as HTMLInputElement).value).toBe(`https://onfile.test/p/${SHARE_SLUG}`);
   });
 
-  it("a paid playlist can't be shared and says why; the menu's Copy link reports the same error", async () => {
+  it("a paid playlist can't be shared and says why (Share settings reports the error)", async () => {
     shareResult = { status: 409, body: { error: "Paid playlists can't be shared yet because Telegram Stars payments aren't connected.", reason: "paid_unavailable" } };
     await mount();
-    await choose("copy");
+    await choose("share");
     await flush();
     expect(document.body.textContent).toContain("Paid playlists can't be shared yet");
   });

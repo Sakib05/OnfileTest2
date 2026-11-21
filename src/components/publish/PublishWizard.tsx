@@ -174,6 +174,8 @@ export default function PublishWizard({ onFinished }: { onFinished?: () => void 
         case "channel_mismatch":
         case "verification_unavailable":
         case "invalid_message_id":
+        case "post_not_found":
+        case "post_not_copyable":
           // Link is no longer acceptable: send the creator back to re-verify.
           setDraft((d) => ({ ...d, verified: null }));
           goTo(0);

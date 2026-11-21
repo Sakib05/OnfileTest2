@@ -13,7 +13,7 @@ import {
   type Modifier,
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { ChevronLeft, CircleDollarSign, Copy, EyeOff, Globe, GripVertical, Link2, ListPlus, Loader2, Pencil, Share2, Trash2 } from "lucide-react";
+import { ChevronLeft, CircleDollarSign, Copy, EyeOff, Globe, GripVertical, ListPlus, Loader2, Pencil, Share2, Trash2 } from "lucide-react";
 import { type ActionMenuItem } from "@/components/ui/ActionMenu";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ShareSheet from "@/components/playlists/ShareSheet";
@@ -21,7 +21,7 @@ import { useToast } from "@/components/ui/Toast";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts/AppContext";
 import { itemHref } from "@/lib/playlistSharing";
-import { copyText, requestShareLink } from "@/lib/playlistShareClient";
+import { requestShareLink } from "@/lib/playlistShareClient";
 import { chunkIds, duplicateTitle, moveToFront, previewBlock, summariseFiles } from "@/lib/playlistManage";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import { isRunningInsideTelegram } from "@/lib/telegramWebApp";
@@ -430,17 +430,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
     }
   };
 
-  const copyPlaylistLink = async () => {
-    const r = await requestShareLink(pid);
-    if (!r.ok) {
-      toast(r.message, "error");
-      if (r.reason === "private") setShareOpen(true); // offers "Make public & share"
-      return;
-    }
-    const copied = await copyText(r.share.url);
-    toast(copied ? "Playlist link copied" : "Couldn't copy the link. Open Share to copy it manually.", copied ? "success" : "error");
-  };
-
   const locked = dragging || saving || busyFileId !== null || working;
   const memberIds = useMemo(() => new Set(files.map((f) => f.id)), [files]);
   const otherPlaylists = allPlaylists.filter((p) => p.id !== pid);
@@ -463,7 +452,6 @@ export default function PlaylistPage({ playlistId, initialView = "list" }: { pla
           : { key: "visibility", label: "Make public", icon: Globe, onSelect: () => void setVisibility(true) },
         { key: "monetization", label: "Monetization settings", icon: CircleDollarSign, onSelect: () => setView({ name: "monetization" }) },
         { key: "share", label: "Share settings", icon: Share2, onSelect: () => setShareOpen(true) },
-        { key: "copy", label: "Copy public link", icon: Link2, onSelect: () => void copyPlaylistLink() },
         { key: "duplicate", label: "Duplicate playlist", icon: Copy, separated: true, onSelect: () => setConfirm({ kind: "duplicate" }) },
         { key: "delete", label: "Delete playlist", icon: Trash2, destructive: true, onSelect: () => setConfirmDelete(true) },
       ]

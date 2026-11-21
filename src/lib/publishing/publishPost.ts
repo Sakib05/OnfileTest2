@@ -1,5 +1,5 @@
 import { validatePublishPayload, type FieldErrors } from "./validation";
-import { verifyPostLinkAgainstChannels, type ConnectedChannelRef, type PublicChatResolver } from "@/lib/channelPostVerification";
+import { verifyPostLinkAgainstChannels, type ConnectedChannelRef, type PostExistenceChecker, type PublicChatResolver } from "@/lib/channelPostVerification";
 import { PAID_PUBLISHING_UNAVAILABLE_MESSAGE } from "./payments";
 import { postIdentityKey } from "@/lib/telegramPostLink";
 
@@ -33,6 +33,12 @@ export interface PublishDeps {
   playlistBelongsToUser(playlistId: number, userId: number): Promise<boolean>;
   resolvePublicChat: PublicChatResolver;
   /**
+   * Exact-message existence check against Telegram. `probeChatId` is the
+   * authenticated creator's own Telegram user id (private chat with the bot),
+   * used only as a transient, immediately-deleted copy target.
+   */
+  checkPostExists(args: { chatId: string; messageId: number; probeChatId: string | null }): ReturnType<PostExistenceChecker>;
+  /**
    * Must atomically (per user) check that no existing file of this user points
    * at the same post, then insert. Returns "duplicate" without inserting.
    */
@@ -45,11 +51,17 @@ export interface PublishDeps {
 export type PublishOutcome =
   | { status: 201; body: { file: unknown; published: boolean } }
   | {
-      status: 400 | 403 | 409 | 503;
+      status: 400 | 403 | 404 | 409 | 422 | 503;
       body: { error: string; reason: string; fieldErrors?: FieldErrors };
     };
 
-export async function publishPost(deps: PublishDeps, userId: number, rawBody: unknown): Promise<PublishOutcome> {
+export async function publishPost(
+  deps: PublishDeps,
+  userId: number,
+  rawBody: unknown,
+  /** Authenticated creator's Telegram user id (from the session user row), or null. */
+  telegramUserId: string | null
+): Promise<PublishOutcome> {
   const parsed = validatePublishPayload(rawBody);
   if (!parsed.ok) {
     return {
@@ -61,9 +73,14 @@ export async function publishPost(deps: PublishDeps, userId: number, rawBody: un
 
   // 1. Channel ownership — from the server-side account, never the client.
   const channels = await deps.listVerifiedChannels(userId);
-  const verification = await verifyPostLinkAgainstChannels(v.telegramMessageLink, channels, deps.resolvePublicChat);
+  const verification = await verifyPostLinkAgainstChannels(
+    v.telegramMessageLink,
+    channels,
+    deps.resolvePublicChat,
+    (a) => deps.checkPostExists({ ...a, probeChatId: telegramUserId })
+  );
   if (!verification.ok) {
-    const status = verification.status === 400 ? 400 : verification.status === 503 ? 503 : 403;
+    const status = ([400, 404, 409, 422, 503] as const).includes(verification.status as 400) ? (verification.status as 400 | 404 | 409 | 422 | 503) : 403;
     const reason = verification.reason === "no_connected_channel" ? "channel_required" : verification.reason;
     return { status, body: { error: verification.message, reason } };
   }

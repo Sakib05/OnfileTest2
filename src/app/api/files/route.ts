@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
     if (!allowed) {
       return NextResponse.json({ error: "Too many attempts. Please wait a moment.", reason: "rate_limited" }, { status: 429 });
     }
-    const outcome = await publishPost(dbPublishDeps, user.id, body);
+    const outcome = await publishPost(dbPublishDeps, user.id, body, user.telegramId ?? null);
     if (outcome.status === 201 && outcome.body.published) {
       // Genuine backend event: a file was created AND published (drafts are not announced).
       const created = outcome.body.file as { id?: number; title?: string } | null;

@@ -19,6 +19,10 @@ import { POST as membersAdd } from "../playlists/[id]/files/route";
 import { DELETE as membersRemove } from "../playlists/[id]/files/[fileId]/route";
 import { GET as linkGet } from "../link/[slug]/route";
 
+// SIMULATED Telegram: these DB tests exercise persistence/ownership rules, not Telegram. The existence
+// check is stubbed to "exists" here; real-Telegram behaviour is covered by checkChannelPostExists tests.
+const simulatedDeps = { ...dbPublishDeps, checkPostExists: async () => ({ ok: true as const }) };
+
 /**
  * End-to-end: REAL route handlers + REAL session cookies + REAL Postgres + REAL
  * sharp + the REAL DBByte HTTP client talking to a LOCAL fake that mimics the
@@ -219,7 +223,7 @@ describe("Thumbnail upload (real route + real DB + real sharp + DBByte client vs
 
   it("publishes with a thumbnail: links it to the new post, shows it on the public link API, and survives re-reads", async () => {
     const { thumbnail } = await (await stage(tokenA, await jpeg(), "p.jpg")).json();
-    const out = await publishPost(dbPublishDeps, userA, pubBody({ thumbnailRef: thumbnail.ref }));
+    const out = await publishPost(simulatedDeps, userA, pubBody({ thumbnailRef: thumbnail.ref }), "5550001");
     expect(out.status).toBe(201);
     const file = (out.body as { file: { id: number; smartLinkSlug: string } }).file;
 
@@ -234,7 +238,7 @@ describe("Thumbnail upload (real route + real DB + real sharp + DBByte client vs
   });
 
   it("a post published WITHOUT a thumbnail has none (default fallback)", async () => {
-    const out = await publishPost(dbPublishDeps, userA, pubBody());
+    const out = await publishPost(simulatedDeps, userA, pubBody(), "5550001");
     expect(out.status).toBe(201);
     const file = (out.body as { file: { id: number; smartLinkSlug: string } }).file;
     expect(await db.select().from(fileThumbnails).where(eq(fileThumbnails.fileId, file.id))).toHaveLength(0);
@@ -246,20 +250,20 @@ describe("Thumbnail upload (real route + real DB + real sharp + DBByte client vs
     const { thumbnail } = await (await stage(tokenA, await jpeg(), "x.jpg")).json();
 
     const stolenLink = `https://t.me/c/9900000222/${700 + ++seq}`;
-    const stolen = await publishPost(dbPublishDeps, userB, { ...pubBody({ thumbnailRef: thumbnail.ref }), telegramMessageLink: stolenLink });
+    const stolen = await publishPost(simulatedDeps, userB, { ...pubBody({ thumbnailRef: thumbnail.ref }), telegramMessageLink: stolenLink }, "5550001");
     expect(stolen).toMatchObject({ status: 400, body: { reason: "validation_failed", fieldErrors: { thumbnail: expect.any(String) } } });
     expect(await db.select().from(files).where(eq(files.telegramMessageLink, stolenLink))).toHaveLength(0);
     expect((await db.select().from(thumbnailUploads).where(eq(thumbnailUploads.ref, thumbnail.ref)))[0].status).toBe("staged");
 
-    expect((await publishPost(dbPublishDeps, userA, pubBody({ thumbnailRef: thumbnail.ref }))).status).toBe(201);
+    expect((await publishPost(simulatedDeps, userA, pubBody({ thumbnailRef: thumbnail.ref }), "5550001")).status).toBe(201);
     const reuseLink = link();
-    const reused = await publishPost(dbPublishDeps, userA, { ...pubBody({ thumbnailRef: thumbnail.ref }), telegramMessageLink: reuseLink });
+    const reused = await publishPost(simulatedDeps, userA, { ...pubBody({ thumbnailRef: thumbnail.ref }), telegramMessageLink: reuseLink }, "5550001");
     expect(reused.status).toBe(400);
     expect(await db.select().from(files).where(eq(files.telegramMessageLink, reuseLink))).toHaveLength(0);
 
-    const bogus = await publishPost(dbPublishDeps, userA, pubBody({ thumbnailRef: "0".repeat(24) }));
+    const bogus = await publishPost(simulatedDeps, userA, pubBody({ thumbnailRef: "0".repeat(24) }), "5550001");
     expect(bogus.status).toBe(400);
-    const malformed = await publishPost(dbPublishDeps, userA, pubBody({ thumbnailRef: "https://evil.example/x.png" }));
+    const malformed = await publishPost(simulatedDeps, userA, pubBody({ thumbnailRef: "https://evil.example/x.png" }), "5550001");
     expect(malformed.status).toBe(400); // arbitrary URLs are never accepted as a thumbnail
   });
 
@@ -281,7 +285,7 @@ describe("Thumbnail upload (real route + real DB + real sharp + DBByte client vs
     expect(bucket.has(k1)).toBe(false);
 
     // Once the second is attached to a post, DELETE can no longer remove it.
-    expect((await publishPost(dbPublishDeps, userA, pubBody({ thumbnailRef: second.ref }))).status).toBe(201);
+    expect((await publishPost(simulatedDeps, userA, pubBody({ thumbnailRef: second.ref }), "5550001")).status).toBe(201);
     const late = await stageDelete(req(`/api/thumbnails/${second.ref}`, { method: "DELETE", token: tokenA }), ctxRef(second.ref));
     expect((await late.json()).removed).toBe(false);
     expect(bucket.has(k2)).toBe(true);
@@ -360,7 +364,7 @@ describe("Playlists (real routes + real sessions + real Postgres)", () => {
 
   it("publishes a post into the playlist; it shows in the contents + count, with its thumbnail", async () => {
     const { thumbnail } = await (await stage(tokenA, await jpeg(), "pl.jpg")).json();
-    const out = await publishPost(dbPublishDeps, userA, pubBody({ playlistId: playlistA, thumbnailRef: thumbnail.ref }));
+    const out = await publishPost(simulatedDeps, userA, pubBody({ playlistId: playlistA, thumbnailRef: thumbnail.ref }), "5550001");
     expect(out.status).toBe(201);
     const inside = await db.select().from(files).where(and(eq(files.userId, userA), eq(files.playlistId, playlistA)));
     expect(inside).toHaveLength(1);
@@ -371,7 +375,7 @@ describe("Playlists (real routes + real sessions + real Postgres)", () => {
   });
 
   it("refuses to attach another creator's playlist (publish and edit) and invalid ids", async () => {
-    expect((await publishPost(dbPublishDeps, userA, pubBody({ playlistId: playlistOfB }))).status).toBe(400);
+    expect((await publishPost(simulatedDeps, userA, pubBody({ playlistId: playlistOfB }), "5550001")).status).toBe(400);
     const [mine] = await db.select().from(files).where(and(eq(files.userId, userA), eq(files.playlistId, playlistA)));
     // Membership is managed through /api/playlists/:id/files: another creator's playlist is a 404 and nothing is written.
     const steal = await membersAdd(req(`/api/playlists/${playlistOfB}/files`, { method: "POST", token: tokenA, json: { fileIds: [mine.id] } }), ctxId(playlistOfB));
@@ -384,7 +388,7 @@ describe("Playlists (real routes + real sessions + real Postgres)", () => {
     expect(ignored.status).toBe(200);
     expect(await db.select().from(playlistFiles).where(eq(playlistFiles.playlistId, playlistOfB))).toHaveLength(0);
     expect((await db.select().from(files).where(eq(files.id, mine.id)))[0].playlistId).toBe(playlistA);
-    expect((await publishPost(dbPublishDeps, userA, pubBody({ playlistId: 999999999 }))).status).toBe(400);
+    expect((await publishPost(simulatedDeps, userA, pubBody({ playlistId: 999999999 }), "5550001")).status).toBe(400);
   });
 
   it("editing a post leaves its thumbnail and playlist untouched; removing the playlist association works", async () => {

@@ -15,10 +15,13 @@ vi.mock("@/lib/auth", () => ({
 
 const listVerifiedChannels = vi.fn();
 const resolvePublicChat = vi.fn();
+// SIMULATED Telegram (see telegramBot.test.ts for the Bot API request/response handling).
+const checkPostExists = vi.fn();
 vi.mock("@/lib/publishing/publishDeps", () => ({
   dbPublishDeps: {
     listVerifiedChannels: (...a: unknown[]) => listVerifiedChannels(...a),
     resolvePublicChat: (...a: unknown[]) => resolvePublicChat(...a),
+    checkPostExists: (...a: unknown[]) => checkPostExists(...a),
   },
 }));
 
@@ -39,6 +42,8 @@ beforeEach(() => {
   getSessionUser.mockReset();
   listVerifiedChannels.mockReset();
   resolvePublicChat.mockReset();
+  checkPostExists.mockReset();
+  checkPostExists.mockResolvedValue({ ok: true });
   ipCounter++;
 });
 
@@ -69,7 +74,7 @@ describe("POST /api/publish/verify-link", () => {
       verified: true,
       canonicalLink: "https://t.me/c/1234567890/125",
       messageId: 125,
-      messageExistenceVerified: false,
+      messageExistenceVerified: true,
       channel: { name: "Mine" },
     });
     // Channel lookup used the authenticated id, not anything from the body.
@@ -119,6 +124,38 @@ describe("POST /api/publish/verify-link", () => {
     const res = await POST(req({ link: "https://t.me/somename/4" }));
     expect(res.status).toBe(503);
     expect((await res.json()).reason).toBe("verification_unavailable");
+  });
+
+  it("404 post_not_found for a non-existent message: the request is rejected and the probe received the exact id + session telegram id", async () => {
+    getSessionUser.mockResolvedValue({ id: 900 + ipCounter, telegramId: "5550001" });
+    listVerifiedChannels.mockResolvedValue([channel]);
+    checkPostExists.mockResolvedValue({ ok: false, reason: "post_not_found" });
+    const res = await POST(req({ link: "https://t.me/c/1234567890/152", probeChatId: "999" }));
+    expect(res.status).toBe(404);
+    const json = await res.json();
+    expect(json).toMatchObject({ reason: "post_not_found", error: "Post not found. Please check the Telegram post link and try again." });
+    expect(json.verified).toBeUndefined();
+    // chat id comes from the connected channel row; probe chat from the session — never from the body
+    expect(checkPostExists).toHaveBeenCalledWith({ chatId: "-1001234567890", messageId: 152, probeChatId: "5550001" });
+  });
+
+  it("never returns verified:true for timeouts (503), bot permission failures (403) or an unstarted bot chat (409)", async () => {
+    getSessionUser.mockResolvedValue({ id: 1000 + ipCounter, telegramId: "5550001" });
+    listVerifiedChannels.mockResolvedValue([channel]);
+    for (const [reason, status] of [["unavailable", 503], ["bot_no_access", 403], ["probe_chat_unavailable", 409]] as const) {
+      checkPostExists.mockResolvedValueOnce({ ok: false, reason });
+      const res = await POST(req({ link: "https://t.me/c/1234567890/15" }));
+      expect(res.status).toBe(status);
+      expect((await res.json()).verified).toBeUndefined();
+    }
+  });
+
+  it("no Telegram existence call for another channel's link or an invalid link", async () => {
+    getSessionUser.mockResolvedValue({ id: 1100 + ipCounter, telegramId: "5550001" });
+    listVerifiedChannels.mockResolvedValue([channel]);
+    await POST(req({ link: "https://t.me/c/9999999999/15" }));
+    await POST(req({ link: "garbage" }));
+    expect(checkPostExists).not.toHaveBeenCalled();
   });
 
   it("429 after too many attempts", async () => {

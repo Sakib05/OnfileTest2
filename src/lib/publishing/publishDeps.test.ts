@@ -5,6 +5,10 @@ import { channels, files, playlists, users } from "@/db/schema";
 import { dbPublishDeps } from "@/lib/publishing/publishDeps";
 import { publishPost } from "@/lib/publishing/publishPost";
 
+// SIMULATED Telegram: these DB tests exercise persistence/ownership rules, not Telegram. The existence
+// check is stubbed to "exists" here; real-Telegram behaviour is covered by checkChannelPostExists tests.
+const simulatedDeps = { ...dbPublishDeps, checkPostExists: async () => ({ ok: true as const }) };
+
 // Real-Postgres integration test of the publish persistence layer. Uses its own
 // throw-away users/channels and removes everything it creates.
 const TG_A = "990000001";
@@ -48,9 +52,9 @@ describe("publishPost against Postgres", () => {
   it("publishes once, and concurrent double-submits create exactly one row", async () => {
     const link = "https://t.me/c/9900000011/501";
     const results = await Promise.all([
-      publishPost(dbPublishDeps, userA, body(link)),
-      publishPost(dbPublishDeps, userA, body(link)),
-      publishPost(dbPublishDeps, userA, body(link + "?single")),
+      publishPost(simulatedDeps, userA, body(link), "5550001"),
+      publishPost(simulatedDeps, userA, body(link), "5550001"),
+      publishPost(simulatedDeps, userA, body(link + "?single"), "5550001"),
     ]);
     expect(results.map((r) => r.status).sort()).toEqual([201, 409, 409]);
     const rows = await db.select().from(files).where(eq(files.userId, userA));
@@ -64,20 +68,20 @@ describe("publishPost against Postgres", () => {
   });
 
   it("refuses another creator's channel link and a different channel's post", async () => {
-    const wrong = await publishPost(dbPublishDeps, userA, body("https://t.me/c/9900000022/1"));
+    const wrong = await publishPost(simulatedDeps, userA, body("https://t.me/c/9900000022/1"), "5550001");
     expect(wrong).toMatchObject({ status: 403, body: { reason: "channel_mismatch" } });
   });
 
   it("refuses to attach another creator's playlist", async () => {
-    const out = await publishPost(dbPublishDeps, userA, body("https://t.me/c/9900000011/502", { playlistId: playlistB }));
+    const out = await publishPost(simulatedDeps, userA, body("https://t.me/c/9900000011/502", { playlistId: playlistB }), "5550001");
     expect(out.status).toBe(400);
   });
 
   it("stores a paid post only as an unpublished draft and refuses to publish it", async () => {
     const paid = { monetization: "paid", starsPrice: 25 };
-    const refused = await publishPost(dbPublishDeps, userA, body("https://t.me/c/9900000011/503", paid));
+    const refused = await publishPost(simulatedDeps, userA, body("https://t.me/c/9900000011/503", paid), "5550001");
     expect(refused).toMatchObject({ status: 409, body: { reason: "paid_publishing_unavailable" } });
-    const saved = await publishPost(dbPublishDeps, userA, body("https://t.me/c/9900000011/503", { ...paid, mode: "draft" }));
+    const saved = await publishPost(simulatedDeps, userA, body("https://t.me/c/9900000011/503", { ...paid, mode: "draft" }), "5550001");
     expect(saved.status).toBe(201);
     const [row] = await db.select().from(files).where(eq(files.telegramMessageLink, "https://t.me/c/9900000011/503"));
     expect(row).toMatchObject({ isPublished: false, starsPrice: 25 });
@@ -85,7 +89,7 @@ describe("publishPost against Postgres", () => {
 
   it("returns channel_required for a creator without a verified channel", async () => {
     await db.update(channels).set({ status: "disconnected", isVerified: false }).where(eq(channels.userId, userB));
-    const out = await publishPost(dbPublishDeps, userB, body("https://t.me/c/9900000022/1"));
+    const out = await publishPost(simulatedDeps, userB, body("https://t.me/c/9900000022/1"), "5550001");
     expect(out).toMatchObject({ status: 403, body: { reason: "channel_required" } });
   });
 });

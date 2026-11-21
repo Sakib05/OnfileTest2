@@ -488,3 +488,123 @@ export async function resolvePublicChatId(username: string): Promise<ResolvePubl
   }
   return { ok: true, id: String(res.result.id), type: res.result.type };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exact post (message-id) existence check
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type PostExistenceFailureReason =
+  /** Telegram says that message id does not exist in the channel (never created, or deleted). */
+  | "post_not_found"
+  /** The message exists but cannot be copied/forwarded (service message, protected content). */
+  | "post_not_copyable"
+  /** The bot cannot read that channel (not a member / missing rights / kicked). */
+  | "bot_no_access"
+  /** The creator's private chat with the bot cannot receive the probe (never pressed Start / blocked the bot). */
+  | "probe_chat_unavailable"
+  /** Timeout, network error, 5xx, rate limit, missing token, unexpected response — nothing could be concluded. */
+  | "unavailable";
+
+export type PostExistenceResult = { ok: true } | { ok: false; reason: PostExistenceFailureReason; detail?: string };
+
+type ProbeErrorClass = PostExistenceFailureReason | "ambiguous_chat";
+
+/**
+ * Maps a Telegram `copyMessage` error to a verdict. Pure (unit-tested).
+ * Only the two documented "no such message" answers (`message to copy not found`,
+ * `MESSAGE_ID_INVALID`) are treated as "post does not exist". Anything we do not
+ * recognise is `unavailable` — i.e. NEVER an acceptance.
+ */
+export function classifyPostProbeError(errorCode: number | undefined, description: string): ProbeErrorClass {
+  const d = description || "";
+  if (/message to (copy|forward) not found|MESSAGE_ID_INVALID|MSG_ID_INVALID/i.test(d)) return "post_not_found";
+  if (/can'?t be (copied|forwarded)|protected content|CHAT_FORWARDS_RESTRICTED|forwards? (are )?restricted/i.test(d)) {
+    return "post_not_copyable";
+  }
+  if (/bot was blocked|can'?t initiate conversation|user is deactivated|PEER_ID_INVALID/i.test(d)) {
+    return "probe_chat_unavailable";
+  }
+  if (/not enough rights|not a member|was kicked|CHAT_ADMIN_REQUIRED|CHANNEL_PRIVATE|have no rights|forbidden/i.test(d)) {
+    return "bot_no_access";
+  }
+  if (errorCode === 400 && /chat not found/i.test(d)) return "ambiguous_chat";
+  return "unavailable";
+}
+
+const inFlightProbes = new Map<string, Promise<PostExistenceResult>>();
+
+/**
+ * Confirms that message `messageId` REALLY exists in channel `chatId` and can be
+ * delivered, using only documented Bot API methods.
+ *
+ * Why this method: the Bot API has no read-only "get message" call. `copyMessage`
+ * is the same primitive Onfile's delivery relies on (the bot copies/forwards the
+ * original from the creator's channel), and Telegram answers it with either a
+ * new message id (the exact message exists and is copyable) or a specific
+ * "message to copy not found" / `MESSAGE_ID_INVALID` error.
+ *
+ * To avoid ANY post in the creator's channel, the probe copy is sent to the
+ * creator's own private chat with the bot (`probeChatId`, silent + protected) and
+ * deleted again immediately with `deleteMessage`. Nothing is ever written to the
+ * channel. Concurrent identical probes share one request.
+ *
+ * Never throws and never returns ok:true unless Telegram returned a message id.
+ */
+export function checkChannelPostExists(args: {
+  chatId: string;
+  messageId: number;
+  probeChatId: string | null | undefined;
+}): Promise<PostExistenceResult> {
+  const key = `${args.chatId}:${args.messageId}:${args.probeChatId ?? ""}`;
+  const existing = inFlightProbes.get(key);
+  if (existing) return existing;
+  const p = runPostProbe(args).finally(() => inFlightProbes.delete(key));
+  inFlightProbes.set(key, p);
+  return p;
+}
+
+async function runPostProbe(args: {
+  chatId: string;
+  messageId: number;
+  probeChatId: string | null | undefined;
+}): Promise<PostExistenceResult> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken) return { ok: false, reason: "unavailable", detail: "missing_bot_token" };
+  if (!/^-100[1-9][0-9]{4,12}$/.test(args.chatId)) return { ok: false, reason: "unavailable", detail: "bad_channel_id" };
+  if (!Number.isInteger(args.messageId) || args.messageId < 1) return { ok: false, reason: "post_not_found" };
+  if (!args.probeChatId || !/^[1-9][0-9]{0,15}$/.test(args.probeChatId)) {
+    return { ok: false, reason: "probe_chat_unavailable", detail: "no_telegram_user" };
+  }
+  const probeChatId = Number(args.probeChatId);
+
+  const res = await callTelegramApi<{ message_id?: unknown }>(botToken, "copyMessage", {
+    chat_id: probeChatId,
+    from_chat_id: args.chatId,
+    message_id: args.messageId,
+    disable_notification: true,
+    protect_content: true,
+  });
+
+  if (!res.ok) {
+    const cls = classifyPostProbeError(res.errorCode, res.description);
+    if (cls === "ambiguous_chat") {
+      // "chat not found" could be the channel OR the private probe chat — ask Telegram which.
+      const probe = await probePrivateChat(probeChatId);
+      if (probe.ok) return { ok: false, reason: "bot_no_access", detail: res.description };
+      if (probe.reason === "not_found") return { ok: false, reason: "probe_chat_unavailable", detail: res.description };
+      return { ok: false, reason: "unavailable", detail: res.description };
+    }
+    return { ok: false, reason: cls, detail: res.description };
+  }
+
+  const copiedId = res.result && typeof res.result === "object" ? (res.result as { message_id?: unknown }).message_id : undefined;
+  if (typeof copiedId !== "number") {
+    // Telegram said ok but not with a MessageId: unsupported response → refuse to treat it as proof.
+    return { ok: false, reason: "unavailable", detail: "unexpected_response" };
+  }
+
+  // Exact message confirmed. Remove the transient probe copy (best effort; never affects the verdict).
+  const del = await callTelegramApi<boolean>(botToken, "deleteMessage", { chat_id: probeChatId, message_id: copiedId });
+  if (!del.ok) console.error("post_probe_cleanup_failed", { description: del.description });
+  return { ok: true };
+}

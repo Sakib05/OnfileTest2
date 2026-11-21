@@ -1,6 +1,6 @@
 "use client";
 import React, { useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Link2, Loader2, ShieldCheck, X } from "lucide-react";
+import { AlertCircle, Link2, Loader2, ShieldCheck, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseTelegramPostLink, POST_LINK_FAILURE_MESSAGES } from "@/lib/telegramPostLink";
 import { useApp } from "@/contexts/AppContext";
@@ -8,10 +8,14 @@ import type { PublishDraft, VerifiedLinkInfo } from "./draft";
 
 type Status = "idle" | "verifying" | "error";
 
+/** Client-side ceiling for the verification request (server-side Telegram calls time out earlier). */
+const VERIFY_TIMEOUT_MS = 30_000;
+
 interface VerifyResponse {
   verified?: boolean;
   canonicalLink?: string;
   messageId?: number;
+  messageExistenceVerified?: boolean;
   channel?: { name: string | null; username: string | null };
   error?: string;
   reason?: string;
@@ -30,11 +34,14 @@ export default function LinkStep({
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<{ message: string; reason?: string } | null>(null);
   const requestSeq = useRef(0);
+  // Synchronous double-submit guard (state updates are async; a fast double-tap could otherwise slip through).
+  const inFlight = useRef(false);
 
   const trimmed = draft.link.trim();
   const verified = draft.verified && draft.verified.forLink === trimmed ? draft.verified : null;
 
   const setLink = (value: string) => {
+    if (inFlight.current) return; // input is locked while verifying
     requestSeq.current++; // invalidate any in-flight verification for the old value
     setStatus("idle");
     setError(null);
@@ -50,14 +57,20 @@ export default function LinkStep({
       return;
     }
 
+    if (inFlight.current) return;
+    inFlight.current = true;
     const seq = ++requestSeq.current;
     setStatus("verifying");
     setError(null);
+    // A request that never answers must surface as an error — it is never treated as success.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
     try {
       const res = await fetch("/api/publish/verify-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ link: trimmed }),
+        signal: controller.signal,
       });
       let data: VerifyResponse = {};
       try {
@@ -67,7 +80,14 @@ export default function LinkStep({
       }
       if (seq !== requestSeq.current) return; // input changed while waiting
 
-      if (res.ok && data.verified && data.canonicalLink && typeof data.messageId === "number") {
+      // Success ONLY when the server explicitly confirms the channel match AND that the exact post exists.
+      if (
+        res.ok &&
+        data.verified === true &&
+        data.messageExistenceVerified === true &&
+        data.canonicalLink &&
+        typeof data.messageId === "number"
+      ) {
         const info: VerifiedLinkInfo = {
           forLink: trimmed,
           canonicalLink: data.canonicalLink,
@@ -75,8 +95,10 @@ export default function LinkStep({
           channelName: data.channel?.name ?? null,
           channelUsername: data.channel?.username ?? null,
         };
-        onChange({ verified: info });
         setStatus("idle");
+        onChange({ verified: info });
+        // Verified by the server → straight to the next step (no intermediate success screen, no extra tap).
+        onContinue();
         return;
       }
 
@@ -95,17 +117,25 @@ export default function LinkStep({
         });
       }
       setStatus("error");
-    } catch {
+    } catch (err) {
       if (seq !== requestSeq.current) return;
-      setError({ message: "Network problem. Check your connection and try again.", reason: "network" });
+      const timedOut = err instanceof Error && err.name === "AbortError";
+      setError(
+        timedOut
+          ? { message: "Verification is taking too long. Nothing was accepted — please try again.", reason: "timeout" }
+          : { message: "Network problem. Check your connection and try again.", reason: "network" }
+      );
       setStatus("error");
+    } finally {
+      clearTimeout(timer);
+      inFlight.current = false;
     }
   };
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (status === "verifying") return;
-    if (verified) onContinue();
+    if (status === "verifying" || inFlight.current) return;
+    if (verified) onContinue(); // already confirmed by the server for this exact link (e.g. user came back with Back)
     else void verify();
   };
 
@@ -182,29 +212,20 @@ export default function LinkStep({
                     Open a post in the channel you connected to Onfile, tap Copy Link, and paste it here.
                   </p>
                 )}
-                {error.reason === "verification_unavailable" && (
-                  <p className="text-xs text-secondary mt-1">Nothing was accepted. Please try again.</p>
+                {(error.reason === "verification_unavailable" ||
+                  error.reason === "post_verification_unavailable" ||
+                  error.reason === "timeout" ||
+                  error.reason === "network") && (
+                  <p className="text-xs text-secondary mt-1">Nothing was accepted. Your link is still here — try again.</p>
+                )}
+                {error.reason === "post_not_found" && (
+                  <p className="text-xs text-secondary mt-1">
+                    Open the post in your channel, tap Copy Link, and paste it here. Your link is still in the box so you can edit it.
+                  </p>
                 )}
                 {error.reason === "channel_required" && (
                   <p className="text-xs text-secondary mt-1">Taking you to channel setup…</p>
                 )}
-              </div>
-            </div>
-          )}
-
-          {verified && (
-            <div className="flex items-start gap-2.5 rounded-xl p-3 bg-green-500/10 border border-green-500/30 animate-scale-in">
-              <CheckCircle2 size={18} className="text-green-500 mt-0.5 flex-shrink-0" />
-              <div className="text-sm min-w-0">
-                <p className="text-green-700 dark:text-green-400 font-semibold">Connected Channel Verified</p>
-                <p className="text-primary mt-0.5 truncate">
-                  {verified.channelName ?? "Your connected channel"}
-                  {verified.channelUsername ? ` · @${verified.channelUsername}` : ""}
-                </p>
-                <p className="text-xs text-secondary mt-1">
-                  Post #{verified.messageId}. We confirmed the channel matches. The post itself is checked when the
-                  file is delivered.
-                </p>
               </div>
             </div>
           )}
@@ -219,7 +240,7 @@ export default function LinkStep({
         {verifying ? (
           <>
             <Loader2 size={16} className="animate-spin" />
-            Verifying with your channel…
+            Verifying your post…
           </>
         ) : verified ? (
           "Continue"

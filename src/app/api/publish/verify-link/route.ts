@@ -13,6 +13,8 @@ import { dbPublishDeps } from "@/lib/publishing/publishDeps";
  *  - The connected channel(s) are read from the DB for that creator; the
  *    request body is only allowed to contain the link string. Any channel id /
  *    user id a client might add is ignored.
+ *  - Beyond channel identity, the EXACT message id is confirmed with Telegram
+ *    (see checkChannelPostExists). Any inconclusive answer is an error, never a pass.
  *  - This endpoint is advisory UX; POST /api/files re-runs the identical check
  *    at publish time, so skipping this call grants nothing.
  */
@@ -42,7 +44,14 @@ export async function POST(req: NextRequest) {
     }
 
     const channels = await dbPublishDeps.listVerifiedChannels(user.id);
-    const result = await verifyPostLinkAgainstChannels(link, channels, dbPublishDeps.resolvePublicChat);
+    // Server-side, exact-message check: the channel match alone never proves the post exists.
+    const probeChatId = user.telegramId ?? null;
+    const result = await verifyPostLinkAgainstChannels(
+      link,
+      channels,
+      dbPublishDeps.resolvePublicChat,
+      (a) => dbPublishDeps.checkPostExists({ ...a, probeChatId })
+    );
 
     if (!result.ok) {
       const reason = result.reason === "no_connected_channel" ? "channel_required" : result.reason;
