@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * My Library → file ⋮ menu: Edit Details · Change Thumbnail · Manage Playlists · Share · Copy Link · QR · File Details · Delete.
+ * My Library → file ⋮ menu: Edit Details (title · description · thumbnail) · Manage Playlists · Share (Copy link · QR) · File Details · Delete.
  * Runs the real FilesTab + dialogs against a small stateful fake of the existing API (no network, no database).
  */
 import React, { act } from "react";
@@ -53,6 +53,12 @@ function installFetch() {
     if ((m = url.match(/^\/api\/files\/(\d+)\/playlists$/)) && method === "GET") {
       const id = Number(m[1]);
       return json({ playlists: playlists.map((p) => ({ id: p.id, title: p.title, isPublished: p.isPublished, hasPassword: p.hasPassword, fileCount: members[p.id]?.size ?? 0, isMember: !!members[p.id]?.has(id) })) });
+    }
+    if ((m = url.match(/^\/api\/files\/(\d+)\/thumbnail$/)) && method === "DELETE") {
+      const f = files.find((x) => x.id === Number(m![1]));
+      if (!f) return json({ error: "Not found" }, 404);
+      Object.assign(f, { thumbnailUrl: null, thumbnailWidth: null, thumbnailHeight: null });
+      return json({ success: true });
     }
     if ((m = url.match(/^\/api\/files\/(\d+)$/))) {
       const id = Number(m[1]);
@@ -161,7 +167,7 @@ describe("Edit Details", () => {
     expect(patches[0].body).toEqual({ title: "Annual Report", description: "Fresh description" });
     expect(Object.keys(patches[0].body as object)).not.toContain("isPublished");
     expect(q('[role="dialog"]')).toBeNull(); // closed
-    expect(toastText()).toContain("Details saved");
+    expect(toastText()).toContain("Changes saved");
     expect(byLabel("More actions for Annual Report")).not.toBeNull(); // card shows the new title
     expect(files[0].isPublished).toBe(true);
   });
@@ -189,70 +195,162 @@ describe("Edit Details", () => {
   });
 });
 
-describe("Change Thumbnail", () => {
-  class FakeXHR {
-    static instances: FakeXHR[] = [];
-    upload: { onprogress?: unknown; onload?: () => void } = {};
-    responseType = "";
-    timeout = 0;
-    status = 0;
-    response: unknown = null;
-    onload?: () => void;
-    onerror?: () => void;
-    ontimeout?: () => void;
-    method = "";
-    url = "";
-    sent: FormData | null = null;
-    open(method: string, url: string) { this.method = method; this.url = url; FakeXHR.instances.push(this); }
-    send(form: FormData) {
-      this.sent = form;
+class FakeXHR {
+  static instances: FakeXHR[] = [];
+  /** Set to a non-2xx status to make the next uploads fail like the real endpoint would. */
+  static failStatus: number | null = null;
+  upload: { onprogress?: unknown; onload?: () => void } = {};
+  responseType = "";
+  timeout = 0;
+  status = 0;
+  response: unknown = null;
+  onload?: () => void;
+  onerror?: () => void;
+  ontimeout?: () => void;
+  method = "";
+  url = "";
+  sent: FormData | null = null;
+  open(method: string, url: string) { this.method = method; this.url = url; FakeXHR.instances.push(this); }
+  send(form: FormData) {
+    this.sent = form;
+    if (FakeXHR.failStatus) {
+      this.status = FakeXHR.failStatus;
+      this.response = { error: "Thumbnail storage is unavailable." };
+    } else {
       this.status = 201;
       // the real endpoint persists the thumbnail, so the Library's follow-up refetch returns it
       const row = files.find((f) => f.id === Number(this.url.match(/files\/(\d+)\//)![1]))!;
       Object.assign(row, { thumbnailUrl: "https://cdn.example/new-thumb.webp", thumbnailWidth: 640, thumbnailHeight: 360 });
       this.response = { thumbnail: { url: "https://cdn.example/new-thumb.webp", width: 640, height: 360 } };
-      setTimeout(() => { this.upload.onload?.(); this.onload?.(); }, 0);
     }
+    setTimeout(() => { this.upload.onload?.(); this.onload?.(); }, 0);
   }
+}
 
-  it("works for a file with no thumbnail: preview, Replace → POST /api/files/:id/thumbnail → the card shows the new image", async () => {
+async function pickImage(file: File) {
+  const input = q('input[type="file"]') as HTMLInputElement;
+  Object.defineProperty(input, "files", { configurable: true, value: [file] });
+  await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+}
+const png = () => new File([new Uint8Array(100)], "cover.png", { type: "image/png" });
+
+describe("Edit Details — thumbnail (merged in; there is no separate Change Thumbnail)", () => {
+  beforeEach(() => {
     FakeXHR.instances = [];
+    FakeXHR.failStatus = null;
     vi.stubGlobal("XMLHttpRequest", FakeXHR);
     (URL as unknown as { createObjectURL: () => string }).createObjectURL = () => "blob:preview";
     (URL as unknown as { revokeObjectURL: () => void }).revokeObjectURL = () => {};
+  });
+
+  it("the Edit Details sheet contains Title, Description AND Thumbnail controls", async () => {
+    await mount();
+    await openMenu("Report.pdf", "Edit Details");
+    const dlg = q('[role="dialog"]')!;
+    expect(dlg.querySelector("#edit-file-title")).not.toBeNull();
+    expect(dlg.querySelector("#edit-file-description")).not.toBeNull();
+    expect(dlg.querySelector('[data-testid="thumbnail-editor"]')).not.toBeNull();
+    expect(buttonByText("Choose thumbnail")).toBeTruthy();
+    expect(dlg.textContent).toContain("Thumbnail");
+  });
+
+  it("previews a picked image WITHOUT uploading; Save sends title + description (PATCH) and the thumbnail (POST) together", async () => {
     await mount();
     expect(container.querySelector("img")).toBeNull();
-    await openMenu("Report.pdf", "Change Thumbnail");
-    expect(q('[role="dialog"]')?.textContent).toContain("Change Thumbnail");
-    expect(buttonByText("Choose an image")).toBeTruthy();
-
-    const input = q('input[type="file"]') as HTMLInputElement;
-    const png = new File([new Uint8Array(100)], "cover.png", { type: "image/png" });
-    Object.defineProperty(input, "files", { configurable: true, value: [png] });
-    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    await openMenu("Report.pdf", "Edit Details");
+    await typeInto(q("#edit-file-title") as HTMLInputElement, "Annual Report");
+    await pickImage(png());
     expect(q('img[alt="Selected thumbnail preview"]')).not.toBeNull(); // preview before saving
+    expect(FakeXHR.instances).toHaveLength(0); // staged only — nothing uploaded yet
+    expect((buttonByText("Save changes") as HTMLButtonElement).disabled).toBe(false);
 
-    await click(buttonByText("Upload thumbnail"));
+    await click(buttonByText("Save changes"));
     await flush();
+    const patches = writes("PATCH", /^\/api\/files\/1$/);
+    expect(patches).toHaveLength(1);
+    expect(patches[0].body).toEqual({ title: "Annual Report" }); // only what changed; never isPublished
     expect(FakeXHR.instances).toHaveLength(1);
     expect(FakeXHR.instances[0].method).toBe("POST");
     expect(FakeXHR.instances[0].url).toBe("/api/files/1/thumbnail");
-    expect(toastText()).toContain("Thumbnail saved");
+    expect(q('[role="dialog"]')).toBeNull(); // closed after everything saved
+    expect(toastText()).toContain("Changes saved");
+    expect(byLabel("More actions for Annual Report")).not.toBeNull();
     expect(Array.from(container.querySelectorAll("img")).some((i) => i.getAttribute("src") === "https://cdn.example/new-thumb.webp")).toBe(true);
-    await click(buttonByText("Done"));
+    expect(files[0].isPublished).toBe(true); // editing details never unpublishes
+    expect(files[0].smartLinkSlug).toBe("slug-1"); // identifiers preserved
+  });
+
+  it("a thumbnail-only change uploads the image and sends no PATCH", async () => {
+    await mount();
+    await openMenu("Report.pdf", "Edit Details");
+    await pickImage(png());
+    await click(buttonByText("Save changes"));
+    await flush();
+    expect(FakeXHR.instances).toHaveLength(1);
+    expect(writes("PATCH", /api\/files/)).toHaveLength(0);
     expect(q('[role="dialog"]')).toBeNull();
   });
 
-  it("rejects a non-image / oversized pick client-side and sends nothing", async () => {
-    FakeXHR.instances = [];
-    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+  it("Cancel after choosing an image uploads nothing and changes nothing", async () => {
     await mount();
-    await openMenu("Report.pdf", "Change Thumbnail");
-    const input = q('input[type="file"]') as HTMLInputElement;
-    Object.defineProperty(input, "files", { configurable: true, value: [new File(["x"], "a.gif", { type: "image/gif" })] });
-    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
-    expect(q('[role="alert"]')?.textContent).toContain("JPEG, PNG or WebP");
+    await openMenu("Report.pdf", "Edit Details");
+    await pickImage(png());
+    await click(buttonByText("Cancel"));
+    expect(q('[role="dialog"]')).toBeNull();
     expect(FakeXHR.instances).toHaveLength(0);
+    expect(writes("PATCH", /api\/files/)).toHaveLength(0);
+    expect(files[0].thumbnailUrl).toBeNull();
+  });
+
+  it("rejects a non-image pick client-side and sends nothing", async () => {
+    await mount();
+    await openMenu("Report.pdf", "Edit Details");
+    await pickImage(new File(["x"], "a.gif", { type: "image/gif" }));
+    expect(q('[data-testid="thumbnail-error"]')?.textContent).toContain("JPEG, PNG or WebP");
+    expect(q('img[alt="Selected thumbnail preview"]')).toBeNull();
+    expect((buttonByText("Save changes") as HTMLButtonElement).disabled).toBe(true);
+    expect(FakeXHR.instances).toHaveLength(0);
+  });
+
+  it("Remove thumbnail is staged and applied on Save through DELETE /api/files/:id/thumbnail", async () => {
+    files[0] = { ...files[0], thumbnailUrl: "https://cdn.example/old.webp", thumbnailWidth: 100, thumbnailHeight: 100 };
+    await mount();
+    await openMenu("Report.pdf", "Edit Details");
+    await click(buttonByText("Remove thumbnail"));
+    expect(writes("DELETE", /thumbnail/)).toHaveLength(0); // not yet
+    expect(q('[data-testid="thumbnail-removed-note"]')).not.toBeNull();
+    await click(buttonByText("Save changes"));
+    await flush();
+    expect(writes("DELETE", /^\/api\/files\/1\/thumbnail$/)).toHaveLength(1);
+    expect(files[0].thumbnailUrl).toBeNull();
+    expect(q('[role="dialog"]')).toBeNull();
+  });
+
+  it("if the thumbnail upload fails after the details saved: says so, keeps the dialog open, and a retry does NOT repeat the PATCH", async () => {
+    FakeXHR.failStatus = 503;
+    await mount();
+    await openMenu("Report.pdf", "Edit Details");
+    await typeInto(q("#edit-file-title") as HTMLInputElement, "Renamed");
+    await pickImage(png());
+    await click(buttonByText("Save changes"));
+    await flush();
+    expect(q('[role="dialog"]')).not.toBeNull();
+    expect(q('[data-testid="thumbnail-error"]')?.textContent).toContain("title/description were saved");
+    expect(q('[data-testid="thumbnail-error"]')?.textContent).toContain("Thumbnail storage is unavailable.");
+    expect(byLabel("More actions for Renamed")).not.toBeNull(); // the saved part is already visible
+
+    FakeXHR.failStatus = null;
+    await click(buttonByText("Save changes"));
+    await flush();
+    expect(writes("PATCH", /^\/api\/files\/1$/)).toHaveLength(1); // not repeated
+    expect(FakeXHR.instances).toHaveLength(2);
+    expect(q('[role="dialog"]')).toBeNull();
+  });
+
+  it("the Library menu offers no Change Thumbnail entry", async () => {
+    await mount();
+    await click(byLabel("More actions for Report.pdf"));
+    expect(qa('[role="menuitem"]').map((m) => m.textContent)).not.toContain("Change Thumbnail");
   });
 });
 
@@ -311,43 +409,51 @@ describe("Manage Playlists", () => {
   });
 });
 
-describe("Share · Copy Link · QR (public smart link only)", () => {
+describe("Share · Copy link · QR (public smart link only; both live inside Share)", () => {
   const url = () => `${window.location.origin}/f/slug-1`;
 
-  it("Copy Link copies exactly <origin>/f/<slug> and confirms", async () => {
+  it("the main menu has exactly five entries — no Copy Link, no Generate QR Code, no Change Thumbnail", async () => {
     await mount();
-    await openMenu("Report.pdf", "Copy Link");
+    await click(byLabel("More actions for Report.pdf"));
+    expect(qa('[role="menuitem"]').map((m) => m.textContent)).toEqual(["Edit Details", "Manage Playlists", "Share", "File Details", "Delete File"]);
+  });
+
+  it("Share → Copy link copies exactly <origin>/f/<slug> and confirms", async () => {
+    await mount();
+    await openMenu("Report.pdf", "Share");
+    await click(q('[data-testid="share-file-copy"]'));
     expect(clipboard).toEqual([url()]);
     expect(clipboard[0]).not.toMatch(/t\.me|telegram|password/i);
     expect(toastText()).toContain("Link copied to clipboard");
   });
 
-  it("Copy Link reports a clipboard failure instead of claiming success", async () => {
+  it("Share → Copy link reports a clipboard failure instead of claiming success", async () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => { throw new Error("denied"); }) } });
     document.execCommand = vi.fn(() => false) as never;
     await mount();
-    await openMenu("Report.pdf", "Copy Link");
+    await openMenu("Report.pdf", "Share");
+    await click(q('[data-testid="share-file-copy"]'));
     expect(toastText()).toContain("Couldn't copy the link");
   });
 
-  it("Share shows the same URL (read-only), Copy link, and Telegram's native share dialog URL", async () => {
+  it("Share shows the same URL (read-only), Copy link, Show QR code, and Telegram's native share dialog URL", async () => {
     const open = vi.fn();
     vi.stubGlobal("open", open);
     await mount();
     await openMenu("Report.pdf", "Share");
     expect((q('[data-testid="share-file-url"]') as HTMLInputElement).value).toBe(url());
-    await click(q('[data-testid="share-file-copy"]'));
-    expect(clipboard).toEqual([url()]);
+    expect(q('[data-testid="share-file-copy"]')).not.toBeNull();
+    expect(q('[data-testid="share-file-qr"]')).not.toBeNull();
     await click(q('[data-testid="share-file-telegram"]'));
-    expect(open).toHaveBeenCalledTimes(1);
     const target = String(open.mock.calls[0][0]);
-    expect(target.startsWith("https://t.me/share/url?")).toBe(true);
+    expect(target).toContain("t.me/share/url");
     expect(new URL(target).searchParams.get("url")).toBe(url());
   });
 
-  it("QR dialog shows the title, encodes exactly the share URL, offers Download + Copy link", async () => {
+  it("Share → Show QR code opens the QR dialog: title, exactly the share URL, Download + Copy link", async () => {
     await mount();
-    await openMenu("Report.pdf", "Generate QR Code");
+    await openMenu("Report.pdf", "Share");
+    await click(q('[data-testid="share-file-qr"]'));
     expect(q('[data-testid="qr-title"]')?.textContent).toBe("Report.pdf");
     expect(q('[data-testid="qr-svg"]')?.getAttribute("data-qr-url")).toBe(url());
     expect(q('[data-testid="qr-url"]')?.textContent).toBe(url());
@@ -357,27 +463,30 @@ describe("Share · Copy Link · QR (public smart link only)", () => {
     expect(clipboard).toEqual([url()]);
   });
 
-  it("a PRIVATE (unpublished) file gets no link anywhere: dimmed menu items explain why, Share/QR show a notice, nothing is copied", async () => {
+  it("a password-protected published file keeps the password out of the link and QR and says it is still required", async () => {
+    files[0] = { ...files[0], hasPassword: true };
+    await mount();
+    await openMenu("Report.pdf", "Share");
+    expect(q('[data-testid="share-file-password-note"]')).not.toBeNull();
+    expect((q('[data-testid="share-file-url"]') as HTMLInputElement).value).toBe(url());
+    await click(q('[data-testid="share-file-qr"]'));
+    expect(q('[data-testid="qr-password-note"]')).not.toBeNull();
+    expect(q('[data-testid="qr-svg"]')?.getAttribute("data-qr-url")).toBe(url());
+  });
+
+  it("a PRIVATE (unpublished) file gets no link anywhere: Share is dimmed and explains why, no Copy / QR is offered", async () => {
     await mount();
     await click(byLabel("More actions for Secret draft"));
-    for (const label of ["Share", "Copy Link", "Generate QR Code"]) {
-      expect(menuItem(label).getAttribute("data-unavailable")).toBe("true");
-      expect(menuItem(label).textContent).toContain("Private");
-    }
+    expect(menuItem("Share").getAttribute("data-unavailable")).toBe("true");
+    expect(menuItem("Share").textContent).toContain("Private");
     expect(menuItem("Edit Details").getAttribute("data-unavailable")).toBeNull();
-
-    await click(menuItem("Copy Link"));
-    expect(clipboard).toEqual([]);
-    expect(toastText()).toContain("private");
-
-    await openMenu("Secret draft", "Share");
+    await click(menuItem("Share"));
+    await flush();
     expect(q('[data-testid="share-file-blocked"]')).not.toBeNull();
     expect(q('[data-testid="share-file-url"]')).toBeNull();
-    await click(q('[aria-label="Close"]'));
-
-    await openMenu("Secret draft", "Generate QR Code");
-    expect(q('[data-testid="qr-blocked"]')).not.toBeNull();
-    expect(q('[data-testid="qr-svg"]')).toBeNull();
+    expect(q('[data-testid="share-file-copy"]')).toBeNull();
+    expect(q('[data-testid="share-file-qr"]')).toBeNull();
+    expect(clipboard).toEqual([]);
   });
 
   it("fileShareUrl never builds a link for unpublished or slug-less files", () => {
@@ -471,7 +580,7 @@ describe("Menu behaviour", () => {
     expect(menu.className).toContain("overflow-y-auto");
     expect(menu.style.maxHeight).not.toBe("");
     const items = qa('[role="menuitem"]');
-    expect(items).toHaveLength(8);
+    expect(items).toHaveLength(5);
     items[0].focus();
     await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     expect(document.activeElement).toBe(items[1]);

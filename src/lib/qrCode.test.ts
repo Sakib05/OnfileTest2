@@ -54,6 +54,8 @@ describe("qrFileName", () => {
   it("is a safe png file name derived from the title", () => {
     expect(qrFileName("My Report: Q1/2025!.pdf")).toBe("onfile-qr-my-report-q1-2025-pdf.png");
     expect(qrFileName("???")).toBe("onfile-qr-file.png");
+    expect(qrFileName("???", "playlist")).toBe("onfile-qr-playlist.png");
+    expect(qrFileName("Course 101", "playlist")).toBe("onfile-qr-course-101.png");
   });
 });
 

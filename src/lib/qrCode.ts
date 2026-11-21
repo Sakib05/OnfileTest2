@@ -64,7 +64,7 @@ export function qrToPngBlob(text: string, targetPx = 1024): Promise<Blob> {
 }
 
 /** A safe file name for the downloaded PNG, derived from the title. */
-export function qrFileName(title: string): string {
+export function qrFileName(title: string, fallback = "file"): string {
   const base = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-  return `onfile-qr-${base || "file"}.png`;
+  return `onfile-qr-${base || fallback}.png`;
 }

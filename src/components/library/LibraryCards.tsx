@@ -193,19 +193,85 @@ export const PlaylistCard = memo(function PlaylistCard({ playlist, layout, onOpe
   );
 });
 
-/** Loading placeholders matching the card geometry (no layout jump when data arrives). */
-export function LibrarySkeleton({ layout }: { layout: "list" | "grid" }) {
+/** A neutral placeholder bar (theme-aware: `bg-secondary` is a subtle tint in both light and dark). */
+const Bar = ({ className }: { className: string }) => <span className={cn("block rounded-md bg-secondary", className)} />;
+
+/**
+ * One placeholder card. It uses the SAME shell + thumbnail-frame classes as the real card (`SHELL` / `THUMB_FRAME`), so
+ * its width, thumbnail aspect ratio, padding and radius are identical and nothing jumps when data replaces it.
+ * The text column is given the real card's approximate text height (title + age + stats).
+ */
+function SkeletonCard({ layout }: { layout: CardLayout }) {
+  const thumb = <span className={cn("block relative overflow-hidden rounded-xl bg-secondary", THUMB_FRAME[layout])} />;
+  const text = (
+    <span className={cn("flex flex-col gap-2 min-w-0 flex-1", layout === "list" ? "py-1" : "min-h-[60px]")}>
+      <Bar className="h-3.5 w-11/12" />
+      <Bar className="h-3 w-1/2" />
+      <Bar className="h-3 w-2/5" />
+    </span>
+  );
   return (
-    <div className={cn(layout === "grid" ? "grid grid-cols-2 gap-3" : "flex flex-col gap-3")} aria-busy="true" aria-label="Loading library">
-      {[1, 2, 3, 4].slice(0, layout === "grid" ? 4 : 3).map((i) => (
-        <div
-          key={i}
-          className={cn(
-            "bg-card rounded-2xl border border-app animate-pulse-brand",
-            layout === "grid" ? "h-[190px]" : "h-[108px]"
-          )}
-        />
-      ))}
+    <div className={SHELL[layout]} data-testid="library-skeleton-card" data-layout={layout}>
+      {layout === "list" ? (
+        <>
+          {thumb}
+          {text}
+          <span className="flex-shrink-0 w-10 h-10" aria-hidden="true" />
+        </>
+      ) : (
+        <>
+          {thumb}
+          <div className="flex items-start gap-1 min-w-0">{text}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Loading placeholders for My Library. They mirror the layout that is about to appear:
+ *  - "home": the sectioned Library home — a section title + one horizontally clipped row of 168px cards, ×2 sections;
+ *  - "list" / "grid": the flat category view — results header, then 3 list cards or 4 grid cards.
+ * A deliberately small, fixed number of cards (never full-width empty slabs) keeps loading short and avoids scrolling
+ * under the bottom navigation. Rendered only while the first request is actually in flight (FilesTab removes it on
+ * success OR failure).
+ */
+export function LibrarySkeleton({ layout }: { layout: "home" | "list" | "grid" }) {
+  return (
+    <div role="status" aria-busy="true" aria-label="Loading library" data-testid="library-skeleton" data-layout={layout} className="animate-pulse-brand motion-reduce:animate-none">
+      <span className="sr-only">Loading your library…</span>
+      {layout === "home" ? (
+        <div className="flex flex-col gap-6">
+          {[0, 1].map((sec) => (
+            <div key={sec} data-testid="library-skeleton-section">
+              <div className="flex items-center justify-between mb-2.5 min-h-10">
+                <Bar className="h-4 w-28" />
+                <Bar className="h-3 w-12" />
+              </div>
+              <div className="flex gap-3 overflow-hidden -mx-4 px-4 pb-1">
+                {[0, 1, 2].map((i) => (
+                  <SkeletonCard key={i} layout="row" />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center justify-between min-h-10 mb-4">
+            <Bar className="h-4 w-24" />
+            <span className="flex gap-1">
+              <span className="block w-10 h-10 rounded-xl bg-secondary" />
+              <span className="block w-10 h-10 rounded-xl bg-secondary" />
+            </span>
+          </div>
+          <div className={cn(layout === "grid" ? "grid grid-cols-2 gap-3" : "flex flex-col gap-3")}>
+            {Array.from({ length: layout === "grid" ? 4 : 3 }, (_, i) => (
+              <SkeletonCard key={i} layout={layout} />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

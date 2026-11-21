@@ -1,43 +1,44 @@
 "use client";
 import React, { useEffect, useRef, useState } from "react";
-import { ImagePlus, Trash2, Loader2 } from "lucide-react";
+import { ImagePlus, Trash2, Loader2, Undo2 } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 import FileThumb from "@/components/ui/FileThumb";
-import { prepareImageForUpload } from "@/lib/publishing/imageCompress";
-import { THUMBNAIL_MAX_BYTES, THUMBNAIL_MAX_LABEL } from "@/lib/thumbnails/limits";
-const ACCEPT = "image/jpeg,image/png,image/webp";
+import { THUMBNAIL_MAX_LABEL } from "@/lib/thumbnails/limits";
+import { THUMBNAIL_ACCEPT, precheckThumbnail } from "@/lib/thumbnails/clientUpload";
 
 interface Props {
-  fileId: number;
   fileType: string;
   fileTitle?: string;
+  /** The thumbnail currently stored for the file (null → default artwork). */
   currentUrl?: string | null;
-  onChanged: (thumb: { url: string | null; width: number | null; height: number | null }) => void;
-  onToast: (message: string, type?: "success" | "error" | "warning" | "info") => void;
+  /** The replacement image the creator picked but has NOT saved yet. */
+  selected: File | null;
+  /** The creator chose "Remove thumbnail" (applied on Save). */
+  removed: boolean;
+  onSelect: (file: File | null) => void;
+  onRemovedChange: (removed: boolean) => void;
+  /** Disables every control while the parent is saving. */
+  disabled?: boolean;
+  /** Upload progress shown while the parent saves: `null` when idle. */
+  progress?: { phase: "uploading" | "processing"; pct: number } | null;
+  /** Error from the parent's save attempt (e.g. the upload failed). */
+  error?: string | null;
 }
 
-type Phase = "idle" | "uploading" | "processing" | "removing";
-
-/** Client-side checks are a convenience only — the server re-validates the real image bytes. */
-function precheck(file: File): string | null {
-  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
-    return "Only JPEG, PNG or WebP images are allowed.";
-  }
-  if (file.size > THUMBNAIL_MAX_BYTES) return `Image is ${formatBytes(file.size)}. Maximum is ${THUMBNAIL_MAX_LABEL}.`;
-  if (file.size === 0) return "The file is empty.";
-  return null;
-}
-
-export default function ThumbnailManager({ fileId, fileType, fileTitle, currentUrl, onChanged, onToast }: Props) {
+/**
+ * Thumbnail picker used inside Library ⋮ → Edit Details. It is a STAGED control: choosing an image only shows a local
+ * preview; nothing is uploaded until the creator presses "Save changes" (the parent then calls the existing
+ * POST/DELETE /api/files/:id/thumbnail endpoints via `lib/thumbnails/clientUpload`). Cancelling discards the choice.
+ */
+export default function ThumbnailManager({ fileType, fileTitle, currentUrl, selected, removed, onSelect, onRemovedChange, disabled, progress, error }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [selected, setSelected] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [pickError, setPickError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selected) {
+      // Clears the preview when the staged file goes away (network-free local state sync).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPreviewUrl(null);
       return;
     }
@@ -46,154 +47,104 @@ export default function ThumbnailManager({ fileId, fileType, fileTitle, currentU
     return () => URL.revokeObjectURL(url);
   }, [selected]);
 
-  const busy = phase !== "idle";
-
   const pick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0] ?? null;
     e.target.value = "";
-    setError(null);
+    setPickError(null);
     if (!f) return;
-    const problem = precheck(f);
+    const problem = precheckThumbnail(f);
     if (problem) {
-      setSelected(null);
-      setError(problem);
+      setPickError(problem);
       return;
     }
-    setSelected(f);
+    onRemovedChange(false);
+    onSelect(f);
   };
 
-  const upload = async () => {
-    if (!selected || busy) return;
-    setError(null);
-    setPhase("uploading");
-    setProgress(0);
-
-    let toSend: File;
-    try {
-      toSend = await prepareImageForUpload(selected);
-    } catch (e) {
-      setPhase("idle");
-      setError(e instanceof Error ? e.message : "This image couldn't be prepared for upload.");
-      return;
-    }
-
-    const form = new FormData();
-    form.append("file", toSend);
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/files/${fileId}/thumbnail`);
-    xhr.responseType = "json";
-    xhr.upload.onprogress = (ev) => {
-      if (ev.lengthComputable) setProgress(Math.round((ev.loaded / ev.total) * 100));
-    };
-    xhr.upload.onload = () => {
-      setProgress(100);
-      setPhase("processing"); // server is now optimizing + storing
-    };
-    xhr.onerror = () => {
-      setPhase("idle");
-      setError("Network error. Please check your connection and try again.");
-    };
-    xhr.ontimeout = xhr.onerror;
-    xhr.timeout = 60_000;
-    xhr.onload = () => {
-      setPhase("idle");
-      const data = xhr.response as { thumbnail?: { url: string | null; width: number; height: number }; error?: string } | null;
-      if (xhr.status >= 200 && xhr.status < 300 && data?.thumbnail) {
-        onChanged({ url: data.thumbnail.url, width: data.thumbnail.width, height: data.thumbnail.height });
-        setSelected(null);
-        onToast("Thumbnail saved", "success");
-      } else {
-        setError(data?.error || "Upload failed. Please try again.");
-      }
-    };
-    xhr.send(form);
-  };
-
-  const remove = async () => {
-    if (busy) return;
-    setError(null);
-    setPhase("removing");
-    try {
-      const res = await fetch(`/api/files/${fileId}/thumbnail`, { method: "DELETE" });
-      if (res.ok) {
-        onChanged({ url: null, width: null, height: null });
-        setSelected(null);
-        onToast("Thumbnail removed", "success");
-      } else {
-        const data = await res.json().catch(() => null);
-        setError(data?.error || "Could not remove the thumbnail.");
-      }
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setPhase("idle");
-    }
-  };
-
-  const shown = previewUrl ?? currentUrl ?? null;
+  const shownUrl = removed ? null : currentUrl ?? null;
+  const hasCustom = !!currentUrl && !removed;
+  const shownError = pickError ?? error ?? null;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="relative w-full overflow-hidden rounded-2xl bg-secondary flex items-center justify-center text-5xl" style={{ aspectRatio: "16 / 9" }}>
+    <div className="flex flex-col gap-3" data-testid="thumbnail-editor">
+      <div className="relative w-full max-w-sm mx-auto overflow-hidden rounded-2xl bg-secondary flex items-center justify-center text-5xl" style={{ aspectRatio: "16 / 9" }}>
         {previewUrl ? (
           // eslint-disable-next-line @next/next/no-img-element -- local blob preview
           <img src={previewUrl} alt="Selected thumbnail preview" className="absolute inset-0 w-full h-full object-cover" />
         ) : (
-          <FileThumb url={shown} fileType={fileType} title={fileTitle} alt="Current thumbnail" eager />
+          <FileThumb url={shownUrl} fileType={fileType} title={fileTitle} alt="Current thumbnail" eager />
         )}
       </div>
 
       {selected && (
-        <p className="text-xs text-secondary">
-          {selected.name} · {formatBytes(selected.size)} — it will be optimized (resized to max 1280px, metadata removed) before saving.
+        <p className="text-xs text-secondary" data-testid="thumbnail-selected-note">
+          {selected.name} · {formatBytes(selected.size)} — it will be optimized (resized to max 1280px, metadata removed) and saved when you press “Save changes”.
         </p>
       )}
+      {removed && !selected && (
+        <p className="text-xs text-secondary" data-testid="thumbnail-removed-note">The custom thumbnail will be removed when you press “Save changes”; the default artwork is used instead.</p>
+      )}
 
-      {phase === "uploading" || phase === "processing" ? (
+      {progress && (
         <div>
-          <div className="h-2 rounded-full bg-secondary overflow-hidden" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}>
-            <div className="h-full gradient-brand transition-all" style={{ width: `${progress}%` }} />
+          <div className="h-2 rounded-full bg-secondary overflow-hidden" role="progressbar" aria-valuenow={progress.pct} aria-valuemin={0} aria-valuemax={100}>
+            <div className="h-full gradient-brand transition-all" style={{ width: `${progress.pct}%` }} />
           </div>
           <p className="text-xs text-secondary mt-1.5 flex items-center gap-1.5">
-            <Loader2 size={12} className="animate-spin" />
-            {phase === "uploading" ? `Uploading… ${progress}%` : "Optimizing and saving…"}
+            <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+            {progress.phase === "uploading" ? `Uploading thumbnail… ${progress.pct}%` : "Optimizing and saving thumbnail…"}
           </p>
         </div>
-      ) : null}
+      )}
 
-      {error && (
-        <p role="alert" className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl px-3 py-2">
-          {error}
+      {shownError && (
+        <p role="alert" className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded-xl px-3 py-2" data-testid="thumbnail-error">
+          {shownError}
         </p>
       )}
 
-      <input ref={inputRef} type="file" accept={ACCEPT} className="hidden" onChange={pick} />
+      <input ref={inputRef} type="file" accept={THUMBNAIL_ACCEPT} className="hidden" onChange={pick} data-testid="thumbnail-input" />
 
-      <div className="flex flex-col gap-2">
-        {selected ? (
-          <button onClick={upload} disabled={busy} className={cn("btn-primary w-full py-3 text-sm flex items-center justify-center gap-2", busy && "opacity-60")}>
-            <ImagePlus size={15} />
-            {currentUrl ? "Replace thumbnail" : "Upload thumbnail"}
-          </button>
-        ) : (
-          <button onClick={() => inputRef.current?.click()} disabled={busy} className={cn("btn-primary w-full py-3 text-sm flex items-center justify-center gap-2", busy && "opacity-60")}>
-            <ImagePlus size={15} />
-            {currentUrl ? "Choose a new image" : "Choose an image"}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={disabled}
+          className={cn("btn-secondary min-h-11 px-4 text-sm font-medium flex items-center justify-center gap-2 flex-1", disabled && "opacity-60")}
+        >
+          <ImagePlus size={15} aria-hidden="true" />
+          {selected ? "Choose a different image" : hasCustom ? "Replace thumbnail" : "Choose thumbnail"}
+        </button>
+        {selected && (
+          <button
+            type="button"
+            onClick={() => {
+              onSelect(null);
+              setPickError(null);
+            }}
+            disabled={disabled}
+            className="min-h-11 px-4 text-sm text-secondary flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            <Undo2 size={14} aria-hidden="true" /> Discard choice
           </button>
         )}
-        {selected && !busy && (
-          <button onClick={() => { setSelected(null); setError(null); }} className="w-full py-2.5 text-sm text-secondary">
-            Cancel
+        {!selected && hasCustom && (
+          <button
+            type="button"
+            onClick={() => onRemovedChange(true)}
+            disabled={disabled}
+            className="min-h-11 px-4 text-sm text-red-500 flex items-center justify-center gap-2 disabled:opacity-60"
+          >
+            <Trash2 size={14} aria-hidden="true" /> Remove thumbnail
           </button>
         )}
-        {currentUrl && !selected && (
-          <button onClick={remove} disabled={busy} className={cn("w-full py-2.5 text-sm text-red-500 flex items-center justify-center gap-2", busy && "opacity-60")}>
-            {phase === "removing" ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-            Remove thumbnail
+        {!selected && removed && (
+          <button type="button" onClick={() => onRemovedChange(false)} disabled={disabled} className="min-h-11 px-4 text-sm text-secondary flex items-center justify-center gap-2 disabled:opacity-60">
+            <Undo2 size={14} aria-hidden="true" /> Keep current thumbnail
           </button>
         )}
       </div>
-      <p className="text-[11px] text-muted text-center">JPEG, PNG or WebP · Maximum {THUMBNAIL_MAX_LABEL}</p>
+      <p className="text-[11px] text-muted">JPEG, PNG or WebP · Maximum {THUMBNAIL_MAX_LABEL}</p>
     </div>
   );
 }

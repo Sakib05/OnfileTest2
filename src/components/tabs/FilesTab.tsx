@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/navigation";
 import {
   Edit2, Share2, Trash2, Grid, List, Search, Eye, SearchX,
-  Pencil, ImagePlus, ListPlus, Link2, QrCode, Info,
+  Pencil, ListPlus, Info, RefreshCw, CloudOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
@@ -21,16 +21,17 @@ import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import LibraryMenu, { type MenuAction } from "@/components/library/LibraryMenu";
 import type { FileItem, MenuTarget, PlaylistItem } from "@/components/library/types";
 import EditDetailsDialog from "@/components/library/file/EditDetailsDialog";
-import ChangeThumbnailDialog from "@/components/library/file/ChangeThumbnailDialog";
 import ManagePlaylistsDialog from "@/components/library/file/ManagePlaylistsDialog";
 import ShareFileDialog from "@/components/library/file/ShareFileDialog";
 import QrCodeDialog from "@/components/library/file/QrCodeDialog";
 import FileDetailsDialog from "@/components/library/file/FileDetailsDialog";
 import DeleteFileDialog from "@/components/library/file/DeleteFileDialog";
-import { copyText } from "@/lib/playlistShareClient";
-import { fileShareAvailability, fileShareUrl } from "@/lib/fileShare";
+import { fileShareAvailability } from "@/lib/fileShare";
 
-type FileDialogKind = "edit" | "thumbnail" | "playlists" | "share" | "qr" | "details" | "delete";
+type FileDialogKind = "edit" | "playlists" | "share" | "qr" | "details" | "delete";
+
+/** A request that hangs longer than this is treated as failed, so the skeleton can never spin forever. */
+const LOAD_TIMEOUT_MS = 20_000;
 
 const CATEGORY_LABEL: Record<LibraryFilter, string> = {
   Home: "All files",
@@ -59,6 +60,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const [files, setFiles] = useState<FileItem[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   /** Home → "Recently Added" → See all: a flat, newest-first list of every file. */
@@ -67,7 +69,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   // Playlist deletion keeps the generic confirm; file deletion has its own dialog that lists the affected playlists.
   const [deleteTarget, setDeleteTarget] = useState<{ id: number } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  // One file dialog at a time (edit / thumbnail / playlists / share / qr / details / delete). Holds the id only, so the
+  // One file dialog at a time (edit / playlists / share / qr / details / delete). Holds the id only, so the
   // dialog always shows the live record from `files` (e.g. the new thumbnail right after saving).
   const [fileDialog, setFileDialog] = useState<{ kind: FileDialogKind; id: number } | null>(null);
 
@@ -78,20 +80,45 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
 
   // One snapshot of the creator's library (both endpoints are scoped to the
   // signed-in user server-side). Home sections are derived from it — no per-section queries.
+  //
+  // Loading contract (see docs/LIBRARY_LOADING_AND_FILE_MENU_IMPROVEMENTS.md):
+  //   loading → skeleton (only until the FIRST snapshot settles), then
+  //   error   → message + Retry (a failed/timed-out request never leaves skeletons or a fake "empty" library), or
+  //   ready   → real content / the genuine empty state.
+  // Later background refreshes (after an edit, delete, …) never flip back to skeleton and never wipe data on failure.
+  const hasSnapshot = useRef(false);
   const fetchAll = useCallback(async () => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), LOAD_TIMEOUT_MS);
     try {
-      const [filesRes, plRes] = await Promise.all([fetch("/api/files"), fetch("/api/playlists")]);
-      if (filesRes.ok) setFiles(await filesRes.json().then((d) => d.files || []));
-      if (plRes.ok) setPlaylists(await plRes.json().then((d) => d.playlists || []));
+      const [filesRes, plRes] = await Promise.all([
+        fetch("/api/files", { signal: ctrl.signal }),
+        fetch("/api/playlists", { signal: ctrl.signal }),
+      ]);
+      if (!filesRes.ok || !plRes.ok) throw new Error("library request failed");
+      const [filesData, plData] = await Promise.all([filesRes.json(), plRes.json()]);
+      setFiles(filesData.files || []);
+      setPlaylists(plData.playlists || []);
+      hasSnapshot.current = true;
+      setLoadError(false);
     } catch {
-      // ignore
+      if (!hasSnapshot.current) setLoadError(true); // keep showing existing data on a failed background refresh
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   }, []);
 
+  const retryLoad = useCallback(() => {
+    setLoadError(false);
+    setLoading(true);
+    void fetchAll();
+  }, [fetchAll]);
+
   useEffect(() => {
-    void fetchAll(); // initial data load on mount
+    // Initial data load on mount (network → state); the loading/error flags are settled inside fetchAll.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fetchAll();
   }, [fetchAll]);
 
   // A playlist opens as its own full page (route /playlists/[id]) — never in a popup.
@@ -183,18 +210,6 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
   const closeFileDialog = useCallback(() => setFileDialog(null), []);
   const patchFile = useCallback((id: number, patch: Partial<FileItem>) => setFiles((cur) => cur.map((f) => (f.id === id ? { ...f, ...patch } : f))), []);
 
-  /** Copy Link: only a valid public smart link, never anything else; private files get an explanation instead. */
-  const copyFileLink = async (f: FileItem) => {
-    const availability = fileShareAvailability(f);
-    const url = availability.ok ? fileShareUrl(window.location.origin, f) : null;
-    if (!availability.ok || !url) {
-      toast(availability.ok ? "Couldn't build the link." : availability.message, "error");
-      return;
-    }
-    const ok = await copyText(url);
-    toast(ok ? "Link copied to clipboard 🔗" : "Couldn't copy the link. Open Share to copy it manually.", ok ? "success" : "error");
-  };
-
   const onMenuFile = useCallback((f: FileItem, anchor: DOMRect) => setMenu({ id: f.id, type: "file", anchor }), []);
   const onMenuPlaylist = useCallback((p: PlaylistItem, anchor: DOMRect) => setMenu({ id: p.id, type: "playlist", anchor }), []);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -212,23 +227,20 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
     }
     const fi = files.find((f) => f.id === menu.id);
     if (!fi) return [];
-    // Share / Copy link / QR need a valid public link: a private (unpublished) file has none, so those items stay
-    // visible but dimmed, say why, and explain it when tapped instead of producing a dead or unrestricted link.
+    // Share (and, inside it, Copy link / Show QR code) needs a valid public link: a private (unpublished) file has none,
+    // so Share stays visible but dimmed, says why, and explains it when tapped instead of producing a dead or
+    // unrestricted link. Copy link and QR live ONLY inside the Share dialog (no duplicate entries here), and the
+    // thumbnail is edited inside Edit Details (no separate Change Thumbnail entry).
     const shareable = fileShareAvailability(fi).ok;
     const privateHint = shareable ? undefined : "Private — publish to share";
     return [
       { icon: Pencil, label: "Edit Details", action: () => openFileDialog("edit", fi) },
-      { icon: ImagePlus, label: "Change Thumbnail", action: () => openFileDialog("thumbnail", fi) },
       { icon: ListPlus, label: "Manage Playlists", action: () => openFileDialog("playlists", fi) },
-      { icon: Share2, label: "Share", separated: true, unavailable: !shareable, hint: privateHint, action: () => openFileDialog("share", fi) },
-      { icon: Link2, label: "Copy Link", unavailable: !shareable, hint: privateHint, action: () => void copyFileLink(fi) },
-      { icon: QrCode, label: "Generate QR Code", unavailable: !shareable, hint: privateHint, action: () => openFileDialog("qr", fi) },
-      { icon: Info, label: "File Details", separated: true, action: () => openFileDialog("details", fi) },
+      { icon: Share2, label: "Share", unavailable: !shareable, hint: privateHint, action: () => openFileDialog("share", fi) },
+      { icon: Info, label: "File Details", action: () => openFileDialog("details", fi) },
       { icon: Trash2, label: "Delete File", destructive: true, action: () => openFileDialog("delete", fi) },
     ];
-    // copyFileLink only depends on stable inputs (toast); intentionally not a dependency.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menu, files, playlists, openPlaylist]);
+  }, [menu, files, playlists, openPlaylist, openFileDialog]);
 
   // ── Render helpers ──────────────────────────────────────────────────────
   const renderFlat = () => (
@@ -333,7 +345,18 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
 
       {/* Content */}
       {loading ? (
-        <LibrarySkeleton layout={viewMode} />
+        <LibrarySkeleton layout={isHomeView ? "home" : viewMode} />
+      ) : loadError ? (
+        <div className="flex flex-col items-center justify-center gap-4 py-14 text-center" role="alert" data-testid="library-error">
+          <div className="w-16 h-16 rounded-2xl bg-secondary flex items-center justify-center text-muted"><CloudOff size={28} aria-hidden="true" /></div>
+          <div>
+            <p className="font-semibold text-primary mb-1">Couldn&apos;t load your library</p>
+            <p className="text-sm text-secondary">Check your connection and try again.</p>
+          </div>
+          <button type="button" onClick={retryLoad} className="btn-primary min-h-11 px-6 text-sm inline-flex items-center gap-2" data-testid="library-retry">
+            <RefreshCw size={15} aria-hidden="true" /> Retry
+          </button>
+        </div>
       ) : isHomeView ? (
         sections.length === 0 ? renderEmpty() : (
           <HomeSections
@@ -395,14 +418,7 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
           file={activeFile}
           onClose={closeFileDialog}
           onSaved={(d) => patchFile(activeFile.id, { title: d.title, description: d.description ?? undefined, updatedAt: d.updatedAt ?? activeFile.updatedAt })}
-        />
-      )}
-      {activeFile && fileDialog?.kind === "thumbnail" && (
-        <ChangeThumbnailDialog
-          key={activeFile.id}
-          file={activeFile}
-          onClose={closeFileDialog}
-          onChanged={(t) => {
+          onThumbnailChanged={(t) => {
             patchFile(activeFile.id, { thumbnailUrl: t.url, thumbnailWidth: t.width, thumbnailHeight: t.height });
             void fetchAll(); // playlist covers derive from the first file's thumbnail
           }}

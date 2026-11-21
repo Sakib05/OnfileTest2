@@ -1113,6 +1113,74 @@ describe("Playlist page — sharing", () => {
     await flush();
     expect(document.querySelector('[data-testid="share-password-note"]')?.textContent).toContain("password");
   });
+
+  it("offers Share playlist · Copy playlist link · Show QR code", async () => {
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(shareBtn("share-telegram").textContent).toContain("Share playlist");
+    expect(shareBtn("share-copy").textContent).toContain("Copy playlist link");
+    expect(shareBtn("share-qr").textContent).toContain("Show QR code");
+  });
+
+  it("Show QR code opens a QR modal for the SAME server-issued public URL, with the playlist title, Download and Copy link; closing returns to Share", async () => {
+    const writeText = clip();
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    const url = `https://onfile.test/p/${SHARE_SLUG}`;
+    await act(async () => shareBtn("share-qr").click());
+    await flush();
+    const qr = document.body.querySelector('[data-testid="qr-dialog"]')!;
+    expect(qr).not.toBeNull();
+    expect(qr.querySelector('[data-testid="qr-title"]')?.textContent).toBe("Accounting");
+    const svg = qr.querySelector('[data-testid="qr-svg"]')!;
+    expect(svg.getAttribute("data-qr-url")).toBe(url);
+    expect(svg.querySelector("path")?.getAttribute("d")?.length).toBeGreaterThan(200);
+    expect(qr.querySelector('[data-testid="qr-url"]')?.textContent).toBe(url);
+    expect(qr.querySelector('[data-testid="qr-download"]')).not.toBeNull();
+    // never the numeric id, never an internal Telegram link
+    expect(svg.getAttribute("data-qr-url")).not.toMatch(/playlists\/1|t\.me|telegram/i);
+    // no second link was requested for the QR: it reuses the one the Share dialog already got
+    expect(calls.filter((c) => c.method === "POST" && c.url === "/api/playlists/1/share")).toHaveLength(1);
+
+    await act(async () => (qr.querySelector('[data-testid="qr-copy"]') as HTMLButtonElement).click());
+    await flush();
+    expect(writeText).toHaveBeenCalledWith(url);
+
+    await act(async () => (document.body.querySelector('[data-testid="qr-close"]') as HTMLButtonElement).click());
+    expect(document.body.querySelector('[data-testid="qr-dialog"]')).toBeNull();
+    expect(sheet()).not.toBeNull(); // back on the share options
+  });
+
+  it("a password-protected playlist's QR says the password is still required (and the URL carries no password)", async () => {
+    shareResult = { status: 200, body: { share: { slug: SHARE_SLUG, path: `/p/${SHARE_SLUG}`, url: `https://onfile.test/p/${SHARE_SLUG}`, hasPassword: true } } };
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    await act(async () => shareBtn("share-qr").click());
+    await flush();
+    expect(document.body.querySelector('[data-testid="qr-password-note"]')?.textContent).toContain("password");
+    expect(document.body.querySelector('[data-testid="qr-svg"]')?.getAttribute("data-qr-url")).not.toMatch(/password|pw=/i);
+  });
+
+  it("a private playlist gets NO QR option and no QR code (nothing that bypasses visibility)", async () => {
+    shareResult = { status: 409, body: { error: "This playlist is private. Make it public to share it.", reason: "private" } };
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(shareBtn("share-qr")).toBeNull();
+    expect(document.body.querySelector('[data-testid="qr-svg"]')).toBeNull();
+  });
+
+  it("a paid (unshareable) playlist gets no QR option either", async () => {
+    shareResult = { status: 409, body: { error: "Paid playlists can't be shared yet because Telegram Stars payments aren't connected.", reason: "paid_unavailable" } };
+    await mount();
+    await act(async () => (document.querySelector('[data-testid="playlist-share"]') as HTMLButtonElement).click());
+    await flush();
+    expect(shareBtn("share-qr")).toBeNull();
+    expect(document.body.querySelector('[data-testid="qr-svg"]')).toBeNull();
+  });
 });
 
 

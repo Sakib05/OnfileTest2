@@ -1,7 +1,8 @@
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Copy, EyeOff, Globe, Link2, Loader2, Lock, Send, Share2 } from "lucide-react";
+import { Copy, EyeOff, Globe, Link2, Loader2, Lock, QrCode, Send, Share2 } from "lucide-react";
 import Modal from "@/components/ui/Modal";
+import QrCodeModal from "@/components/ui/QrCodeModal";
 import { useToast } from "@/components/ui/Toast";
 import { canNativeShare, copyText, nativeShare, openTelegramShare, requestShareLink, type ShareInfo, type ShareLinkResult } from "@/lib/playlistShareClient";
 
@@ -29,6 +30,7 @@ export default function ShareSheet({
   const { toast } = useToast();
   const [state, setState] = useState<State>({ name: "loading" });
   const [busy, setBusy] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const seq = useRef(0);
 
   const load = useCallback(async () => {
@@ -58,7 +60,7 @@ export default function ShareSheet({
         await load();
       } else {
         toast("Playlist is now private. The link no longer works.");
-        onClose();
+        close();
       }
     } catch {
       toast("Couldn't change the playlist's visibility. Please try again.", "error");
@@ -67,11 +69,18 @@ export default function ShareSheet({
     }
   };
 
+  // Closing the sheet always also closes the QR view, so reopening starts on the share options.
+  const close = () => {
+    setShowQr(false);
+    onClose();
+  };
+
   const share = state.name === "ready" ? state.share : null;
   const text = `Check out “${title}” on Onfile`;
 
   return (
-    <Modal open={open} onClose={onClose} title="Share playlist" size="sm">
+    <>
+    <Modal open={open && !showQr} onClose={close} title="Share playlist" size="sm">
       <div className="flex flex-col gap-4" data-testid="share-sheet">
         {state.name === "loading" && (
           <div className="flex items-center justify-center gap-2 py-8 text-sm text-secondary" role="status">
@@ -126,7 +135,7 @@ export default function ShareSheet({
                   toast(ok ? "Playlist link copied" : "Couldn't copy the link. Select it and copy manually.", ok ? "success" : "error");
                 }}
               >
-                <Copy size={15} /> Copy link
+                <Copy size={15} /> Copy playlist link
               </button>
               <button
                 type="button"
@@ -137,7 +146,7 @@ export default function ShareSheet({
                   toast("Opening Telegram…", "info");
                 }}
               >
-                <Send size={15} /> Share on Telegram
+                <Send size={15} /> Share playlist
               </button>
               {canNativeShare() && (
                 <button
@@ -153,6 +162,14 @@ export default function ShareSheet({
                   <Share2 size={15} /> More options…
                 </button>
               )}
+              <button
+                type="button"
+                className="btn-secondary min-h-11 text-sm flex items-center justify-center gap-2"
+                data-testid="share-qr"
+                onClick={() => setShowQr(true)}
+              >
+                <QrCode size={15} /> Show QR code
+              </button>
             </div>
 
             <button
@@ -168,5 +185,18 @@ export default function ShareSheet({
         )}
       </div>
     </Modal>
+    {/* QR for the SAME server-issued public URL as Copy / Share — only ever offered when that link exists (state "ready"),
+        i.e. never for a private or unshareable playlist. Password protection still applies on the page it opens. */}
+    {open && showQr && share && (
+      <QrCodeModal
+        title={title}
+        url={share.url}
+        hasPassword={share.hasPassword}
+        passwordNote="Password protected: anyone who scans this is still asked for the password."
+        noun="playlist"
+        onClose={() => setShowQr(false)}
+      />
+    )}
+    </>
   );
 }

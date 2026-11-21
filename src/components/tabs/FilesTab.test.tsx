@@ -45,7 +45,7 @@ const byLabel = (l: string) => container.querySelector(`[aria-label="${l}"]`);
 const chip = (name: string) => Array.from(container.querySelectorAll('[role="group"][aria-label="Library categories"] button')).find((b) => b.textContent === name)!;
 const sec = (k: string) => container.querySelector(`[data-testid="home-section-${k}"]`);
 const SIZE_RE = /Unknown size|\b\d+(\.\d+)?\s?(B|KB|MB|GB)\b/;
-const FILE_MENU_LABELS = ["Edit Details", "Change Thumbnail", "Manage Playlists", "Share", "Copy Link", "Generate QR Code", "File Details", "Delete File"];
+const FILE_MENU_LABELS = ["Edit Details", "Manage Playlists", "Share", "File Details", "Delete File"];
 
 async function type(input: HTMLInputElement, value: string) {
   await act(async () => {
@@ -376,14 +376,15 @@ describe("My Library — relative upload time", () => {
 });
 
 describe("My Library — file menu", () => {
-  it("offers the eight file actions in order, with Delete File last, separated and destructive", async () => {
+  it("offers exactly the five file actions in order (no Change Thumbnail / Copy Link / Generate QR Code), with Delete File last, separated and destructive", async () => {
     await mount();
     await click(chip("Document"));
     await click(byLabel("More actions for Report.pdf"));
     const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
     expect(items.map((m) => m.textContent)).toEqual(FILE_MENU_LABELS);
     expect(items[items.length - 1].querySelector("span")!.innerHTML).toContain("text-red-500");
-    expect(document.querySelectorAll('[role="menu"] [role="separator"]').length).toBeGreaterThanOrEqual(2);
+    expect(document.querySelectorAll('[role="menu"] [role="separator"]').length).toBeGreaterThanOrEqual(1); // Delete File is set apart
+    for (const gone of ["Change Thumbnail", "Copy Link", "Generate QR Code"]) expect(document.querySelector('[role="menu"]')!.textContent).not.toContain(gone);
     expect(document.body.textContent).not.toContain("Replace thumbnail"); // no thumbnail dialog until chosen
     for (const el of items) expect(parseInt((el as HTMLElement).style.minHeight, 10)).toBeGreaterThanOrEqual(44);
   });
@@ -420,5 +421,95 @@ describe("My Library — playlists open as a full page (no popup)", () => {
     await click(byLabel("More actions for playlist Mix Playlist"));
     await click(Array.from(document.querySelectorAll('[role="menuitem"]')).find((m) => m.textContent === "Edit") ?? null);
     expect(router.push).toHaveBeenLastCalledWith("/playlists/1?edit=1");
+  });
+});
+
+describe("My Library — loading, error and empty states", () => {
+  const deferredFetch = () => {
+    let resolveAll: (files: unknown[], playlists: unknown[]) => void = () => {};
+    const gate = new Promise<{ files: unknown[]; playlists: unknown[] }>((res) => { resolveAll = (files, playlists) => res({ files, playlists }); });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const d = await gate;
+      return new Response(JSON.stringify(String(url).startsWith("/api/files") ? { files: d.files } : { playlists: d.playlists }), { status: 200 });
+    }));
+    return resolveAll;
+  };
+  const skeleton = () => container.querySelector('[data-testid="library-skeleton"]');
+
+  it("shows a compact skeleton that mirrors the Home layout (section rows of small cards, no full-width slabs) only while loading", async () => {
+    const resolve = deferredFetch();
+    await act(async () => root.render(<ToastProvider><FilesTab /></ToastProvider>));
+    const sk = skeleton()!;
+    expect(sk).not.toBeNull();
+    expect(sk.getAttribute("data-layout")).toBe("home");
+    expect(sk.getAttribute("aria-busy")).toBe("true");
+    const cards = Array.from(sk.querySelectorAll('[data-testid="library-skeleton-card"]'));
+    expect(cards).toHaveLength(6); // 2 sections × 3 cards — small, fixed
+    for (const c of cards) {
+      expect(c.getAttribute("data-layout")).toBe("row");
+      expect(c.className).toContain("w-[168px]"); // same width as the real row card
+      expect(c.querySelector(".aspect-video")).not.toBeNull(); // same thumbnail frame
+    }
+    // no fixed-height full-width slabs like the old h-[108px]/h-[190px] placeholders
+    expect(sk.innerHTML).not.toMatch(/h-\[(108|190)px\]/);
+    // categories + header stay put
+    expect(container.querySelector("h1")?.textContent).toBe("My Library");
+    expect(container.querySelector('[aria-label="Library categories"]')).not.toBeNull();
+
+    await act(async () => resolve(FILES, PLAYLISTS));
+    await flush();
+    expect(skeleton()).toBeNull(); // gone as soon as the data arrives
+    expect(container.querySelector('[data-testid="home-sections"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="library-error"]')).toBeNull();
+  });
+
+  it("uses the list-card geometry for the flat list skeleton (3 cards) and 4 cards for grid", async () => {
+    const { LibrarySkeleton } = await import("@/components/library/LibraryCards");
+    await act(async () => root.render(<LibrarySkeleton layout="list" />));
+    let cards = container.querySelectorAll('[data-testid="library-skeleton-card"]');
+    expect(cards).toHaveLength(3);
+    expect(cards[0].className).toContain("rounded-2xl");
+    expect(cards[0].querySelector(".w-28")).not.toBeNull(); // same thumbnail width as a real list card
+    await act(async () => root.render(<LibrarySkeleton layout="grid" />));
+    cards = container.querySelectorAll('[data-testid="library-skeleton-card"]');
+    expect(cards).toHaveLength(4);
+    expect(container.querySelector(".grid-cols-2")).not.toBeNull();
+  });
+
+  it("shows an error with Retry (not skeletons, not the empty state) when the request fails, and Retry recovers", async () => {
+    let fail = true;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (fail) return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+      return new Response(JSON.stringify(String(url).startsWith("/api/files") ? { files: FILES } : { playlists: PLAYLISTS }), { status: 200 });
+    }));
+    await act(async () => root.render(<ToastProvider><FilesTab /></ToastProvider>));
+    await flush();
+    expect(skeleton()).toBeNull();
+    expect(container.querySelector('[data-testid="library-empty"]')).toBeNull();
+    const err = container.querySelector('[data-testid="library-error"]')!;
+    expect(err.textContent).toContain("Couldn't load your library");
+
+    fail = false;
+    await click(container.querySelector('[data-testid="library-retry"]'));
+    await flush();
+    expect(container.querySelector('[data-testid="library-error"]')).toBeNull();
+    expect(skeleton()).toBeNull();
+    expect(container.querySelector('[data-testid="home-sections"]')).not.toBeNull();
+  });
+
+  it("treats a network failure the same way (error + Retry)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    await act(async () => root.render(<ToastProvider><FilesTab /></ToastProvider>));
+    await flush();
+    expect(container.querySelector('[data-testid="library-error"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="library-retry"]')).not.toBeNull();
+    expect(skeleton()).toBeNull();
+  });
+
+  it("shows the clean empty state (no skeleton, no error) for a user with no files", async () => {
+    await mount([], []);
+    expect(skeleton()).toBeNull();
+    expect(container.querySelector('[data-testid="library-error"]')).toBeNull();
+    expect(container.querySelector('[data-testid="library-empty"]')?.textContent).toContain("No files yet");
   });
 });
