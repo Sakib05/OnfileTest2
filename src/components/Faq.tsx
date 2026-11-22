@@ -1,200 +1,212 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
-import { ChevronDown, HelpCircle } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, HelpCircle, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { FAQ_CATEGORIES, FAQ_ENTRIES, type FaqCategoryId } from "@/content/faq";
+import { searchFaq } from "@/lib/faqSearch";
 
+/** Kept for callers that deep-link into the FAQ: maps the old two-section ids onto the new categories. */
 export type FaqSection = "connect" | "general";
+const SECTION_TO_CATEGORY: Record<FaqSection, FaqCategoryId> = { connect: "channel", general: "getting-started" };
 
-interface FaqItem {
-  id: string;
-  section: FaqSection;
-  question: string;
-  answer: string;
+export interface FaqLink {
+  label: string;
+  onClick: () => void;
 }
 
 /**
- * Single source of truth for Onfile's FAQ content. Reused by both the "Me"
- * section (Support > FAQ & Help) and anywhere else in the app that links
- * into it — the content is never duplicated between entry points, only the
- * navigation context differs.
- *
- * The "connect" section below is the explanation of why/how channel
- * connection works, previously split between a "Why connect?" button on the
- * Channel Connect screen and this page. That button has been removed from
- * the Channel Connect screen (see src/components/setup/ChannelConnectScreen.tsx);
- * this FAQ is now the only place that explanation lives. Every answer
- * describes what the current implementation actually does — see
- * src/lib/telegramBot.ts and src/lib/channelConnection.ts for the
- * corresponding code.
+ * FAQ & Help center (Me › Support › FAQ & Help). Content lives in src/content/faq.ts.
+ * It has no back control of its own: the host screen (ProfileTab) registers Telegram's native Back Button while it
+ * is open. `links` adds shortcuts to the legal pages at the bottom.
  */
-const FAQ_ITEMS: FaqItem[] = [
-  {
-    id: "connect-why",
-    section: "connect",
-    question: "Why do I need to connect my Telegram channel?",
-    answer:
-      "Onfile needs a verified connection to your Telegram channel so it can confirm you're the creator behind the content, deliver eligible files to the people you share links with, and unlock channel-dependent creator features like publishing and smart links. Without a verified channel, Onfile has no reliable way to associate a file with its rightful creator.",
-  },
-  {
-    id: "connect-admin",
-    section: "connect",
-    question: "Why does Onfile require administrator access?",
-    answer:
-      "Telegram only lets a bot post messages in a channel if it has been added as an administrator with that specific right. Onfile's bot requests administrator status purely so it can post/deliver files on your behalf — the exact same permission (\"Post Messages\") is requested whether you use Connect Channel via Bot or Manual Connect, and nothing beyond it.",
-  },
-  {
-    id: "connect-private-only",
-    section: "connect",
-    question: "Why are only private channels supported?",
-    answer:
-      "Onfile is built around private channels so that access to your content stays under your control. The backend checks every connection attempt — regardless of which method you use — and rejects any channel that has a public @username, even if the bot already has administrator rights there. This check cannot be bypassed from the picker or the manual link form.",
-  },
-  {
-    id: "connect-storage",
-    section: "connect",
-    question: "Is my channel content stored on Onfile servers?",
-    answer:
-      "No. Onfile is designed to use the files already hosted on Telegram's servers instead of downloading and re-uploading them to its own storage. Smart links reference the original Telegram message/file rather than duplicating it. Onfile's database only stores the channel's Telegram ID, name, and connection/verification status — not your files.",
-  },
-  {
-    id: "connect-permissions",
-    section: "connect",
-    question: "What permissions does the Onfile Bot need?",
-    answer:
-      "Only the ability to post messages in your channel. Every other administrator right (changing channel info, deleting messages, inviting or removing members, promoting other admins, managing video chats, posting stories, etc.) is explicitly left disabled in the permissions Onfile requests from Telegram.",
-  },
-  {
-    id: "connect-disconnect",
-    section: "connect",
-    question: "Can I disconnect my channel later?",
-    answer:
-      "Yes. You can disconnect a connected channel any time from Channel Management in the Me tab. Onfile makes a best-effort attempt to remove the bot from the channel when you do; the bot is never automatically removed or demoted outside of an action you take.",
-  },
-  {
-    id: "connect-public-rejected",
-    section: "connect",
-    question: "What happens if I select a public channel?",
-    answer:
-      "The connection is rejected with a \"Public Channel Not Supported\" message, and no active connection is created. Onfile does not automatically demote or remove the bot from that channel — if you added it there, you'll need to remove it yourself from Telegram. Then select or link a private channel instead.",
-  },
-  {
-    id: "connect-bot-vs-manual",
-    section: "connect",
-    question: "What is the difference between Connect Channel via Bot and Manual Connect?",
-    answer:
-      "Connect Channel via Bot uses Telegram's own native chat-selection screen, opened directly from Onfile — you pick your channel and approve the bot's admin access entirely inside Telegram's own UI. Manual Connect instead asks you to add the bot as an administrator yourself from your channel's settings, then paste the channel's private invite link into Onfile. Both methods end with the exact same backend verification before a connection is activated.",
-  },
-  {
-    id: "connect-unsupported-client",
-    section: "connect",
-    question: "What should I do if Telegram does not support direct channel selection?",
-    answer:
-      "You don't need to update Telegram. If your Telegram app can't open the channel picker directly from Onfile, Onfile shows a \"Connect channel via bot\" button instead. It opens the Onfile Bot chat — tap Start if Telegram shows it, tap \"Select channel to connect\", choose your private channel, then return to Onfile. Manual Connect is also available and works on any Telegram version.",
-  },
-  {
-    id: "connect-fix-failed",
-    section: "connect",
-    question: "How can I fix a failed channel connection?",
-    answer:
-      "Check the specific error shown: it will tell you whether the channel needs to be private, whether the bot still needs to be added or made an administrator, or whether the bot needs the \"Post Messages\" permission enabled. Fix that in Telegram, then tap \"Try Again\" (Connect Channel via Bot) or resubmit the link (Manual Connect) — Onfile re-verifies against live Telegram data every time.",
-  },
-  {
-    id: "general-no-channel",
-    section: "general",
-    question: "Can I use Onfile without connecting a private channel?",
-    answer:
-      "Yes, you can view Onfile's introduction and onboarding screens without connecting a channel. However, creator features that depend on a connected channel — publishing files, creating playlists/smart links, and monetization — require a verified private channel first.",
-  },
-  {
-    id: "general-earnings",
-    section: "general",
-    question: "Can I earn money through Onfile?",
-    answer:
-      "Onfile is designed to let creators monetize downloads and content over time. However, we can't guarantee any specific earnings — actual monetization depends on your eligibility, feature availability in your account, platform rules, and other applicable conditions.",
-  },
-];
-
-const SECTION_LABEL: Record<FaqSection, string> = {
-  connect: "Connecting your channel",
-  general: "General",
-};
-
-/**
- * FAQ & Help sub-page. It has no back control of its own: the host screen
- * (ProfileTab) registers Telegram's native Back Button while it is open.
- */
-export default function Faq({ highlightSection }: { highlightSection?: FaqSection }) {
-  const [openIds, setOpenIds] = useState<Set<string>>(() => {
-    const initial = new Set<string>();
-    if (highlightSection) {
-      FAQ_ITEMS.filter((item) => item.section === highlightSection).forEach((item) => initial.add(item.id));
-    }
-    return initial;
-  });
-  const highlightRef = useRef<HTMLDivElement | null>(null);
+export default function Faq({ highlightSection, links }: { highlightSection?: FaqSection; links?: FaqLink[] }) {
+  const initialCategory: FaqCategoryId | "all" = highlightSection ? SECTION_TO_CATEGORY[highlightSection] : "all";
+  const [category, setCategory] = useState<FaqCategoryId | "all">(initialCategory);
+  const [query, setQuery] = useState("");
+  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (highlightSection && highlightRef.current) {
-      highlightRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-    // Only scroll on initial mount for the requested section.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    window.scrollTo(0, 0);
   }, []);
 
-  const toggle = (id: string) => {
+  const results = useMemo(() => searchFaq(FAQ_ENTRIES, query, category), [query, category]);
+  const searching = query.trim() !== "";
+
+  // Group by category, keeping the order of FAQ_CATEGORIES (search results keep their relevance order inside a group).
+  const groups = useMemo(() => {
+    return FAQ_CATEGORIES.map((cat) => ({ cat, items: results.filter((e) => e.category === cat.id) })).filter((g) => g.items.length > 0);
+  }, [results]);
+
+  const toggle = (id: string) =>
     setOpenIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+
+  const pickCategory = (id: FaqCategoryId | "all") => {
+    setCategory(id);
+    listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const sections: FaqSection[] = ["connect", "general"];
+  const activeCategory = FAQ_CATEGORIES.find((c) => c.id === category);
 
   return (
-    <div className="flex flex-col gap-5 animate-fade-in">
+    <div className="flex flex-col gap-4 animate-fade-in">
       <div>
         <h1 className="text-lg font-bold text-primary">FAQ &amp; Help</h1>
+        <p className="text-xs text-secondary mt-0.5">Answers about connecting a channel, sharing files, your wallet and more.</p>
       </div>
 
-      {sections.map((section) => (
-        <div key={section} className="flex flex-col gap-3">
-          <h2 className="text-xs font-semibold text-secondary uppercase tracking-wide px-1">
-            {SECTION_LABEL[section]}
-          </h2>
-          <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
-            {FAQ_ITEMS.filter((item) => item.section === section).map((item, idx) => {
-              const isOpen = openIds.has(item.id);
-              const isHighlighted = highlightSection === section;
-              return (
-                <div
-                  key={item.id}
-                  ref={isHighlighted && idx === 0 ? highlightRef : undefined}
-                  className={cn("border-b border-app last:border-0", isHighlighted && "bg-brand-10/40")}
-                >
-                  <button
-                    onClick={() => toggle(item.id)}
-                    className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
-                  >
-                    <HelpCircle size={15} className="text-brand flex-shrink-0" />
-                    <span className="flex-1 text-sm font-medium text-primary">{item.question}</span>
-                    <ChevronDown
-                      size={15}
-                      className={cn("text-muted flex-shrink-0 transition-transform", isOpen && "rotate-180")}
-                    />
-                  </button>
-                  {isOpen && (
-                    <div className="px-4 pb-4 pl-11">
-                      <p className="text-sm text-secondary leading-relaxed">{item.answer}</p>
-                    </div>
+      {/* Search */}
+      <div role="search" className="relative">
+        <label htmlFor="faq-search" className="sr-only">
+          Search help articles
+        </label>
+        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" aria-hidden="true" />
+        <input
+          id="faq-search"
+          type="search"
+          inputMode="search"
+          enterKeyHint="search"
+          autoComplete="off"
+          className="input-app text-sm pl-10 pr-10 min-h-12"
+          placeholder="Search, e.g. withdraw, QR code, password"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          maxLength={100}
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            aria-label="Clear search"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center text-muted hover:text-primary"
+          >
+            <X size={16} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+
+      {/* Category navigation */}
+      <nav aria-label="Help categories" className="-mx-4 px-4 overflow-x-auto">
+        <ul className="flex gap-2 pb-1 w-max">
+          {[{ id: "all" as const, title: "All topics" }, ...FAQ_CATEGORIES].map((c) => {
+            const active = category === c.id;
+            return (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => pickCategory(c.id)}
+                  aria-pressed={active}
+                  className={cn(
+                    "px-3.5 min-h-10 rounded-full text-xs font-semibold whitespace-nowrap border transition-colors",
+                    active ? "gradient-brand text-white border-transparent" : "bg-card text-secondary border-app hover:text-primary"
                   )}
-                </div>
-              );
-            })}
+                >
+                  {c.title}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+
+      <div ref={listRef} className="scroll-mt-4 flex flex-col gap-5" aria-live="polite">
+        {activeCategory && !searching && <p className="text-xs text-secondary px-1">{activeCategory.description}</p>}
+        {searching && (
+          <p className="text-xs text-secondary px-1" data-testid="faq-result-count">
+            {results.length === 0 ? "No results" : `${results.length} ${results.length === 1 ? "result" : "results"}`} for “{query.trim()}”
+            {category !== "all" && activeCategory ? ` in ${activeCategory.title}` : ""}
+          </p>
+        )}
+
+        {groups.length === 0 ? (
+          <div className="bg-card rounded-2xl border border-app p-6 flex flex-col items-center text-center gap-3" data-testid="faq-empty">
+            <HelpCircle size={30} className="text-muted opacity-50" aria-hidden="true" />
+            <div>
+              <p className="text-sm font-semibold text-primary">Nothing matches your search</p>
+              <p className="text-xs text-secondary mt-1">Try different words, or browse all topics.</p>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary px-4 py-2 text-xs"
+              onClick={() => {
+                setQuery("");
+                setCategory("all");
+              }}
+            >
+              Clear search
+            </button>
           </div>
+        ) : (
+          groups.map(({ cat, items }) => (
+            <section key={cat.id} aria-labelledby={`faq-cat-${cat.id}`} className="flex flex-col gap-2">
+              <h2 id={`faq-cat-${cat.id}`} className="text-xs font-semibold text-secondary uppercase tracking-wide px-1">
+                {cat.title}
+              </h2>
+              <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
+                {items.map((item) => {
+                  const isOpen = openIds.has(item.id);
+                  const panelId = `faq-panel-${item.id}`;
+                  return (
+                    <div key={item.id} className="border-b border-app last:border-0">
+                      <h3>
+                        <button
+                          type="button"
+                          onClick={() => toggle(item.id)}
+                          aria-expanded={isOpen}
+                          aria-controls={panelId}
+                          className="w-full flex items-center gap-3 px-4 py-3.5 min-h-12 text-left"
+                        >
+                          <HelpCircle size={15} className="text-brand flex-shrink-0" aria-hidden="true" />
+                          <span className="flex-1 text-sm font-medium text-primary">{item.question}</span>
+                          <ChevronDown size={15} className={cn("text-muted flex-shrink-0 transition-transform", isOpen && "rotate-180")} aria-hidden="true" />
+                        </button>
+                      </h3>
+                      {isOpen && (
+                        <div id={panelId} role="region" aria-label={item.question} className="px-4 pb-4 pl-11 flex flex-col gap-2.5">
+                          {item.answer.map((p, i) => (
+                            <p key={i} className="text-sm text-secondary leading-relaxed">
+                              {p}
+                            </p>
+                          ))}
+                          {item.steps && (
+                            <ol className="list-decimal pl-5 flex flex-col gap-1.5 text-sm text-secondary leading-relaxed marker:text-brand marker:font-semibold">
+                              {item.steps.map((step, i) => (
+                                <li key={i}>{step}</li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ))
+        )}
+      </div>
+
+      {links && links.length > 0 && (
+        <div className="bg-card rounded-2xl border border-app shadow-app-sm overflow-hidden">
+          <p className="px-4 pt-3 pb-1 text-xs font-semibold text-secondary uppercase tracking-wide">More information</p>
+          {links.map((link) => (
+            <button
+              key={link.label}
+              type="button"
+              onClick={link.onClick}
+              className="w-full flex items-center gap-3 px-4 py-3.5 min-h-12 text-left border-t border-app first:border-0 hover:bg-secondary"
+            >
+              <span className="flex-1 text-sm font-medium text-primary">{link.label}</span>
+              <ChevronDown size={14} className="text-muted -rotate-90 flex-shrink-0" aria-hidden="true" />
+            </button>
+          ))}
         </div>
-      ))}
+      )}
     </div>
   );
 }

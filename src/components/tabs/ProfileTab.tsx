@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   User, Users, Download, DollarSign, ChevronRight, Moon, Sun, Globe, Megaphone,
   HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle, Settings,
-  Shield, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
+  Shield, FileText, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
 import { cn, formatNumber, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -13,11 +13,14 @@ import Modal from "@/components/ui/Modal";
 import DeleteConfirmModal from "@/components/ui/DeleteConfirmModal";
 import ChannelConnectFlow, { type ConnectedChannel } from "@/components/ChannelConnectFlow";
 import Faq from "@/components/Faq";
+import LegalDocument from "@/components/legal/LegalDocument";
+import { buildPrivacySections } from "@/content/legal/privacy";
+import { buildTermsSections } from "@/content/legal/terms";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import Link from "next/link";
 
-type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq";
+type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq" | "privacy" | "terms";
 
 interface ReferralData {
   referrals: Array<{
@@ -482,7 +485,42 @@ export default function ProfileTab() {
   }
 
   if (subPage === "faq") {
-    return <Faq />;
+    return (
+      <Faq
+        links={[
+          { label: "Privacy & Security", onClick: () => setSubPage("privacy") },
+          { label: "Terms & Conditions", onClick: () => setSubPage("terms") },
+        ]}
+      />
+    );
+  }
+
+  if (subPage === "privacy") {
+    return (
+      <LegalDocument
+        title="Privacy & Security"
+        subtitle="How Onfile handles your information, your files and your account."
+        sections={buildPrivacySections()}
+        links={[
+          { label: "Terms & Conditions", onClick: () => setSubPage("terms") },
+          { label: "FAQ & Help", onClick: () => setSubPage("faq") },
+        ]}
+      />
+    );
+  }
+
+  if (subPage === "terms") {
+    return (
+      <LegalDocument
+        title="Terms & Conditions"
+        subtitle="The rules for using Onfile as a creator or a visitor."
+        sections={buildTermsSections()}
+        links={[
+          { label: "Privacy & Security", onClick: () => setSubPage("privacy") },
+          { label: "FAQ & Help", onClick: () => setSubPage("faq") },
+        ]}
+      />
+    );
   }
 
   if (subPage === "settings") {
@@ -652,7 +690,14 @@ export default function ProfileTab() {
           iconBg="bg-green-50 dark:bg-green-900/20"
           iconColor="text-green-500"
           label="Privacy & Security"
-          onClick={() => {}}
+          onClick={() => setSubPage("privacy")}
+        />
+        <ProfileRow
+          icon={FileText}
+          iconBg="bg-slate-50 dark:bg-slate-900/20"
+          iconColor="text-slate-500"
+          label="Terms & Conditions"
+          onClick={() => setSubPage("terms")}
         />
       </div>
 

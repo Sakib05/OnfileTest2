@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Wallet, ArrowDownLeft, ArrowUpRight, Clock, CheckCircle2, XCircle,
   Copy, AlertCircle, ChevronDown, ChevronUp, Gift, TrendingUp, Loader2
@@ -8,6 +8,12 @@ import { cn, formatCurrency, timeAgo } from "@/lib/utils";
 import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
+import {
+  MIN_WITHDRAWAL_USD,
+  checkAmount,
+  parseBalanceMicro,
+  validateWithdrawalAmountInput,
+} from "@/lib/withdrawals";
 
 interface Transaction {
   id: number;
@@ -66,6 +72,8 @@ export default function WalletTab() {
     currency: "USDT",
   });
   const [withdrawLoading, setWithdrawLoading] = useState(false);
+  // Synchronous guard: a double tap can't start two requests before React re-renders the disabled button.
+  const submittingRef = useRef(false);
 
   const fetchWallet = useCallback(async () => {
     try {
@@ -84,16 +92,24 @@ export default function WalletTab() {
 
   const handleWithdraw = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!withdrawForm.amount || !withdrawForm.walletAddress) {
+    if (submittingRef.current) return;
+    if (!withdrawForm.amount || !withdrawForm.walletAddress.trim()) {
       toast("Please fill all required fields", "error");
       return;
     }
+    // Convenience check only: the server enforces the same rules (minimum, balance, format) independently.
+    const amountProblem = validateWithdrawalAmountInput(withdrawForm.amount, user?.balance);
+    if (amountProblem) {
+      toast(amountProblem, "error");
+      return;
+    }
+    submittingRef.current = true;
     setWithdrawLoading(true);
     try {
       const res = await fetch("/api/wallet/withdraw", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(withdrawForm),
+        body: JSON.stringify({ ...withdrawForm, amount: withdrawForm.amount.trim(), walletAddress: withdrawForm.walletAddress.trim() }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -108,6 +124,7 @@ export default function WalletTab() {
     } catch {
       toast("Network error. Please retry.", "error");
     } finally {
+      submittingRef.current = false;
       setWithdrawLoading(false);
     }
   };
@@ -121,6 +138,10 @@ export default function WalletTab() {
   const pending = Number(user?.pendingBalance ?? 0);
   const referralEarnings = Number(user?.referralEarnings ?? 0);
   const totalEarnings = Number(user?.totalEarnings ?? 0);
+  const amountError = validateWithdrawalAmountInput(withdrawForm.amount, user?.balance);
+  const amountReady = withdrawForm.amount.trim() !== "" && checkAmount(withdrawForm.amount).ok && !amountError;
+  const belowMinimumBalance = parseBalanceMicro(user?.balance) < BigInt(MIN_WITHDRAWAL_USD) * BigInt(1_000_000);
+  const canSubmit = amountReady && withdrawForm.walletAddress.trim() !== "" && !withdrawLoading;
 
   return (
     <div className="flex flex-col gap-5">
@@ -148,6 +169,7 @@ export default function WalletTab() {
           >
             Withdraw Now
           </button>
+          <p className="text-xs opacity-80 mt-2">Minimum withdrawal: ${MIN_WITHDRAWAL_USD} USD</p>
         </div>
       </div>
 
@@ -317,22 +339,39 @@ export default function WalletTab() {
         <form onSubmit={handleWithdraw} className="flex flex-col gap-4">
           <div className="p-3 rounded-xl bg-brand-10 border border-brand text-xs">
             <p className="font-semibold text-brand mb-0.5">Available: {balance.toFixed(4)} USDT</p>
-            <p className="text-secondary">Minimum withdrawal: 1 USDT</p>
+            <p className="text-secondary">Minimum withdrawal: ${MIN_WITHDRAWAL_USD} USD ({MIN_WITHDRAWAL_USD} USDT)</p>
           </div>
+          {belowMinimumBalance && (
+            <div role="status" className="p-3 rounded-xl bg-secondary flex items-start gap-2">
+              <AlertCircle size={13} className="text-yellow-500 mt-0.5 flex-shrink-0" />
+              <p className="text-xs text-secondary">
+                Your available balance is below the ${MIN_WITHDRAWAL_USD} USD minimum, so a withdrawal can&apos;t be requested yet.
+              </p>
+            </div>
+          )}
 
           <div>
-            <label className="text-xs font-medium text-secondary mb-1.5 block">Amount (USDT) *</label>
+            <label htmlFor="withdraw-amount" className="text-xs font-medium text-secondary mb-1.5 block">Amount (USDT) *</label>
             <input
-              className="input-app text-sm"
-              type="number"
-              step="0.0001"
-              min="1"
-              max={balance}
-              placeholder="0.0000"
+              id="withdraw-amount"
+              className={cn("input-app text-sm", amountError && "border-red-500")}
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder={`${MIN_WITHDRAWAL_USD}.00`}
               value={withdrawForm.amount}
+              aria-invalid={!!amountError}
+              aria-describedby="withdraw-amount-help"
               onChange={(e) => setWithdrawForm((prev) => ({ ...prev, amount: e.target.value }))}
               required
             />
+            <p
+              id="withdraw-amount-help"
+              role={amountError ? "alert" : undefined}
+              className={cn("text-xs mt-1.5", amountError ? "text-red-500" : "text-secondary")}
+            >
+              {amountError ?? `Enter at least $${MIN_WITHDRAWAL_USD} USD.`}
+            </p>
           </div>
 
           <div>
@@ -371,7 +410,7 @@ export default function WalletTab() {
             <button type="button" onClick={() => setShowWithdrawModal(false)} className="flex-1 btn-secondary py-3 text-sm">
               Cancel
             </button>
-            <button type="submit" disabled={withdrawLoading} className="flex-1 btn-primary py-3 text-sm">
+            <button type="submit" disabled={!canSubmit} aria-busy={withdrawLoading} className="flex-1 btn-primary py-3 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
               {withdrawLoading ? "Submitting..." : "Submit Request"}
             </button>
           </div>
