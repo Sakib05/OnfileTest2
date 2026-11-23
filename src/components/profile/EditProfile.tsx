@@ -5,14 +5,16 @@ import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
 import { DISPLAY_NAME_MAX, validateDisplayName } from "@/lib/profile/identity";
+import AvatarCropper from "@/components/profile/AvatarCropper";
 import {
   AVATAR_ACCEPT,
-  cropToSquareAvatar,
   precheckAvatar,
   removeAvatar,
   saveDisplayName,
   uploadAvatar,
 } from "@/lib/profile/avatarClient";
+import { AvatarError } from "@/lib/profile/avatarErrors";
+import { loadCropImage, type CropImage } from "@/lib/profile/avatarImage";
 
 interface PendingPicture {
   file: File;
@@ -22,7 +24,8 @@ interface PendingPicture {
 /**
  * Edit Profile (opened from the pencil on the Profile Card). Everything is staged locally and written only when
  * "Save Changes" is pressed:
- *   • picture  — choose / replace (square preview) or remove the CUSTOM picture
+ *   • picture  — choose a photo → interactive 1:1 crop editor → Apply Crop stages the result (square preview);
+ *                or remove the CUSTOM picture. Selecting / cropping NEVER uploads — only Save Changes does.
  *   • name     — custom display name (empty → Telegram name again)
  *   • username — read-only, managed by Telegram
  * Back navigation is handled by Telegram's native BackButton registered in ProfileTab.
@@ -35,17 +38,28 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
   const [pending, setPending] = useState<PendingPicture | null>(null);
   const [removeRequested, setRemoveRequested] = useState(false);
   const [preparing, setPreparing] = useState(false);
+  const [cropImage, setCropImage] = useState<CropImage | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false); // synchronous guard against double-taps / duplicate submissions
   const fileRef = useRef<HTMLInputElement>(null);
   const pendingRef = useRef<PendingPicture | null>(null);
+  const cropImageRef = useRef<CropImage | null>(null);
 
   // Revoke the blob preview URL on replace / unmount.
   useEffect(() => {
     pendingRef.current = pending;
   }, [pending]);
-  useEffect(() => () => { if (pendingRef.current) URL.revokeObjectURL(pendingRef.current.previewUrl); }, []);
+  useEffect(() => {
+    cropImageRef.current = cropImage;
+  }, [cropImage]);
+  useEffect(
+    () => () => {
+      if (pendingRef.current) URL.revokeObjectURL(pendingRef.current.previewUrl);
+      cropImageRef.current?.release(); // free the working canvas if we unmount mid-crop
+    },
+    []
+  );
 
   const hasCustom = !!user?.customAvatarUrl;
   const telegramName = user?.firstName?.trim() || null;
@@ -65,29 +79,56 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
   const showRemove = !!pending || (hasCustom && !removeRequested);
 
   const onPickFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-selecting the same file later
+    const input = e.target;
+    const file = input.files?.[0];
     if (!file) return;
     setError(null);
     const problem = precheckAvatar(file);
     if (problem) {
-      setError(problem);
+      input.value = "";
+      setError(problem.message);
       return;
     }
     setPreparing(true);
     try {
-      const cropped = await cropToSquareAvatar(file);
-      setPending((prev) => {
-        if (prev) URL.revokeObjectURL(prev.previewUrl);
-        return { file: cropped, previewUrl: URL.createObjectURL(cropped) };
+      // Reads the file's bytes first, checks the REAL format, decodes, and builds the cropper's working copy.
+      // Nothing is uploaded and nothing is staged until the user applies a crop.
+      const img = await loadCropImage(file);
+      setCropImage((prev) => {
+        prev?.release();
+        return img;
       });
-      setRemoveRequested(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "This image couldn't be read.");
+      if (err instanceof AvatarError) {
+        // Diagnostic only (no user data): which stage failed and which decoders were tried.
+        console.warn("avatar_open_failed", err.kind, err.detail ?? "");
+      }
+      setError(err instanceof AvatarError ? err.message : "We couldn't open this image. Please choose a different one.");
     } finally {
+      input.value = ""; // allow re-selecting the same file later (after its bytes were read)
       setPreparing(false);
     }
   }, []);
+
+  const closeCropper = useCallback(() => {
+    setCropImage((prev) => {
+      prev?.release();
+      return null;
+    });
+  }, []);
+
+  const onCropApplied = useCallback(
+    (file: File) => {
+      setPending((prev) => {
+        if (prev) URL.revokeObjectURL(prev.previewUrl);
+        return { file, previewUrl: URL.createObjectURL(file) };
+      });
+      setRemoveRequested(false);
+      setError(null);
+      closeCropper();
+    },
+    [closeCropper]
+  );
 
   const onRemove = () => {
     setError(null);
@@ -122,6 +163,7 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
       toast("Profile updated ✅");
       onDone();
     } catch (err) {
+      // AvatarError messages are already user-safe and say which stage failed (validation / storage / network…).
       const message = err instanceof Error ? err.message : "Couldn't save your changes. Please try again.";
       setError(message);
       toast(message, "error");
@@ -184,7 +226,7 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
             ? user?.avatarUrl
               ? "Your Telegram photo will be used after you save."
               : "Your initials will be shown after you save."
-            : "JPEG, PNG or WebP. Your photo is cropped to a square."}
+            : "JPEG, PNG or WebP. You choose which part of the photo to show."}
         </p>
       </section>
 
@@ -255,6 +297,8 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
           "Save Changes"
         )}
       </button>
+
+      {cropImage && <AvatarCropper image={cropImage} onCancel={closeCropper} onApply={onCropApplied} />}
     </div>
   );
 }

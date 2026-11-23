@@ -14,14 +14,23 @@ const api = vi.hoisted(() => ({
   uploadAvatar: vi.fn(async () => null),
   removeAvatar: vi.fn(async () => null),
   saveDisplayName: vi.fn(async () => null),
-  cropToSquareAvatar: vi.fn(async (f: File) => f),
 }));
+// Decoding/exporting need a real browser; the cropper UI itself is exercised for real below.
+const img = vi.hoisted(() => ({
+  loadCropImage: vi.fn(),
+  exportCrop: vi.fn(),
+}));
+vi.mock("@/lib/profile/avatarImage", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/profile/avatarImage")>("@/lib/profile/avatarImage");
+  return { ...actual, ...img };
+});
 vi.mock("@/lib/profile/avatarClient", async () => {
   const actual = await vi.importActual<typeof import("@/lib/profile/avatarClient")>("@/lib/profile/avatarClient");
   return { ...actual, ...api };
 });
 
 import EditProfile from "./EditProfile";
+import { AvatarError } from "@/lib/profile/avatarErrors";
 import { ToastProvider } from "@/components/ui/Toast";
 
 const base: UserProfile = {
@@ -33,8 +42,18 @@ const base: UserProfile = {
 let container: HTMLDivElement;
 let root: Root;
 const onDone = vi.fn();
+const croppedFile = () => new File([new Uint8Array([1, 2, 3])], "avatar.webp", { type: "image/webp" });
+const fakeCropImage = () => {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1200;
+  canvas.height = 800;
+  return { canvas, width: 1200, height: 800, originalWidth: 4000, originalHeight: 2667, format: "jpeg", decoder: "test", release: vi.fn() };
+};
 beforeEach(() => {
   Object.values(api).forEach((m) => m.mockClear());
+  img.loadCropImage.mockReset().mockImplementation(async () => fakeCropImage());
+  img.exportCrop.mockReset().mockImplementation(async () => croppedFile());
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({ fillRect: vi.fn(), drawImage: vi.fn() })) as never);
   refreshUser.mockClear();
   onDone.mockClear();
   URL.createObjectURL = vi.fn(() => "blob:test/1");
@@ -45,6 +64,7 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await act(async () => root.unmount());
   container.remove();
 });
@@ -117,24 +137,117 @@ describe("Edit Profile", () => {
     expect(save().disabled).toBe(true);
   });
 
-  it("choosing a picture stages a preview, enables Save, and uploads on save", async () => {
+  const crop = (id: string) => act(async () => void (document.querySelector(`[data-testid="${id}"]`) as HTMLButtonElement).click());
+  const cropper = () => document.querySelector('[data-testid="avatar-cropper"]');
+
+  it("choosing a picture opens the crop editor; nothing is staged or uploaded yet", async () => {
     await render();
     await pick(new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" }));
-    expect(api.cropToSquareAvatar).toHaveBeenCalled();
+    expect(img.loadCropImage).toHaveBeenCalledTimes(1);
+    expect(cropper()).not.toBeNull();
+    expect(save().disabled).toBe(true); // no crop applied yet
+    expect(api.uploadAvatar).not.toHaveBeenCalled();
+  });
+
+  it("Apply Crop stages the cropped preview and enables Save — the upload happens only on Save", async () => {
+    await render();
+    await pick(new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" }));
+    await crop("crop-apply");
+    expect(cropper()).toBeNull();
+    expect(img.exportCrop).toHaveBeenCalledTimes(1);
     expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:test/1");
     expect(save().disabled).toBe(false);
     expect(api.uploadAvatar).not.toHaveBeenCalled(); // nothing is written before Save
     await act(async () => save().click());
     expect(api.uploadAvatar).toHaveBeenCalledTimes(1);
+    expect((api.uploadAvatar.mock.calls[0] as unknown as [File])[0].type).toBe("image/webp");
     expect(api.saveDisplayName).not.toHaveBeenCalled();
     expect(onDone).toHaveBeenCalled();
   });
 
+  it("Cancel in the crop editor discards it: no preview, Save stays disabled, working canvas released", async () => {
+    await render();
+    const released = fakeCropImage();
+    img.loadCropImage.mockResolvedValueOnce(released);
+    await pick(new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" }));
+    await crop("crop-cancel");
+    expect(cropper()).toBeNull();
+    expect(released.release).toHaveBeenCalled();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl);
+    expect(save().disabled).toBe(true);
+    expect(api.uploadAvatar).not.toHaveBeenCalled();
+  });
+
+  it("replacing an existing custom picture uploads the new crop (no separate delete call)", async () => {
+    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-old.webp" };
+    await render();
+    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
+    await crop("crop-apply");
+    await act(async () => save().click());
+    expect(api.uploadAvatar).toHaveBeenCalledTimes(1);
+    expect(api.removeAvatar).not.toHaveBeenCalled();
+  });
+
+  it("an unsupported / unreadable photo shows its specific reason and never opens the editor", async () => {
+    img.loadCropImage.mockRejectedValueOnce(new AvatarError("heic_unsupported"));
+    await render();
+    await pick(new File([new Uint8Array([1])], "IMG_1.jpg", { type: "image/jpeg" }));
+    expect(cropper()).toBeNull();
+    expect(q("edit-profile-error").textContent).toMatch(/HEIC/);
+    expect(q("edit-profile-error").textContent).not.toMatch(/corrupt/i);
+
+    img.loadCropImage.mockRejectedValueOnce(new AvatarError("decode_failed"));
+    await pick(new File([new Uint8Array([1])], "big.jpg", { type: "image/jpeg" }));
+    expect(q("edit-profile-error").textContent).toMatch(/too large to process|couldn't open/i);
+  });
+
+  it("a failed upload keeps the staged crop + the saved picture, explains the cause, and Save can be retried", async () => {
+    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-old.webp" };
+    api.uploadAvatar.mockRejectedValueOnce(new AvatarError("storage_failed"));
+    await render();
+    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
+    await crop("crop-apply");
+    await act(async () => save().click());
+    expect(q("edit-profile-error").textContent).toMatch(/storage.*unchanged/i);
+    expect(onDone).not.toHaveBeenCalled();
+    expect(save().disabled).toBe(false); // can retry
+    await act(async () => btn("Discard")!.click()); // discarding falls back to the SAVED picture
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://cdn.example.com/b/avatar-1-old.webp");
+    // retry path
+    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
+    await crop("crop-apply");
+    await act(async () => save().click());
+    expect(api.uploadAvatar).toHaveBeenCalledTimes(2);
+    expect(onDone).toHaveBeenCalled();
+  });
+
+  it("network failure while saving shows the connection message", async () => {
+    api.uploadAvatar.mockRejectedValueOnce(new AvatarError("network"));
+    await render();
+    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
+    await crop("crop-apply");
+    await act(async () => save().click());
+    expect(q("edit-profile-error").textContent).toMatch(/connection/i);
+  });
+
+  it("double-tapping Save uploads once", async () => {
+    let resolve!: () => void;
+    api.uploadAvatar.mockImplementationOnce(() => new Promise<null>((r) => { resolve = () => r(null); }));
+    await render();
+    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
+    await crop("crop-apply");
+    await act(async () => { save().click(); save().click(); });
+    expect(api.uploadAvatar).toHaveBeenCalledTimes(1);
+    expect(save().textContent).toContain("Saving");
+    await act(async () => resolve());
+  });
+
   it("rejects non-image files before doing anything", async () => {
     await render();
-    await pick(new File(["x"], "evil.exe", { type: "application/octet-stream" }));
-    expect(q("edit-profile-error").textContent).toContain("Only JPEG, PNG or WebP");
-    expect(api.cropToSquareAvatar).not.toHaveBeenCalled();
+    await pick(new File(["x"], "evil.pdf", { type: "application/pdf" }));
+    expect(q("edit-profile-error").textContent).toContain("isn't supported");
+    expect(img.loadCropImage).not.toHaveBeenCalled();
+    expect(cropper()).toBeNull();
     expect(save().disabled).toBe(true);
   });
 
