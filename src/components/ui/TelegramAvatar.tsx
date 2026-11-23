@@ -1,7 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import { cn } from "@/lib/utils";
-import { getAvatarInitial, sanitizeAvatarUrl } from "@/lib/avatar";
+import { getAvatarInitial, sanitizeAvatarUrl, sanitizeCustomAvatarUrl } from "@/lib/avatar";
 
 type AvatarSize = "sm" | "md" | "lg" | number;
 
@@ -10,6 +10,11 @@ const SIZE_PX: Record<"sm" | "md" | "lg", number> = { sm: 32, md: 48, lg: 64 };
 interface TelegramAvatarProps {
   /** Telegram `photo_url` (as stored from verified initData). May be missing. */
   photoUrl?: string | null;
+  /**
+   * URL of the user's CUSTOM uploaded picture (Priority 1). When present it is tried before `photoUrl`; if it
+   * fails to load we fall back to the Telegram photo, then to the initial-letter avatar.
+   */
+  customUrl?: string | null;
   firstName?: string | null;
   username?: string | null;
   /** Preset ("sm" 32px, "md" 48px, "lg" 64px) or an explicit pixel size. */
@@ -18,7 +23,7 @@ interface TelegramAvatarProps {
 }
 
 /**
- * Circular Telegram profile picture with a designed initial-letter fallback.
+ * Circular profile picture. Priority: custom uploaded picture → Telegram photo → initial-letter fallback.
  *
  * - The fallback circle is ALWAYS rendered underneath, with a fixed size, so
  *   there is no layout shift and no broken-image icon while loading or if the
@@ -28,17 +33,20 @@ interface TelegramAvatarProps {
  *   that URL.
  * - Colors come from the app's theme variables so it works in light and dark.
  */
-export default function TelegramAvatar({ photoUrl, firstName, username, size = "md", className }: TelegramAvatarProps) {
+export default function TelegramAvatar({ photoUrl, customUrl, firstName, username, size = "md", className }: TelegramAvatarProps) {
   const px = typeof size === "number" ? size : SIZE_PX[size];
-  const safeUrl = sanitizeAvatarUrl(photoUrl);
   const initial = getAvatarInitial(firstName, username);
 
-  // Track state per URL so a changed `photoUrl` gets a fresh attempt without
-  // needing an effect to reset state.
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  // Image candidates in priority order. A candidate that errors is remembered and skipped, so a broken custom
+  // picture transparently falls back to the Telegram photo, and a broken Telegram photo to the initials.
+  const candidates = [sanitizeCustomAvatarUrl(customUrl), sanitizeAvatarUrl(photoUrl)].filter((u): u is string => !!u);
+
+  // Track state per URL so a changed URL gets a fresh attempt without needing an effect to reset state.
+  const [failedUrls, setFailedUrls] = useState<readonly string[]>([]);
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
 
-  const showImage = !!safeUrl && failedUrl !== safeUrl;
+  const safeUrl = candidates.find((u) => !failedUrls.includes(u)) ?? null;
+  const showImage = !!safeUrl;
   const imageReady = showImage && loadedUrl === safeUrl;
 
   return (
@@ -49,7 +57,7 @@ export default function TelegramAvatar({ photoUrl, firstName, username, size = "
       )}
       style={{ width: px, height: px, minWidth: px, minHeight: px }}
       role="img"
-      aria-label={firstName || username || "Telegram profile picture"}
+      aria-label={firstName || username || "Profile picture"}
     >
       <span aria-hidden="true" className="font-bold leading-none" style={{ fontSize: Math.round(px * 0.42) }}>
         {initial}
@@ -66,7 +74,7 @@ export default function TelegramAvatar({ photoUrl, firstName, username, size = "
           decoding="async"
           draggable={false}
           onLoad={() => setLoadedUrl(safeUrl)}
-          onError={() => setFailedUrl(safeUrl)}
+          onError={() => setFailedUrls((prev) => (prev.includes(safeUrl) ? prev : [...prev, safeUrl]))}
           className={cn(
             "absolute inset-0 h-full w-full rounded-full object-cover transition-opacity duration-200",
             imageReady ? "opacity-100" : "opacity-0"

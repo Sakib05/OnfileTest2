@@ -66,7 +66,7 @@ export interface PublicPlaylistPayload {
     hasPassword: boolean;
     locked: PlaylistLock;
   };
-  creator: { firstName: string | null; username: string | null; avatarUrl: string | null } | null;
+  creator: { firstName: string | null; username: string | null; avatarUrl: string | null; customAvatarUrl?: string | null } | null;
   items: PublicPlaylistItem[];
 }
 

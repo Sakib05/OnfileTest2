@@ -1,11 +1,11 @@
 "use client";
 import React, { useState, useCallback, useEffect } from "react";
 import {
-  User, Users, Download, DollarSign, ChevronRight, Moon, Sun, Globe, Megaphone,
-  HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle, Settings,
+  User, Users, ChevronRight, Moon, Sun, Globe, Megaphone,
+  HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle,
   Shield, FileText, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
-import { cn, formatNumber, formatCurrency, timeAgo } from "@/lib/utils";
+import { cn, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useApp } from "@/contexts/AppContext";
 import { useToast } from "@/components/ui/Toast";
@@ -17,10 +17,11 @@ import LegalDocument from "@/components/legal/LegalDocument";
 import { buildPrivacySections } from "@/content/legal/privacy";
 import { buildTermsSections } from "@/content/legal/terms";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
-import TelegramAvatar from "@/components/ui/TelegramAvatar";
+import ProfileCard from "@/components/profile/ProfileCard";
+import EditProfile from "@/components/profile/EditProfile";
 import Link from "next/link";
 
-type SubPage = null | "referrals" | "advertise" | "channel" | "settings" | "faq" | "privacy" | "terms";
+type SubPage = null | "referrals" | "advertise" | "channel" | "editProfile" | "faq" | "privacy" | "terms";
 
 interface ReferralData {
   referrals: Array<{
@@ -38,7 +39,7 @@ interface ReferralData {
 
 export default function ProfileTab() {
   const { dark, toggle } = useTheme();
-  const { user, refreshUser, refreshChannels, profileEntry, setProfileEntry } = useApp();
+  const { user, channelStatus, refreshUser, refreshChannels, profileEntry, setProfileEntry } = useApp();
   const { toast } = useToast();
   // A notification tap can ask the Profile tab to open directly on a sub-page.
   const [subPage, setSubPage] = useState<SubPage>(() => profileEntry);
@@ -56,8 +57,6 @@ export default function ProfileTab() {
   const [showConnectNew, setShowConnectNew] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectedChannel | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
-  const [editForm, setEditForm] = useState({ firstName: user?.firstName || "", username: user?.username || "" });
-  const [saving, setSaving] = useState(false);
   const [adForm, setAdForm] = useState({
     advertiserName: "", advertiserEmail: "", network: "adsgram",
     campaignName: "", budget: "", targetUrl: "", message: ""
@@ -135,25 +134,6 @@ export default function ProfileTab() {
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink);
     toast("Referral link copied! 🔗");
-  };
-
-  const handleSaveProfile = async () => {
-    setSaving(true);
-    try {
-      const res = await fetch("/api/user/me", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(editForm),
-      });
-      if (res.ok) {
-        toast("Profile updated! ✅");
-        refreshUser();
-      } else {
-        toast("Failed to update profile", "error");
-      }
-    } finally {
-      setSaving(false);
-    }
   };
 
   const handleAdSubmit = async (e: React.FormEvent) => {
@@ -523,74 +503,15 @@ export default function ProfileTab() {
     );
   }
 
-  if (subPage === "settings") {
-    return (
-      <div className="flex flex-col gap-5 animate-fade-in">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-primary">Account Settings</h1>
-        </div>
-        <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">
-          <h3 className="text-sm font-semibold text-primary">Edit Profile</h3>
-          <div>
-            <label className="text-xs font-medium text-secondary mb-1.5 block">Display Name</label>
-            <input
-              className="input-app text-sm"
-              value={editForm.firstName}
-              onChange={(e) => setEditForm((prev) => ({ ...prev, firstName: e.target.value }))}
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-secondary mb-1.5 block">Username</label>
-            <input
-              className="input-app text-sm"
-              value={editForm.username}
-              onChange={(e) => setEditForm((prev) => ({ ...prev, username: e.target.value }))}
-            />
-          </div>
-          <button onClick={handleSaveProfile} disabled={saving} className="btn-primary py-2.5 text-sm">
-            {saving ? "Saving..." : "Save Changes"}
-          </button>
-        </div>
-      </div>
-    );
+  if (subPage === "editProfile") {
+    return <EditProfile onDone={() => setSubPage(null)} />;
   }
 
   // Main Profile Page
   return (
     <div className="flex flex-col gap-5">
-      {/* Profile Header */}
-      <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm">
-        <div className="flex items-center gap-4">
-          <TelegramAvatar
-            photoUrl={user?.avatarUrl}
-            firstName={user?.firstName}
-            username={user?.username}
-            size="lg"
-          />
-          <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-bold text-primary truncate">{user?.firstName || "Creator"}</h2>
-            <p className="text-sm text-secondary truncate">@{user?.username || "creator"}</p>
-            <div className="flex items-center gap-2 mt-1.5">
-              <span className="chip bg-brand-10 text-brand text-xs">Creator</span>
-            </div>
-          </div>
-          <button onClick={() => setSubPage("settings")} className="w-9 h-9 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0">
-            <Settings size={16} style={{ color: "var(--color-text-secondary)" }} />
-          </button>
-        </div>
-        <div className="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-app">
-          {[
-            { label: "Files", value: "—" },
-            { label: "Downloads", value: formatNumber(user?.totalDownloads ?? 0) },
-            { label: "Earned", value: `$${Number(user?.totalEarnings ?? 0).toFixed(0)}` },
-          ].map(({ label, value }) => (
-            <div key={label} className="text-center">
-              <p className="text-lg font-bold text-primary">{value}</p>
-              <p className="text-xs text-secondary">{label}</p>
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* Profile Card: picture, name, Creator badge, Telegram ID (+ copy), Edit Profile pencil */}
+      <ProfileCard user={user} isCreator={channelStatus === "has_channel"} onEdit={() => setSubPage("editProfile")} />
 
       {/* Referral Banner */}
       <button

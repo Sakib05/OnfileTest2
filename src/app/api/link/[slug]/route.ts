@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { files, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { sanitizeAvatarUrl } from "@/lib/avatar";
+import { toPublicCreator } from "@/lib/profile/serialize";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
@@ -28,8 +28,10 @@ export async function GET(
     const [creator] = await db
       .select({
         firstName: users.firstName,
+        displayNameCustom: users.displayNameCustom,
         username: users.username,
         avatarUrl: users.avatarUrl,
+        profileImageKey: users.profileImageKey,
       })
       .from(users)
       .where(eq(users.id, file.userId));
@@ -39,13 +41,8 @@ export async function GET(
 
     // Return safe public info (no password hash)
     return NextResponse.json({
-      creator: creator
-        ? {
-            firstName: creator.firstName ?? null,
-            username: creator.username ?? null,
-            avatarUrl: sanitizeAvatarUrl(creator.avatarUrl),
-          }
-        : null,
+      // Effective display name + custom picture (priority over the Telegram photo) — see src/lib/profile.
+      creator: creator ? toPublicCreator(creator) : null,
       file: {
         id: file.id,
         title: file.title,

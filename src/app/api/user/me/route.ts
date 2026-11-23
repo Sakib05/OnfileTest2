@@ -4,6 +4,8 @@ import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest } from "@/lib/auth";
 import { isAdminUser } from "@/lib/adminAuth";
+import { serializeSessionUser } from "@/lib/profile/serialize";
+import { validateDisplayName } from "@/lib/profile/identity";
 
 /**
  * Returns the profile of the currently authenticated creator, derived
@@ -20,32 +22,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ user: null }, { status: 200 });
     }
 
-    return NextResponse.json({
-      user: {
-        id: user.id,
-        telegramId: user.telegramId ?? undefined,
-        username: user.username ?? undefined,
-        firstName: user.firstName ?? undefined,
-        lastName: user.lastName ?? undefined,
-        avatarUrl: user.avatarUrl ?? undefined,
-        balance: user.balance ?? "0",
-        pendingBalance: user.pendingBalance ?? "0",
-        referralEarnings: user.referralEarnings ?? "0",
-        totalDownloads: user.totalDownloads ?? 0,
-        totalEarnings: user.totalEarnings ?? "0",
-        referralCode: user.referralCode ?? undefined,
-        darkMode: user.darkMode ?? false,
-        language: user.language ?? "en",
-        isAdmin: isAdminUser(user),
-      },
-    });
+    return NextResponse.json({ user: serializeSessionUser(user, { isAdmin: isAdminUser(user) }) });
   } catch (err) {
     console.error("user_me_failed", err instanceof Error ? err.message : "unknown_error");
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-const PATCHABLE_FIELDS = ["username", "firstName", "lastName", "language", "darkMode"] as const;
+// `username` is deliberately NOT patchable: it is managed by Telegram (synced on login) and read-only in the app.
+// `displayName` writes `users.display_name_custom` (never `first_name`, which Telegram sync owns).
+const PATCHABLE_FIELDS = ["displayName", "firstName", "lastName", "language", "darkMode"] as const;
 type PatchableField = (typeof PATCHABLE_FIELDS)[number];
 
 function isValidPatchBody(body: unknown): body is Partial<Record<PatchableField, unknown>> {
@@ -82,10 +68,13 @@ export async function PATCH(req: NextRequest) {
   const updates: Record<string, unknown> = {};
 
   if ("username" in body) {
-    if (typeof body.username !== "string" || body.username.length > 128) {
-      return NextResponse.json({ error: "Invalid username" }, { status: 400 });
-    }
-    updates.username = body.username.trim() || null;
+    return NextResponse.json({ error: "Your username is managed by Telegram and can't be changed here." }, { status: 400 });
+  }
+  if ("displayName" in body) {
+    const result = validateDisplayName(body.displayName);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    // "" / whitespace → null → the Telegram first name is used again.
+    updates.displayNameCustom = result.value;
   }
   if ("firstName" in body) {
     if (typeof body.firstName !== "string" || body.firstName.length > 128) {
@@ -123,24 +112,7 @@ export async function PATCH(req: NextRequest) {
       .where(eq(users.id, user.id))
       .returning();
 
-    return NextResponse.json({
-      user: {
-        id: updated.id,
-        telegramId: updated.telegramId ?? undefined,
-        username: updated.username ?? undefined,
-        firstName: updated.firstName ?? undefined,
-        lastName: updated.lastName ?? undefined,
-        avatarUrl: updated.avatarUrl ?? undefined,
-        balance: updated.balance ?? "0",
-        pendingBalance: updated.pendingBalance ?? "0",
-        referralEarnings: updated.referralEarnings ?? "0",
-        totalDownloads: updated.totalDownloads ?? 0,
-        totalEarnings: updated.totalEarnings ?? "0",
-        referralCode: updated.referralCode ?? undefined,
-        darkMode: updated.darkMode ?? false,
-        language: updated.language ?? "en",
-      },
-    });
+    return NextResponse.json({ user: serializeSessionUser(updated, { isAdmin: isAdminUser(updated) }) });
   } catch (err) {
     console.error("user_me_patch_failed", err instanceof Error ? err.message : "unknown_error");
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

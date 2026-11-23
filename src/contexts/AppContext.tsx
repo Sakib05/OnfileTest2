@@ -9,6 +9,12 @@ export interface UserProfile {
   firstName?: string;
   lastName?: string;
   avatarUrl?: string;
+  /** Custom display name chosen in Edit Profile (undefined when unset → Telegram name is used). */
+  displayNameCustom?: string;
+  /** EFFECTIVE display name: custom → Telegram first name. */
+  displayName?: string;
+  /** Custom uploaded picture URL (undefined when none). Takes priority over `avatarUrl` (Telegram photo). */
+  customAvatarUrl?: string;
   balance: string;
   pendingBalance: string;
   referralEarnings: string;

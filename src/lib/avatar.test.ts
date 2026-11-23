@@ -40,3 +40,21 @@ describe("getAvatarInitial", () => {
     expect(getAvatarInitial("😀 Smile", null)).toBe("😀");
   });
 });
+
+import { sanitizeCustomAvatarUrl } from "./avatar";
+
+describe("sanitizeCustomAvatarUrl", () => {
+  it("accepts https storage URLs and local blob previews", () => {
+    expect(sanitizeCustomAvatarUrl("https://cdn.dbbyte.com/tok/bucket/avatar-1-ab.webp")).toBe("https://cdn.dbbyte.com/tok/bucket/avatar-1-ab.webp");
+    expect(sanitizeCustomAvatarUrl("blob:https://onfile-app.vercel.app/1234")).toBe("blob:https://onfile-app.vercel.app/1234");
+  });
+
+  it("rejects missing, malformed, http, javascript: and data: URLs", () => {
+    expect(sanitizeCustomAvatarUrl(undefined)).toBeNull();
+    expect(sanitizeCustomAvatarUrl("")).toBeNull();
+    expect(sanitizeCustomAvatarUrl("nope")).toBeNull();
+    expect(sanitizeCustomAvatarUrl("http://cdn.example/a.webp")).toBeNull();
+    expect(sanitizeCustomAvatarUrl("javascript:alert(1)")).toBeNull();
+    expect(sanitizeCustomAvatarUrl("data:image/png;base64,AAAA")).toBeNull();
+  });
+});

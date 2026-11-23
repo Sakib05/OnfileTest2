@@ -17,7 +17,7 @@ import crypto from "crypto";
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { files, playlistFiles, playlists, users } from "@/db/schema";
-import { sanitizeAvatarUrl } from "@/lib/avatar";
+import { toPublicCreator } from "@/lib/profile/serialize";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
 import { isValidShareSlug, type PlaylistLock, type PublicPlaylistItem, type PublicPlaylistPayload } from "@/lib/playlistSharing";
@@ -102,7 +102,13 @@ export async function listPublicItems(row: Pick<PlaylistRow, "id" | "userId">): 
 /** Everything the public page may know. No ids, no owner id, no hashes, no Telegram links/channels. */
 export async function buildPublicPayload(row: PlaylistRow, lock: PlaylistLock): Promise<PublicPlaylistPayload> {
   const [creator] = await db
-    .select({ firstName: users.firstName, username: users.username, avatarUrl: users.avatarUrl })
+    .select({
+      firstName: users.firstName,
+      displayNameCustom: users.displayNameCustom,
+      username: users.username,
+      avatarUrl: users.avatarUrl,
+      profileImageKey: users.profileImageKey,
+    })
     .from(users)
     .where(eq(users.id, row.userId));
 
@@ -117,9 +123,7 @@ export async function buildPublicPayload(row: PlaylistRow, lock: PlaylistLock): 
       hasPassword: !!row.password,
       locked: lock,
     },
-    creator: creator
-      ? { firstName: creator.firstName ?? null, username: creator.username ?? null, avatarUrl: sanitizeAvatarUrl(creator.avatarUrl) }
-      : null,
+    creator: creator ? toPublicCreator(creator) : null,
     items,
   };
 }

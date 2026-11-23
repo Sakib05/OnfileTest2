@@ -94,7 +94,15 @@ export const users = pgTable(
     username: varchar("username", { length: 128 }),
     firstName: varchar("first_name", { length: 128 }),
     lastName: varchar("last_name", { length: 128 }),
+    // Telegram profile photo (synced from verified initData on every login).
     avatarUrl: text("avatar_url"),
+    // User-chosen profile customisation. Telegram sync (/api/auth/telegram) NEVER writes these two
+    // columns, so a custom name / picture always survives a re-login:
+    //   displayNameCustom — custom display name; NULL => fall back to Telegram `first_name`.
+    //   profileImageKey   — object key of the custom picture in the thumbnail storage provider
+    //                       (DBByte); NULL => fall back to the Telegram photo, then to initials.
+    displayNameCustom: varchar("display_name_custom", { length: 64 }),
+    profileImageKey: varchar("profile_image_key", { length: 255 }),
     email: varchar("email", { length: 256 }),
     language: varchar("language", { length: 10 }).default("en"),
     darkMode: boolean("dark_mode").default(false),

@@ -30,6 +30,8 @@ export interface DownloadCreatorInfo {
   firstName: string | null;
   username: string | null;
   avatarUrl: string | null;
+  /** Custom uploaded picture (optional for older payloads); takes priority over `avatarUrl`. */
+  customAvatarUrl?: string | null;
 }
 
 export type UnlockMethod = "ad" | "password" | "stars";

@@ -166,7 +166,7 @@ describe("public viewing", () => {
     expect(body.items[0].slug).toBe(f2.smartLinkSlug);
     expect(body.items[2]).toMatchObject({ hasPassword: true, starsPrice: 5 });
     expect(body.playlist.thumbnailUrl).toBeNull(); // first item has no thumbnail → default art (same rule as the owner's cover)
-    expect(body.creator).toEqual({ firstName: "Alice", username: "share_a", avatarUrl: null });
+    expect(body.creator).toEqual({ firstName: "Alice", username: "share_a", avatarUrl: null, customAvatarUrl: null });
 
     // privacy: serialised response contains no internal ids, hashes or Telegram data
     const raw = JSON.stringify(body);

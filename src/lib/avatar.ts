@@ -33,6 +33,23 @@ export function sanitizeAvatarUrl(raw: string | null | undefined): string | null
   return allowed ? trimmed : null;
 }
 
+/**
+ * Validates the URL of a user's CUSTOM uploaded picture. That URL is built server-side from the configured storage
+ * CDN (never from user input), so — unlike Telegram photos — the host is not restricted to Telegram; it must still
+ * be a well-formed https URL (or a `blob:` object URL created locally for the Edit Profile preview).
+ */
+export function sanitizeCustomAvatarUrl(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 2048) return null;
+  if (trimmed.startsWith("blob:")) return trimmed;
+  try {
+    return new URL(trimmed).protocol === "https:" ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Neutral character used when neither a first name nor a username exists. */
 export const DEFAULT_AVATAR_CHAR = "?";
 
