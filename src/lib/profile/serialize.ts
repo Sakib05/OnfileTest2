@@ -1,4 +1,4 @@
-import type { SessionUser } from "@/db/userColumns";
+import type { User } from "@/db/schema";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { sanitizeAvatarUrl } from "@/lib/avatar";
 import { resolveIdentity } from "./identity";
@@ -13,11 +13,10 @@ const urlFor = (key: string) => buildThumbnailUrl(key);
  *   firstName / avatarUrl   — what Telegram last told us (kept for backwards compatibility)
  *   displayNameCustom       — the user's custom name (null when unset)
  *   displayName             — EFFECTIVE name: custom → Telegram first name (null if neither)
- *   customAvatarUrl         — URL of the custom picture (null when none) — wins over `avatarUrl`.
- *                             ALWAYS undefined while the custom picture feature is disabled.
+ *   customAvatarUrl         — URL of the custom picture (null when none) — wins over `avatarUrl`
  */
 export function serializeSessionUser(
-  user: SessionUser,
+  user: User,
   extra: { isAdmin?: boolean } = {}
 ) {
   const identity = resolveIdentity(
@@ -26,8 +25,7 @@ export function serializeSessionUser(
       displayNameCustom: user.displayNameCustom,
       username: user.username,
       avatarUrl: user.avatarUrl,
-      // Absent (undefined) while the custom picture feature is disabled — the column is not even selected.
-      profileImageKey: user.profileImageKey ?? null,
+      profileImageKey: user.profileImageKey,
     },
     urlFor
   );
@@ -59,8 +57,7 @@ export interface PublicCreatorRow {
   displayNameCustom: string | null;
   username: string | null;
   avatarUrl: string | null;
-  /** Only present while the custom picture feature is enabled (see src/db/userColumns.ts). */
-  profileImageKey?: string | null;
+  profileImageKey: string | null;
 }
 
 export interface PublicCreator {

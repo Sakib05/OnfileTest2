@@ -11,6 +11,7 @@ import {
   pgEnum,
   uniqueIndex,
   index,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -63,6 +64,8 @@ export const campaignStatusEnum = pgEnum("campaign_status", [
   "paused",
   "completed",
   "rejected",
+  // Added by migrations/ad_campaigns_v2 (additive). Creator-only, not yet submitted for review.
+  "draft",
 ]);
 
 // Status of a channel's connection to Onfile's bot. "pending" is used only
@@ -463,20 +466,127 @@ export const reports = pgTable("reports", {
 });
 
 // ─── Ad Campaigns ─────────────────────────────────────────────────────────────
-export const adCampaigns = pgTable("ad_campaigns", {
-  id: serial("id").primaryKey(),
-  advertiserName: varchar("advertiser_name", { length: 256 }).notNull(),
-  advertiserEmail: varchar("advertiser_email", { length: 256 }).notNull(),
-  network: varchar("network", { length: 64 }),
-  campaignName: varchar("campaign_name", { length: 256 }),
-  budget: numeric("budget", { precision: 18, scale: 2 }),
-  targetUrl: text("target_url"),
-  message: text("message"),
-  status: campaignStatusEnum("status").default("pending"),
-  impressions: integer("impressions").default(0),
-  clicks: integer("clicks").default(0),
-  createdAt: timestamp("created_at").defaultNow(),
-});
+// ONE table for every campaign. The original (legacy) columns are kept untouched so old rows and any
+// consumer of them keep working; the Creator Advertising System adds nullable / defaulted columns
+// (migrations/ad_campaigns_v2). Legacy rows have `user_id IS NULL` and are never shown to creators.
+//   status "pending" == "Pending Review" in the UI; "draft" is creator-only.
+//   Counters (impressions / clicks / verified_joins / spent) are written ONLY by trusted server code
+//   (src/lib/ads/events.ts, src/lib/ads/join.ts) — never from a request body.
+export const adCampaigns = pgTable(
+  "ad_campaigns",
+  {
+    id: serial("id").primaryKey(),
+    // legacy columns (advertiser_* are now nullable: creator campaigns don't have a contact form)
+    advertiserName: varchar("advertiser_name", { length: 256 }),
+    advertiserEmail: varchar("advertiser_email", { length: 256 }),
+    network: varchar("network", { length: 64 }),
+    campaignName: varchar("campaign_name", { length: 256 }),
+    budget: numeric("budget", { precision: 18, scale: 2 }),
+    targetUrl: text("target_url"),
+    message: text("message"),
+    status: campaignStatusEnum("status").default("pending"),
+    impressions: integer("impressions").default(0),
+    clicks: integer("clicks").default(0),
+    createdAt: timestamp("created_at").defaultNow(),
+    // ── Creator Advertising System (additive) ──
+    /** Public campaign reference ("AD-XXXXXXXX"); the numeric id is never exposed to creators. */
+    publicId: varchar("public_id", { length: 24 }),
+    userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Extensibility hook for future ad sources. Only "creator" exists today. */
+    source: varchar("source", { length: 32 }).default("creator"),
+    /** Idempotency key chosen by the client wizard: a retried create can never make a second row. */
+    clientRef: varchar("client_ref", { length: 64 }),
+    adType: varchar("ad_type", { length: 32 }),
+    contentKind: varchar("content_kind", { length: 16 }),
+    objective: varchar("objective", { length: 32 }),
+    headline: varchar("headline", { length: 120 }),
+    description: varchar("description", { length: 300 }),
+    ctaText: varchar("cta_text", { length: 40 }),
+    fileId: integer("file_id"),
+    playlistId: integer("playlist_id"),
+    channelId: integer("channel_id"),
+    /** Raw external channel identifier / post link as entered (re-validated server-side on submit). */
+    destinationRef: text("destination_ref"),
+    inviteLink: text("invite_link"),
+    tgChatId: varchar("tg_chat_id", { length: 64 }),
+    tgChatUsername: varchar("tg_chat_username", { length: 128 }),
+    tgChatTitle: varchar("tg_chat_title", { length: 256 }),
+    /** True only when Telegram confirmed the bot can read membership (admin) in the destination channel. */
+    joinVerifiable: boolean("join_verifiable").default(false),
+    placements: jsonb("placements").$type<string[]>().default(sql`'[]'::jsonb`),
+    targeting: jsonb("targeting").$type<{ countries: string[]; languages: string[] }>().default(sql`'{}'::jsonb`),
+    currency: varchar("currency", { length: 8 }).default("USD"),
+    spent: numeric("spent", { precision: 18, scale: 6 }).default("0"),
+    targetAmount: integer("target_amount"),
+    startDate: timestamp("start_date"),
+    endDate: timestamp("end_date"),
+    /** cpm | cpc | cpa — set (with unit_price) by an administrator on approval. NULL = pricing pending. */
+    pricingModel: varchar("pricing_model", { length: 8 }),
+    unitPrice: numeric("unit_price", { precision: 18, scale: 6 }),
+    /** pending_confirmation | confirmed. No wallet hold exists, so payment is confirmed by an admin. */
+    paymentStatus: varchar("payment_status", { length: 24 }).default("pending_confirmation"),
+    rejectionReason: text("rejection_reason"),
+    reviewedBy: integer("reviewed_by"),
+    reviewedAt: timestamp("reviewed_at"),
+    submittedAt: timestamp("submitted_at"),
+    /** Who paused: "creator" (creator may resume) or "admin" (only an admin may resume). */
+    pausedBy: varchar("paused_by", { length: 16 }),
+    completedAt: timestamp("completed_at"),
+    completionReason: varchar("completion_reason", { length: 32 }),
+    verifiedJoins: integer("verified_joins").default(0),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("ad_campaigns_public_id_idx").on(t.publicId),
+    uniqueIndex("ad_campaigns_user_client_ref_idx").on(t.userId, t.clientRef),
+    index("ad_campaigns_user_id_idx").on(t.userId),
+    index("ad_campaigns_status_idx").on(t.status),
+  ]
+);
+
+// Recorded ad events (impressions / clicks). One row per UNIQUE (campaign, event, viewer, day[, placement]).
+// `dedupe_key` is UNIQUE, so a repeated event is rejected by the database itself and is never counted.
+export const adEvents = pgTable(
+  "ad_events",
+  {
+    id: serial("id").primaryKey(),
+    campaignId: integer("campaign_id")
+      .notNull()
+      .references(() => adCampaigns.id, { onDelete: "cascade" }),
+    eventType: varchar("event_type", { length: 16 }).notNull(),
+    placement: varchar("placement", { length: 32 }),
+    viewerKey: varchar("viewer_key", { length: 64 }).notNull(),
+    userId: integer("user_id"),
+    country: varchar("country", { length: 8 }),
+    cost: numeric("cost", { precision: 18, scale: 6 }).default("0"),
+    dedupeKey: varchar("dedupe_key", { length: 160 }).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("ad_events_dedupe_key_idx").on(t.dedupeKey),
+    index("ad_events_campaign_idx").on(t.campaignId, t.createdAt),
+  ]
+);
+
+// Telegram membership conversions. UNIQUE (campaign, user): a user can convert at most once per campaign.
+//   awaiting_join  — baseline check showed the user was NOT a member when they clicked
+//   already_member — baseline check showed the user WAS already a member (never counted)
+//   verified       — getChatMember confirmed membership after an awaiting_join baseline (counted once)
+export const adConversions = pgTable(
+  "ad_conversions",
+  {
+    id: serial("id").primaryKey(),
+    campaignId: integer("campaign_id")
+      .notNull()
+      .references(() => adCampaigns.id, { onDelete: "cascade" }),
+    userId: integer("user_id").notNull(),
+    status: varchar("status", { length: 16 }).notNull(),
+    cost: numeric("cost", { precision: 18, scale: 6 }).default("0"),
+    baselineAt: timestamp("baseline_at").defaultNow().notNull(),
+    verifiedAt: timestamp("verified_at"),
+  },
+  (t) => [uniqueIndex("ad_conversions_campaign_user_idx").on(t.campaignId, t.userId)]
+);
 
 // ─── Link Access Tokens ───────────────────────────────────────────────────────
 export const linkTokens = pgTable("link_tokens", {

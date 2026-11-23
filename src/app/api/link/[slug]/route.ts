@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { files, users } from "@/db/schema";
-import { publicCreatorColumns } from "@/db/userColumns";
 import { eq } from "drizzle-orm";
 import { toPublicCreator } from "@/lib/profile/serialize";
 import { verifyAccessPassword } from "@/lib/password";
@@ -27,7 +26,13 @@ export async function GET(
     // Public creator display info only (name, @username, Telegram photo).
     // Never expose the internal user id, Telegram id, balances, or email.
     const [creator] = await db
-      .select(publicCreatorColumns)
+      .select({
+        firstName: users.firstName,
+        displayNameCustom: users.displayNameCustom,
+        username: users.username,
+        avatarUrl: users.avatarUrl,
+        profileImageKey: users.profileImageKey,
+      })
       .from(users)
       .where(eq(users.id, file.userId));
 
