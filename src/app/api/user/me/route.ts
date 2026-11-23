@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { users } from "@/db/schema";
+import { userColumns } from "@/db/userColumns";
 import { eq } from "drizzle-orm";
 import { getSessionUser, isSameOriginRequest } from "@/lib/auth";
 import { isAdminUser } from "@/lib/adminAuth";
@@ -110,7 +111,7 @@ export async function PATCH(req: NextRequest) {
       .update(users)
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(users.id, user.id))
-      .returning();
+      .returning(userColumns);
 
     return NextResponse.json({ user: serializeSessionUser(updated, { isAdmin: isAdminUser(updated) }) });
   } catch (err) {

@@ -1,7 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import { cn } from "@/lib/utils";
-import { getAvatarInitial, sanitizeAvatarUrl, sanitizeCustomAvatarUrl } from "@/lib/avatar";
+import { avatarCandidates, getAvatarInitial } from "@/lib/avatar";
 
 type AvatarSize = "sm" | "md" | "lg" | number;
 
@@ -11,8 +11,9 @@ interface TelegramAvatarProps {
   /** Telegram `photo_url` (as stored from verified initData). May be missing. */
   photoUrl?: string | null;
   /**
-   * URL of the user's CUSTOM uploaded picture (Priority 1). When present it is tried before `photoUrl`; if it
-   * fails to load we fall back to the Telegram photo, then to the initial-letter avatar.
+   * URL of the user's CUSTOM uploaded picture (Priority 1). IGNORED while the custom-picture feature is disabled
+   * (CUSTOM_PROFILE_PICTURE_ENABLED = false). When enabled it is tried before `photoUrl`; if it fails to load we
+   * fall back to the Telegram photo, then to the initial-letter avatar.
    */
   customUrl?: string | null;
   firstName?: string | null;
@@ -23,7 +24,8 @@ interface TelegramAvatarProps {
 }
 
 /**
- * Circular profile picture. Priority: custom uploaded picture → Telegram photo → initial-letter fallback.
+ * Circular profile picture. Priority: Telegram photo → initial-letter fallback.
+ * (Custom uploaded picture → first, but only while CUSTOM_PROFILE_PICTURE_ENABLED is true — currently disabled.)
  *
  * - The fallback circle is ALWAYS rendered underneath, with a fixed size, so
  *   there is no layout shift and no broken-image icon while loading or if the
@@ -39,7 +41,9 @@ export default function TelegramAvatar({ photoUrl, customUrl, firstName, usernam
 
   // Image candidates in priority order. A candidate that errors is remembered and skipped, so a broken custom
   // picture transparently falls back to the Telegram photo, and a broken Telegram photo to the initials.
-  const candidates = [sanitizeCustomAvatarUrl(customUrl), sanitizeAvatarUrl(photoUrl)].filter((u): u is string => !!u);
+  // While the custom-picture feature is disabled (src/lib/profile/featureFlags.ts) `customUrl` is ignored, so the
+  // candidates are just the Telegram photo; a missing / failing photo falls back to the initials circle.
+  const candidates = avatarCandidates(customUrl, photoUrl);
 
   // Track state per URL so a changed URL gets a fresh attempt without needing an effect to reset state.
   const [failedUrls, setFailedUrls] = useState<readonly string[]>([]);

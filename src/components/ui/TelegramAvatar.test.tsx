@@ -25,10 +25,10 @@ const render = (props: React.ComponentProps<typeof TelegramAvatar>) => act(async
 const img = () => container.querySelector("img");
 const fail = () => act(async () => void img()!.dispatchEvent(new Event("error")));
 
-describe("avatar priority", () => {
-  it("1) custom picture wins over the Telegram photo", async () => {
+describe("avatar priority — custom picture feature DISABLED (current behaviour)", () => {
+  it("1) the Telegram photo is used even when a custom picture URL is supplied", async () => {
     await render({ customUrl: CUSTOM, photoUrl: TG, firstName: "Sakib" });
-    expect(img()?.getAttribute("src")).toBe(CUSTOM);
+    expect(img()?.getAttribute("src")).toBe(TG);
   });
 
   it("2) Telegram photo is used when there is no custom picture", async () => {
@@ -36,39 +36,30 @@ describe("avatar priority", () => {
     expect(img()?.getAttribute("src")).toBe(TG);
   });
 
-  it("3) initial-letter avatar when neither exists (no <img>)", async () => {
+  it("3) initial-letter avatar when there is no Telegram photo (no <img>, no broken image)", async () => {
     await render({ customUrl: null, photoUrl: null, firstName: "sakib" });
     expect(img()).toBeNull();
     expect(container.textContent).toBe("S");
   });
 
-  it("a custom picture that fails to load falls back to the Telegram photo, then to initials", async () => {
-    await render({ customUrl: CUSTOM, photoUrl: TG, firstName: "Sakib" });
-    await fail();
-    expect(img()?.getAttribute("src")).toBe(TG);
-    await fail();
-    expect(img()).toBeNull();
-    expect(container.textContent).toBe("S");
-  });
-
-  it("removing the custom picture (prop → null) restores the Telegram photo", async () => {
-    await render({ customUrl: CUSTOM, photoUrl: TG, firstName: "Sakib" });
-    await render({ customUrl: null, photoUrl: TG, firstName: "Sakib" });
-    expect(img()?.getAttribute("src")).toBe(TG);
-  });
-
-  it("removing the custom picture with no Telegram photo restores the initials avatar", async () => {
+  it("a custom URL alone never produces an image — initials are shown", async () => {
     await render({ customUrl: CUSTOM, photoUrl: null, firstName: "Sakib" });
-    await render({ customUrl: null, photoUrl: null, firstName: "Sakib" });
     expect(img()).toBeNull();
     expect(container.textContent).toBe("S");
   });
 
-  it("never renders unsafe custom URLs (http / javascript:)", async () => {
-    await render({ customUrl: "http://evil.example/a.png", photoUrl: null, firstName: "Sakib" });
+  it("a Telegram photo that fails to load falls back to the initials avatar", async () => {
+    await render({ customUrl: CUSTOM, photoUrl: TG, firstName: "Sakib" });
+    await fail();
     expect(img()).toBeNull();
-    await render({ customUrl: "javascript:alert(1)", photoUrl: TG, firstName: "Sakib" });
-    expect(img()?.getAttribute("src")).toBe(TG);
+    expect(container.textContent).toBe("S");
+  });
+
+  it("never renders unsafe Telegram URLs (http / javascript: / foreign host)", async () => {
+    for (const bad of ["http://t.me/a.jpg", "javascript:alert(1)", "https://evil.example/a.jpg"]) {
+      await render({ customUrl: null, photoUrl: bad, firstName: "Sakib" });
+      expect(img()).toBeNull();
+    }
   });
 
   it("keeps a fixed size (no layout shift)", async () => {

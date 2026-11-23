@@ -2,6 +2,7 @@ import type { NextRequest, NextResponse } from "next/server";
 import { NextResponse as Res } from "next/server";
 import { requireSessionUser } from "@/lib/auth";
 import type { User } from "@/db/schema";
+import type { SessionUser } from "@/db/userColumns";
 
 /**
  * Admin = a creator whose VERIFIED session user has a Telegram id listed in the
@@ -21,7 +22,7 @@ export function isAdminUser(user: Pick<User, "telegramId"> | null | undefined, e
   return parseAdminIds(env).includes(user.telegramId);
 }
 
-export async function requireAdmin(req: NextRequest): Promise<{ user: User } | { response: NextResponse }> {
+export async function requireAdmin(req: NextRequest): Promise<{ user: SessionUser } | { response: NextResponse }> {
   const session = await requireSessionUser(req);
   if ("response" in session) return session;
   if (!isAdminUser(session.user)) {

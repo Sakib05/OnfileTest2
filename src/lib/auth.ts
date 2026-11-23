@@ -2,7 +2,8 @@ import crypto from "crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { sessions, users, type User } from "@/db/schema";
+import { sessions, users } from "@/db/schema";
+import { userColumns, type SessionUser } from "@/db/userColumns";
 import { and, eq, gt } from "drizzle-orm";
 
 export const SESSION_COOKIE_NAME = "onfile_session";
@@ -157,7 +158,7 @@ export async function createSession(userId: number, userAgent?: string | null) {
 }
 
 /** Looks up the authenticated user for a request's session cookie, if valid. */
-export async function getSessionUser(req: NextRequest): Promise<User | null> {
+export async function getSessionUser(req: NextRequest): Promise<SessionUser | null> {
   const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
   // Opaque tokens are base64url; reject obviously malformed cookies early.
@@ -165,7 +166,7 @@ export async function getSessionUser(req: NextRequest): Promise<User | null> {
 
   const tokenHash = hashToken(token);
   const [row] = await db
-    .select({ user: users, sessionId: sessions.id })
+    .select({ user: userColumns, sessionId: sessions.id })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
     .where(and(eq(sessions.tokenHash, tokenHash), gt(sessions.expiresAt, new Date())))
@@ -196,7 +197,7 @@ export async function getSessionUserId(req: NextRequest): Promise<number | null>
  */
 export async function requireSessionUser(
   req: NextRequest
-): Promise<{ user: User } | { response: NextResponse }> {
+): Promise<{ user: SessionUser } | { response: NextResponse }> {
   const user = await getSessionUser(req);
   if (!user) {
     return { response: unauthorized() };
