@@ -367,15 +367,11 @@ describe("My Library — relative upload time", () => {
   it("does not add per-card requests (reuses the one files + playlists snapshot) and shows no upload time on playlists", async () => {
     await mount();
     const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
-    // /api/files + /api/playlists, regardless of card count. (The sponsored slot's single /api/ads/serve call is a separate,
-    // card-independent request and is excluded from this count; it is asserted separately below.)
-    const libraryCalls = () => fetchMock.mock.calls.filter(([url]) => !String(url).startsWith("/api/ads/"));
-    expect(libraryCalls()).toHaveLength(2);
-    expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/ads/serve"))).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // /api/files + /api/playlists, regardless of card count
     await click(chip("Playlist"));
     expect(container.querySelectorAll('[data-testid="playlist-card"]')).toHaveLength(2);
     expect(container.querySelector('[data-testid="playlist-card"] [data-testid="relative-time"]')).toBeNull();
-    expect(libraryCalls()).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

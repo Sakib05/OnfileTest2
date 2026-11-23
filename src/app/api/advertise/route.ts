@@ -1,42 +1,48 @@
-import { NextRequest } from "next/server";
-import { apiError, guardCreator, json, readJson } from "@/lib/ads/http";
-import { createDraft } from "@/lib/ads/service";
-import { dbDestinationDeps, listCreatorCampaigns, serializeMany } from "@/lib/ads/repo";
-import { buildOverview } from "@/lib/ads/serialize";
-import { PRICING_NOTICE } from "@/lib/ads/constants";
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/db";
+import { adCampaigns } from "@/db/schema";
+import { desc } from "drizzle-orm";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-/**
- * GET /api/advertise — the AUTHENTICATED creator's own campaigns + an overview computed from those rows only.
- * (The previous version returned every advertiser's records to anyone; that public listing no longer exists.)
- */
-export async function GET(req: NextRequest) {
-  const g = await guardCreator(req, { mutating: false, bucket: "list", limit: 60 });
-  if ("response" in g) return g.response;
+export async function GET() {
   try {
-    const rows = await listCreatorCampaigns(g.user.id);
-    return json({ campaigns: await serializeMany(rows), overview: buildOverview(rows), pricingNotice: PRICING_NOTICE });
-  } catch (e) {
-    console.error("advertise_list_failed", e instanceof Error ? e.message : e);
-    return apiError("Couldn't load your campaigns.", 500);
+    const campaigns = await db
+      .select()
+      .from(adCampaigns)
+      .orderBy(desc(adCampaigns.createdAt))
+      .limit(20);
+    return NextResponse.json({ campaigns });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-/** POST /api/advertise — create a DRAFT (idempotent on `clientRef`). Submitting for review is a separate action. */
 export async function POST(req: NextRequest) {
-  const g = await guardCreator(req, { mutating: true, bucket: "create", limit: 20 });
-  if ("response" in g) return g.response;
-  const body = await readJson(req);
-  if (body === null) return apiError("Invalid request body.", 400);
   try {
-    const r = await createDraft(g.user, body, dbDestinationDeps);
-    if (!r.ok) return apiError(r.error, r.status, r.fieldErrors ? { fieldErrors: r.fieldErrors } : {});
-    const [campaign] = await serializeMany([r.campaign]);
-    return json({ campaign, created: r.created ?? true }, r.created === false ? 200 : 201);
-  } catch (e) {
-    console.error("advertise_create_failed", e instanceof Error ? e.message : e);
-    return apiError("Couldn't save the draft.", 500);
+    const body = await req.json();
+    const { advertiserName, advertiserEmail, network, campaignName, budget, targetUrl, message } = body;
+
+    if (!advertiserName || !advertiserEmail) {
+      return NextResponse.json({ error: "Name and email are required" }, { status: 400 });
+    }
+
+    const [campaign] = await db
+      .insert(adCampaigns)
+      .values({
+        advertiserName,
+        advertiserEmail,
+        network,
+        campaignName,
+        budget: budget ? String(budget) : null,
+        targetUrl,
+        message,
+        status: "pending",
+      })
+      .returning();
+
+    return NextResponse.json({ campaign }, { status: 201 });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

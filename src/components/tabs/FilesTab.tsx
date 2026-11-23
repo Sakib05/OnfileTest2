@@ -15,7 +15,6 @@ import {
 } from "@/lib/library";
 import { FileCard, PlaylistCard, LibrarySkeleton } from "@/components/library/LibraryCards";
 import HomeSections from "@/components/library/HomeSections";
-import SponsoredSlot from "@/components/ads/SponsoredSlot";
 import LibrarySearch from "@/components/library/LibrarySearch";
 import { markNavigatedFromLibrary } from "@/lib/playlistNav";
 import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
@@ -360,17 +359,14 @@ export default function FilesTab({ onCreateClick }: { onCreateClick?: () => void
         </div>
       ) : isHomeView ? (
         sections.length === 0 ? renderEmpty() : (
-          <>
-            <SponsoredSlot slot="library" className="mb-4" />
-            <HomeSections
-              sections={sections}
-              onOpenFile={openDetails}
-              onMenuFile={onMenuFile}
-              onOpenPlaylist={openPlaylist}
-              onMenuPlaylist={onMenuPlaylist}
-              onSeeAll={handleSeeAll}
-            />
-          </>
+          <HomeSections
+            sections={sections}
+            onOpenFile={openDetails}
+            onMenuFile={onMenuFile}
+            onOpenPlaylist={openPlaylist}
+            onMenuPlaylist={onMenuPlaylist}
+            onSeeAll={handleSeeAll}
+          />
         )
       ) : (
         <>

@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import {
   User, Users, ChevronRight, Moon, Sun, Globe, Megaphone,
   HelpCircle, Copy, Share2, Gift, Star, ExternalLink, MessageCircle,
-  Shield, FileText, CheckCircle2, Plus, XCircle, Clock
+  Shield, FileText, CheckCircle2, Building2, Zap, BarChart2, Plus, XCircle, Clock
 } from "lucide-react";
 import { cn, formatCurrency, timeAgo } from "@/lib/utils";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -20,7 +20,6 @@ import { useTelegramBackButton } from "@/lib/useTelegramBackButton";
 import ProfileCard from "@/components/profile/ProfileCard";
 import EditProfile from "@/components/profile/EditProfile";
 import Link from "next/link";
-import AdvertiseSection from "@/components/advertise/AdvertiseSection";
 
 type SubPage = null | "referrals" | "advertise" | "channel" | "editProfile" | "faq" | "privacy" | "terms";
 
@@ -58,6 +57,12 @@ export default function ProfileTab() {
   const [showConnectNew, setShowConnectNew] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectedChannel | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [adForm, setAdForm] = useState({
+    advertiserName: "", advertiserEmail: "", network: "adsgram",
+    campaignName: "", budget: "", targetUrl: "", message: ""
+  });
+  const [adLoading, setAdLoading] = useState(false);
+  const [adSuccess, setAdSuccess] = useState(false);
 
   const fetchReferrals = useCallback(async () => {
     setReferralLoading(true);
@@ -129,6 +134,26 @@ export default function ProfileTab() {
   const copyReferralLink = () => {
     navigator.clipboard.writeText(referralLink);
     toast("Referral link copied! 🔗");
+  };
+
+  const handleAdSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdLoading(true);
+    try {
+      const res = await fetch("/api/advertise", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(adForm),
+      });
+      if (res.ok) {
+        setAdSuccess(true);
+        toast("Campaign request submitted! 🎉");
+      } else {
+        toast("Failed to submit campaign", "error");
+      }
+    } finally {
+      setAdLoading(false);
+    }
   };
 
   // Sub Pages
@@ -234,7 +259,116 @@ export default function ProfileTab() {
   }
 
   if (subPage === "advertise") {
-    return <AdvertiseSection />;
+    return (
+      <div className="flex flex-col gap-5 animate-fade-in">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold text-primary">Advertise with Us</h1>
+        </div>
+
+        {/* Stats Banner */}
+        <div className="gradient-brand rounded-2xl p-4 text-white">
+          <h2 className="font-bold text-lg mb-3">Reach Millions of Users</h2>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Monthly Views", value: "2.4M+" },
+              { label: "Active Users", value: "180K+" },
+              { label: "Countries", value: "120+" },
+            ].map(({ label, value }) => (
+              <div key={label} className="bg-white/10 rounded-xl p-2 text-center">
+                <p className="font-bold text-base">{value}</p>
+                <p className="text-xs opacity-80">{label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Ad Networks */}
+        <div className="bg-card rounded-2xl p-4 border border-app shadow-app-sm">
+          <h3 className="text-sm font-semibold text-primary mb-3">Supported Ad Networks</h3>
+          <div className="flex flex-col gap-2">
+            {[
+              { name: "Adsgram", desc: "Telegram-native rewarded ads", color: "bg-blue-500" },
+              { name: "Adsonar", desc: "Performance-based ad network", color: "bg-purple-500" },
+              { name: "Monitag TG Ads", desc: "Telegram Ads platform", color: "bg-green-500" },
+              { name: "Direct Campaign", desc: "Work directly with Onfile", color: "gradient-brand" },
+            ].map(({ name, desc, color }) => (
+              <div key={name} className="flex items-center gap-3 p-3 rounded-xl bg-secondary">
+                <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold flex-shrink-0", color)}>
+                  {name[0]}
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-primary">{name}</p>
+                  <p className="text-xs text-secondary">{desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Ad Form */}
+        {adSuccess ? (
+          <div className="bg-card rounded-2xl p-6 border border-app text-center flex flex-col items-center gap-3">
+            <div className="w-16 h-16 rounded-2xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+              <CheckCircle2 size={32} className="text-green-500" />
+            </div>
+            <h3 className="font-bold text-primary">Campaign Request Submitted!</h3>
+            <p className="text-sm text-secondary">Our team will review your request and contact you within 24-48 hours.</p>
+            <button onClick={() => { setAdSuccess(false); setSubPage(null); }} className="btn-primary px-6 py-2.5 text-sm">
+              Done
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleAdSubmit} className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex flex-col gap-3">
+            <h3 className="text-sm font-semibold text-primary">Submit Campaign Request</h3>
+            {[
+              { key: "advertiserName", label: "Company / Advertiser Name *", placeholder: "Your company name", type: "text" },
+              { key: "advertiserEmail", label: "Contact Email *", placeholder: "email@company.com", type: "email" },
+              { key: "campaignName", label: "Campaign Name", placeholder: "e.g. Winter Sale 2025", type: "text" },
+              { key: "budget", label: "Budget (USD)", placeholder: "e.g. 500", type: "number" },
+              { key: "targetUrl", label: "Landing Page URL", placeholder: "https://your-website.com", type: "url" },
+            ].map(({ key, label, placeholder, type }) => (
+              <div key={key}>
+                <label className="text-xs font-medium text-secondary mb-1.5 block">{label}</label>
+                <input
+                  className="input-app text-sm"
+                  type={type}
+                  placeholder={placeholder}
+                  value={adForm[key as keyof typeof adForm]}
+                  onChange={(e) => setAdForm((prev) => ({ ...prev, [key]: e.target.value }))}
+                  required={label.endsWith("*")}
+                />
+              </div>
+            ))}
+            <div>
+              <label className="text-xs font-medium text-secondary mb-1.5 block">Ad Network Preference</label>
+              <select
+                className="input-app text-sm"
+                value={adForm.network}
+                onChange={(e) => setAdForm((prev) => ({ ...prev, network: e.target.value }))}
+              >
+                <option value="adsgram">Adsgram</option>
+                <option value="adsonar">Adsonar</option>
+                <option value="monitag">Monitag TG Ads</option>
+                <option value="direct">Direct Campaign</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-secondary mb-1.5 block">Message / Notes</label>
+              <textarea
+                className="input-app text-sm resize-none"
+                rows={3}
+                placeholder="Tell us about your campaign goals..."
+                value={adForm.message}
+                onChange={(e) => setAdForm((prev) => ({ ...prev, message: e.target.value }))}
+              />
+            </div>
+            <button type="submit" disabled={adLoading} className="btn-primary py-3 text-sm">
+              {adLoading ? "Submitting..." : "Submit Campaign Request"}
+            </button>
+          </form>
+        )}
+      </div>
+    );
   }
 
   if (subPage === "channel") {
@@ -404,26 +538,11 @@ export default function ProfileTab() {
           <Megaphone size={18} className="text-purple-600 dark:text-purple-400" />
         </div>
         <div className="flex-1">
-          <p className="text-sm font-semibold text-primary">Advertise</p>
-          <p className="text-xs text-secondary">Promote your files, playlists and channels</p>
+          <p className="text-sm font-semibold text-primary">Advertise with Us</p>
+          <p className="text-xs text-secondary">Adsgram · Adsonar · Monitag TG Ads</p>
         </div>
         <ChevronRight size={16} className="text-secondary flex-shrink-0" />
       </button>
-
-      {/* Admin-only: advertising review queue (the API re-checks admin status server-side) */}
-      {user?.isAdmin && (
-        <Link
-          href="/admin/ads"
-          className="bg-card rounded-2xl p-4 border border-app shadow-app-sm flex items-center gap-3 w-full text-left"
-        >
-          <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center flex-shrink-0 text-lg">📣</div>
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-primary">Campaign Review</p>
-            <p className="text-xs text-secondary">Approve &amp; manage ad campaigns (admin)</p>
-          </div>
-          <ChevronRight size={16} className="text-secondary flex-shrink-0" />
-        </Link>
-      )}
 
       {/* Admin-only: thumbnail storage status (shown only when the server says this session is an admin) */}
       {user?.isAdmin && (

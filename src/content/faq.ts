@@ -467,9 +467,9 @@ export const FAQ_ENTRIES: FaqEntry[] = [
   {
     id: "advertise-with-us",
     category: "ads",
-    question: "What does \"Advertise\" do?",
+    question: "What does \"Advertise with Us\" do?",
     answer: [
-      "Me › Advertise lets you create campaigns to promote your own files, playlists, Telegram channels or channel posts. Every campaign is reviewed by Onfile before it can run, and pricing and payment are confirmed by an administrator. Submitting a campaign does not make it live or guarantee any impressions, clicks or joins.",
+      "It is a form (Me › Advertise with Us) where an advertiser can send an enquiry with contact and campaign details. Submitting it does not create a contract or a guaranteed campaign.",
     ],
   },
 

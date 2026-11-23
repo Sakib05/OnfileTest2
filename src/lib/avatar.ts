@@ -7,6 +7,8 @@
  * authentication/authorization.
  */
 
+import { CUSTOM_PROFILE_PICTURE_ENABLED } from "@/lib/profile/featureFlags";
+
 const ALLOWED_AVATAR_HOST_SUFFIXES = ["t.me", "telegram.org", "telegram-cdn.org", "cdn-telegram.org"];
 
 /**
@@ -48,6 +50,20 @@ export function sanitizeCustomAvatarUrl(raw: string | null | undefined): string 
   } catch {
     return null;
   }
+}
+
+/**
+ * Ordered list of image URLs an avatar may try, best first: custom picture (only while the custom-picture feature is
+ * enabled) → Telegram photo. The initials avatar is the implicit last fallback (always rendered underneath).
+ * Unsafe / malformed URLs are dropped.
+ */
+export function avatarCandidates(
+  customUrl: string | null | undefined,
+  photoUrl: string | null | undefined,
+  customEnabled: boolean = CUSTOM_PROFILE_PICTURE_ENABLED
+): string[] {
+  const list = [customEnabled ? sanitizeCustomAvatarUrl(customUrl) : null, sanitizeAvatarUrl(photoUrl)];
+  return list.filter((u): u is string => !!u);
 }
 
 /** Neutral character used when neither a first name nor a username exists. */

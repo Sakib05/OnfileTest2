@@ -5,7 +5,6 @@ import FileThumb from "@/components/ui/FileThumb";
 import { cn } from "@/lib/utils";
 import type { PublicPlaylistItem } from "@/lib/playlistSharing";
 import { selectionUrl, typeAndSize } from "@/lib/viewer";
-import SponsoredSlot from "@/components/ads/SponsoredSlot";
 
 /**
  * The playlist's file list. Rows are real links (so "open in new tab" and copy-link still work) but a plain click
@@ -26,13 +25,10 @@ export default function PlaylistList({
   return (
     <section aria-label="Playlist files">
       <ol className="flex flex-col gap-2" data-testid="playlist-list">
-        {items.map((item, index) => {
+        {items.map((item) => {
           const selected = item.slug === selectedSlug;
           return (
-            <React.Fragment key={item.slug}>
-            {/* Sponsored card between items (renders nothing unless an approved campaign targets this placement). */}
-            {index === 3 && <SponsoredSlot slot="playlist_between" asListItem />}
-            <li>
+            <li key={item.slug}>
               <a
                 href={selectionUrl(playlistSlug, item.slug)}
                 onClick={(e) => {
@@ -64,7 +60,6 @@ export default function PlaylistList({
                 {selected && <span className="w-2 h-2 rounded-full bg-brand flex-shrink-0 mr-1" aria-hidden="true" />}
               </a>
             </li>
-            </React.Fragment>
           );
         })}
       </ol>

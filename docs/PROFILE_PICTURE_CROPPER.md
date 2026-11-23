@@ -1,3 +1,5 @@
+> ⚠️ **TEMPORARILY DISABLED.** Custom profile pictures (upload / crop / remove) are switched off in the UI and API. The code described below is kept for a future restore — see [`PROFILE_PICTURE_TEMPORARILY_DISABLED.md`](./PROFILE_PICTURE_TEMPORARILY_DISABLED.md). Edit Profile currently offers Display name + a lock-icon-only Username.
+
 # Profile picture: upload bug fix + interactive cropper
 
 No schema change, no migration, no new dependency, no new storage provider. Upload still goes through

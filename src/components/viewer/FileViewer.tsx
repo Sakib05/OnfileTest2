@@ -12,7 +12,6 @@ import { formatNumber } from "@/lib/utils";
 import type { DownloadCreatorInfo, DownloadFileInfo } from "@/lib/download";
 import type { PublicPlaylistItem } from "@/lib/playlistSharing";
 import { playlistSummary, typeAndSize } from "@/lib/viewer";
-import SponsoredSlot from "@/components/ads/SponsoredSlot";
 
 export interface ViewerPlaylist {
   /** Public share token (the existing /p/<token> route). */
@@ -77,8 +76,6 @@ export default function FileViewer({
           <DescriptionBlock key={`description-${file.slug}`} text={file.description} loading={detailLoading} />
 
           <ActionRow key={`actions-${file.slug}`} file={file} playlist={actionPlaylist} />
-
-          <SponsoredSlot slot="file_access" />
         </main>
 
         {playlist && <PlaylistList playlistSlug={playlist.slug} items={playlist.items} selectedSlug={playlist.selectedSlug} onSelect={playlist.onSelect} />}

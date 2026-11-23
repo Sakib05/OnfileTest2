@@ -121,4 +121,27 @@ describe("ProfileCard", () => {
     expect(q("copy-id")).toBeNull();
     expect(q("profile-id")?.textContent).toBe("ID: —");
   });
+
+  it("avatar: shows the Telegram photo (custom picture is ignored while the feature is disabled)", async () => {
+    await render({ user: { ...user, customAvatarUrl: "https://cdn.example.com/b/avatar-42-x.webp" } });
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(user.avatarUrl);
+  });
+
+  it("avatar: falls back to initials when there is no Telegram photo, or it fails to load — never a broken image", async () => {
+    await render({ user: { ...user, avatarUrl: undefined } });
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector('[role="img"]')?.textContent).toBe("S");
+
+    await render();
+    await act(async () => void container.querySelector("img")!.dispatchEvent(new Event("error")));
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector('[role="img"]')?.textContent).toBe("S");
+  });
+
+  it("does not show Files / Downloads / Earned statistics or a settings gear", async () => {
+    await render();
+    const text = container.textContent ?? "";
+    for (const w of ["Files", "Downloads", "Earned"]) expect(text).not.toContain(w);
+    expect(container.querySelector('[aria-label*="ettings"]')).toBeNull();
+  });
 });

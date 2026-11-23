@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
-import { playlists, type User } from "@/db/schema";
+import { playlists } from "@/db/schema";
+import type { SessionUser } from "@/db/userColumns";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { parsePositiveId } from "@/lib/playlists";
 import { toPublicPlaylist } from "@/lib/playlistView";
@@ -9,7 +10,7 @@ import { getPlaylistCovers, getPlaylistFileCounts, listPlaylistFiles, statusForE
 
 export const NO_STORE = { "Cache-Control": "private, no-store" } as const;
 
-type Guard = { ok: true; user: User } | { ok: false; res: NextResponse };
+type Guard = { ok: true; user: SessionUser } | { ok: false; res: NextResponse };
 
 /**
  * Common gate for the playlist membership routes: same-origin check for

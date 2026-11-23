@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { users } from "@/db/schema";
+import { userColumns } from "@/db/userColumns";
+import { CUSTOM_PROFILE_PICTURE_ENABLED } from "@/lib/profile/featureFlags";
 import { getSessionUser, isSameOriginRequest, unauthorized } from "@/lib/auth";
 import { isAdminUser } from "@/lib/adminAuth";
 import { rateLimit } from "@/lib/rateLimit";
@@ -17,8 +19,21 @@ export const maxDuration = 30;
 
 const NO_STORE = { "Cache-Control": "private, no-store" };
 
+/**
+ * TEMPORARILY DISABLED (CUSTOM_PROFILE_PICTURE_ENABLED = false in src/lib/profile/featureFlags.ts).
+ * Both handlers below answer before reading the request body, the session or the database, so no unintended
+ * upload / replace / remove can happen. The original implementation is kept untouched below the guard; flipping
+ * the flag restores it. See docs/PROFILE_PICTURE_TEMPORARILY_DISABLED.md.
+ */
+function disabledResponse() {
+  return NextResponse.json(
+    { error: "Custom profile pictures are temporarily unavailable.", code: "profile_picture_disabled" },
+    { status: 403, headers: NO_STORE }
+  );
+}
+
 async function freshUser(userId: number) {
-  const [row] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  const [row] = await db.select(userColumns).from(users).where(eq(users.id, userId)).limit(1);
   return row ? serializeSessionUser(row, { isAdmin: isAdminUser(row) }) : null;
 }
 
@@ -29,6 +44,7 @@ async function freshUser(userId: number) {
  * Telegram sync never touches `users.profile_image_key`, so this picture survives re-login.
  */
 export async function POST(req: NextRequest) {
+  if (!CUSTOM_PROFILE_PICTURE_ENABLED) return disabledResponse();
   if (!isSameOriginRequest(req)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403, headers: NO_STORE });
   }
@@ -81,6 +97,7 @@ export async function POST(req: NextRequest) {
  * is shown again automatically. Idempotent: removing when there is no custom picture succeeds.
  */
 export async function DELETE(req: NextRequest) {
+  if (!CUSTOM_PROFILE_PICTURE_ENABLED) return disabledResponse();
   if (!isSameOriginRequest(req)) {
     return NextResponse.json({ error: "Invalid request origin" }, { status: 403, headers: NO_STORE });
   }

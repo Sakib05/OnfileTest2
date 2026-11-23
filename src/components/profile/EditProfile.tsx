@@ -1,33 +1,21 @@
 "use client";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Loader2, Lock, Trash2 } from "lucide-react";
+import React, { useMemo, useRef, useState } from "react";
+import { Loader2, Lock } from "lucide-react";
 import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
 import { DISPLAY_NAME_MAX, validateDisplayName } from "@/lib/profile/identity";
-import AvatarCropper from "@/components/profile/AvatarCropper";
-import {
-  AVATAR_ACCEPT,
-  precheckAvatar,
-  removeAvatar,
-  saveDisplayName,
-  uploadAvatar,
-} from "@/lib/profile/avatarClient";
-import { AvatarError } from "@/lib/profile/avatarErrors";
-import { loadCropImage, type CropImage } from "@/lib/profile/avatarImage";
-
-interface PendingPicture {
-  file: File;
-  previewUrl: string;
-}
+import { saveDisplayName } from "@/lib/profile/displayNameClient";
 
 /**
- * Edit Profile (opened from the pencil on the Profile Card). Everything is staged locally and written only when
- * "Save Changes" is pressed:
- *   • picture  — choose a photo → interactive 1:1 crop editor → Apply Crop stages the result (square preview);
- *                or remove the CUSTOM picture. Selecting / cropping NEVER uploads — only Save Changes does.
- *   • name     — custom display name (empty → Telegram name again)
- *   • username — read-only, managed by Telegram
+ * Edit Profile (opened from the pencil on the Profile Card).
+ *
+ * Custom profile pictures are TEMPORARILY DISABLED (src/lib/profile/featureFlags.ts), so this screen only offers:
+ *   • Display name — custom name (empty → the Telegram name is used again); staged locally, written on "Save Changes"
+ *   • Username     — the Telegram @username, read-only, shown with a lock icon only
+ * The avatar shown here is display-only (Telegram photo → initials). There is no upload, crop or remove UI.
+ * The previous picture-capable screen is kept, unused, in ./EditProfileWithPicture.tsx for a future restore
+ * (docs/PROFILE_PICTURE_TEMPORARILY_DISABLED.md).
  * Back navigation is handled by Telegram's native BackButton registered in ProfileTab.
  */
 export default function EditProfile({ onDone }: { onDone: () => void }) {
@@ -35,33 +23,10 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
   const { toast } = useToast();
 
   const [name, setName] = useState(user?.displayName ?? "");
-  const [pending, setPending] = useState<PendingPicture | null>(null);
-  const [removeRequested, setRemoveRequested] = useState(false);
-  const [preparing, setPreparing] = useState(false);
-  const [cropImage, setCropImage] = useState<CropImage | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const savingRef = useRef(false); // synchronous guard against double-taps / duplicate submissions
-  const fileRef = useRef<HTMLInputElement>(null);
-  const pendingRef = useRef<PendingPicture | null>(null);
-  const cropImageRef = useRef<CropImage | null>(null);
 
-  // Revoke the blob preview URL on replace / unmount.
-  useEffect(() => {
-    pendingRef.current = pending;
-  }, [pending]);
-  useEffect(() => {
-    cropImageRef.current = cropImage;
-  }, [cropImage]);
-  useEffect(
-    () => () => {
-      if (pendingRef.current) URL.revokeObjectURL(pendingRef.current.previewUrl);
-      cropImageRef.current?.release(); // free the working canvas if we unmount mid-crop
-    },
-    []
-  );
-
-  const hasCustom = !!user?.customAvatarUrl;
   const telegramName = user?.firstName?.trim() || null;
   const customNow = user?.displayNameCustom?.trim() || null;
 
@@ -70,76 +35,7 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
   // A custom name equal to the Telegram name is pointless → treated as "no custom name".
   const desiredCustom = nameCheck.ok ? (nameCheck.value && nameCheck.value === telegramName ? null : nameCheck.value) : customNow;
   const nameDirty = nameCheck.ok && desiredCustom !== customNow;
-  const pictureDirty = !!pending || (removeRequested && hasCustom);
-  const dirty = nameDirty || pictureDirty;
-  const canSave = dirty && !nameError && !saving && !preparing;
-
-  // What the preview shows right now (priority: staged upload → current custom → [Telegram → initials]).
-  const previewCustom = pending ? pending.previewUrl : removeRequested ? null : (user?.customAvatarUrl ?? null);
-  const showRemove = !!pending || (hasCustom && !removeRequested);
-
-  const onPickFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const input = e.target;
-    const file = input.files?.[0];
-    if (!file) return;
-    setError(null);
-    const problem = precheckAvatar(file);
-    if (problem) {
-      input.value = "";
-      setError(problem.message);
-      return;
-    }
-    setPreparing(true);
-    try {
-      // Reads the file's bytes first, checks the REAL format, decodes, and builds the cropper's working copy.
-      // Nothing is uploaded and nothing is staged until the user applies a crop.
-      const img = await loadCropImage(file);
-      setCropImage((prev) => {
-        prev?.release();
-        return img;
-      });
-    } catch (err) {
-      if (err instanceof AvatarError) {
-        // Diagnostic only (no user data): which stage failed and which decoders were tried.
-        console.warn("avatar_open_failed", err.kind, err.detail ?? "");
-      }
-      setError(err instanceof AvatarError ? err.message : "We couldn't open this image. Please choose a different one.");
-    } finally {
-      input.value = ""; // allow re-selecting the same file later (after its bytes were read)
-      setPreparing(false);
-    }
-  }, []);
-
-  const closeCropper = useCallback(() => {
-    setCropImage((prev) => {
-      prev?.release();
-      return null;
-    });
-  }, []);
-
-  const onCropApplied = useCallback(
-    (file: File) => {
-      setPending((prev) => {
-        if (prev) URL.revokeObjectURL(prev.previewUrl);
-        return { file, previewUrl: URL.createObjectURL(file) };
-      });
-      setRemoveRequested(false);
-      setError(null);
-      closeCropper();
-    },
-    [closeCropper]
-  );
-
-  const onRemove = () => {
-    setError(null);
-    if (pending) {
-      // Discard the staged picture; the saved picture (if any) is shown again.
-      URL.revokeObjectURL(pending.previewUrl);
-      setPending(null);
-      return;
-    }
-    if (hasCustom) setRemoveRequested(true);
-  };
+  const canSave = nameDirty && !nameError && !saving;
 
   const onSave = async () => {
     if (!canSave || savingRef.current) return;
@@ -147,27 +43,15 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
     setSaving(true);
     setError(null);
     try {
-      // Picture first, then name. Each step clears its own staged flag on success so a retry after a
-      // partial failure never re-sends something that already succeeded.
-      if (pending) {
-        await uploadAvatar(pending.file);
-        URL.revokeObjectURL(pending.previewUrl);
-        setPending(null);
-      } else if (removeRequested && hasCustom) {
-        await removeAvatar();
-        setRemoveRequested(false);
-      }
-      if (nameDirty) await saveDisplayName(desiredCustom ?? "");
-
+      await saveDisplayName(desiredCustom ?? "");
       await refreshUser(); // the Profile Card updates immediately
       toast("Profile updated ✅");
       onDone();
     } catch (err) {
-      // AvatarError messages are already user-safe and say which stage failed (validation / storage / network…).
       const message = err instanceof Error ? err.message : "Couldn't save your changes. Please try again.";
       setError(message);
       toast(message, "error");
-      await refreshUser(); // reflect whatever part did succeed
+      await refreshUser(); // reflect the actual saved state
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -178,60 +62,20 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
     <div className="flex flex-col gap-5 animate-fade-in" data-testid="edit-profile-page">
       <h1 className="text-lg font-bold text-primary">Edit Profile</h1>
 
-      {/* Picture */}
-      <section className="bg-card rounded-3xl border border-app shadow-app-sm p-5 flex flex-col items-center gap-4">
-        <div className="relative">
+      <section className="bg-card rounded-3xl border border-app shadow-app-sm p-4 flex flex-col gap-4">
+        {/* Display-only avatar: Telegram photo → initials. Not interactive. */}
+        <div className="flex justify-center" data-testid="edit-profile-avatar">
           <div style={{ boxShadow: "0 0 0 4px var(--color-bg-card), 0 0 0 5.5px rgba(255, 97, 21, 0.35)" }} className="rounded-full">
             <TelegramAvatar
-              customUrl={previewCustom}
               photoUrl={user?.avatarUrl}
               firstName={name.trim() || user?.displayName || user?.firstName}
               username={user?.username}
-              size={104}
+              size={80}
               className="border-0"
             />
           </div>
-          {preparing && (
-            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
-              <Loader2 size={24} className="animate-spin text-white" aria-label="Preparing picture" />
-            </div>
-          )}
         </div>
 
-        <input ref={fileRef} type="file" accept={AVATAR_ACCEPT} className="hidden" onChange={onPickFile} data-testid="avatar-input" />
-        <div className="flex w-full items-center justify-center gap-2">
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={saving || preparing}
-            className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-10 px-4 text-sm font-semibold text-brand disabled:opacity-50"
-          >
-            <Camera size={16} aria-hidden="true" />
-            {hasCustom || pending ? "Change photo" : "Upload photo"}
-          </button>
-          {showRemove && (
-            <button
-              type="button"
-              onClick={onRemove}
-              disabled={saving || preparing}
-              className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-secondary px-4 text-sm font-semibold text-secondary disabled:opacity-50"
-            >
-              <Trash2 size={16} aria-hidden="true" />
-              {pending ? "Discard" : "Remove"}
-            </button>
-          )}
-        </div>
-        <p className="text-center text-xs text-muted">
-          {removeRequested && hasCustom
-            ? user?.avatarUrl
-              ? "Your Telegram photo will be used after you save."
-              : "Your initials will be shown after you save."
-            : "JPEG, PNG or WebP. You choose which part of the photo to show."}
-        </p>
-      </section>
-
-      {/* Name + username */}
-      <section className="bg-card rounded-3xl border border-app shadow-app-sm p-4 flex flex-col gap-4">
         <div>
           <label htmlFor="display-name" className="mb-1.5 block text-xs font-medium text-secondary">
             Display name
@@ -265,10 +109,7 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
             data-testid="username-readonly"
           >
             <span className="truncate text-secondary">{user?.username ? `@${user.username}` : "Not set on Telegram"}</span>
-            <span className="inline-flex flex-shrink-0 items-center gap-1 text-xs text-muted">
-              <Lock size={12} aria-hidden="true" />
-              Managed by Telegram
-            </span>
+            <Lock size={14} className="flex-shrink-0 text-muted" role="img" aria-label="Username can't be changed" />
           </div>
         </div>
       </section>
@@ -297,8 +138,6 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
           "Save Changes"
         )}
       </button>
-
-      {cropImage && <AvatarCropper image={cropImage} onCancel={closeCropper} onApply={onCropApplied} />}
     </div>
   );
 }

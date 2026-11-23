@@ -10,27 +10,10 @@ const refreshUser = vi.fn(async () => {});
 let currentUser: UserProfile;
 vi.mock("@/contexts/AppContext", () => ({ useApp: () => ({ user: currentUser, refreshUser }) }));
 
-const api = vi.hoisted(() => ({
-  uploadAvatar: vi.fn(async () => null),
-  removeAvatar: vi.fn(async () => null),
-  saveDisplayName: vi.fn(async () => null),
-}));
-// Decoding/exporting need a real browser; the cropper UI itself is exercised for real below.
-const img = vi.hoisted(() => ({
-  loadCropImage: vi.fn(),
-  exportCrop: vi.fn(),
-}));
-vi.mock("@/lib/profile/avatarImage", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/profile/avatarImage")>("@/lib/profile/avatarImage");
-  return { ...actual, ...img };
-});
-vi.mock("@/lib/profile/avatarClient", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/profile/avatarClient")>("@/lib/profile/avatarClient");
-  return { ...actual, ...api };
-});
+const api = vi.hoisted(() => ({ saveDisplayName: vi.fn(async (_name: string) => null as unknown) }));
+vi.mock("@/lib/profile/displayNameClient", () => ({ saveDisplayName: api.saveDisplayName }));
 
 import EditProfile from "./EditProfile";
-import { AvatarError } from "@/lib/profile/avatarErrors";
 import { ToastProvider } from "@/components/ui/Toast";
 
 const base: UserProfile = {
@@ -42,29 +25,16 @@ const base: UserProfile = {
 let container: HTMLDivElement;
 let root: Root;
 const onDone = vi.fn();
-const croppedFile = () => new File([new Uint8Array([1, 2, 3])], "avatar.webp", { type: "image/webp" });
-const fakeCropImage = () => {
-  const canvas = document.createElement("canvas");
-  canvas.width = 1200;
-  canvas.height = 800;
-  return { canvas, width: 1200, height: 800, originalWidth: 4000, originalHeight: 2667, format: "jpeg", decoder: "test", release: vi.fn() };
-};
 beforeEach(() => {
-  Object.values(api).forEach((m) => m.mockClear());
-  img.loadCropImage.mockReset().mockImplementation(async () => fakeCropImage());
-  img.exportCrop.mockReset().mockImplementation(async () => croppedFile());
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((() => ({ fillRect: vi.fn(), drawImage: vi.fn() })) as never);
+  api.saveDisplayName.mockReset().mockResolvedValue(null);
   refreshUser.mockClear();
   onDone.mockClear();
-  URL.createObjectURL = vi.fn(() => "blob:test/1");
-  URL.revokeObjectURL = vi.fn();
   currentUser = base;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
 });
 afterEach(async () => {
-  vi.restoreAllMocks();
   await act(async () => root.unmount());
   container.remove();
 });
@@ -79,54 +49,96 @@ const type = (value: string) =>
     setter.call(nameInput(), value);
     nameInput().dispatchEvent(new Event("input", { bubbles: true }));
   });
-const pick = (file: File) =>
-  act(async () => {
-    const input = q("avatar-input") as HTMLInputElement;
-    Object.defineProperty(input, "files", { value: [file], configurable: true });
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-const btn = (label: string) => Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(label)) as HTMLButtonElement | undefined;
 
-describe("Edit Profile", () => {
-  it("Save is disabled when nothing changed", async () => {
+describe("Edit Profile (custom profile picture temporarily disabled)", () => {
+  it("opens with the Display name and Username fields and a disabled Save", async () => {
     await render();
+    expect(q("edit-profile-page")).not.toBeNull();
+    expect(nameInput().value).toBe("Tg");
     expect(save().disabled).toBe(true);
   });
 
-  it("username is read-only text 'Managed by Telegram' — not an input", async () => {
+  it("has NO upload / change / remove picture UI, file picker, cropper or crop controls", async () => {
     await render();
-    const box = q("username-readonly");
-    expect(box.textContent).toContain("@tg_user");
-    expect(box.textContent).toContain("Managed by Telegram");
-    expect(box.querySelector("input")).toBeNull();
-    expect(container.querySelectorAll("input[type=text], input:not([type])").length).toBe(1); // only Display name
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(q("avatar-input")).toBeNull();
+    expect(document.querySelector('[data-testid="avatar-cropper"]')).toBeNull();
+    const buttons = Array.from(container.querySelectorAll("button")).map((b) => b.textContent ?? "");
+    expect(buttons).toEqual(["Save Changes"]); // the only button
+    const text = container.textContent ?? "";
+    for (const word of ["Upload", "Change photo", "Remove", "Apply Crop", "Zoom", "JPEG, PNG or WebP"]) {
+      expect(text).not.toContain(word);
+    }
   });
 
-  it("editing the name enables Save and PATCHes only the display name", async () => {
+  it("the username is read-only text with ONLY a lock icon — no 'Managed by Telegram' anywhere", async () => {
+    await render();
+    const box = q("username-readonly");
+    expect(box.textContent).toBe("@tg_user");
+    expect(box.querySelector("svg")).not.toBeNull(); // lock icon
+    expect(box.querySelector("input")).toBeNull();
+    expect(container.textContent).not.toContain("Managed by Telegram");
+    expect(container.querySelectorAll("input").length).toBe(1); // only Display name is editable
+  });
+
+  it("shows the Telegram photo in the avatar (display only, not a button)", async () => {
+    await render();
+    const avatar = q("edit-profile-avatar");
+    expect(avatar.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl);
+    expect(avatar.closest("button")).toBeNull();
+  });
+
+  it("falls back to the initials avatar when there is no Telegram photo, or when it fails to load", async () => {
+    currentUser = { ...base, avatarUrl: undefined };
+    await render();
+    expect(q("edit-profile-avatar").querySelector("img")).toBeNull();
+    expect(q("edit-profile-avatar").textContent).toBe("T");
+
+    currentUser = base;
+    await act(async () => root.render(<ToastProvider><EditProfile key="again" onDone={onDone} /></ToastProvider>));
+    await act(async () => void q("edit-profile-avatar").querySelector("img")!.dispatchEvent(new Event("error")));
+    expect(q("edit-profile-avatar").querySelector("img")).toBeNull();
+    expect(q("edit-profile-avatar").textContent).toBe("T");
+  });
+
+  it("a custom picture URL on the profile is ignored while the feature is disabled", async () => {
+    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-x.webp" };
+    await render();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl);
+  });
+
+  it("editing the name enables Save and saves only the (normalised) display name", async () => {
     await render();
     await type("  New   Name ");
     expect(save().disabled).toBe(false);
     await act(async () => save().click());
     expect(api.saveDisplayName).toHaveBeenCalledWith("New Name");
-    expect(api.uploadAvatar).not.toHaveBeenCalled();
-    expect(api.removeAvatar).not.toHaveBeenCalled();
     expect(refreshUser).toHaveBeenCalled();
     expect(onDone).toHaveBeenCalled();
   });
 
-  it("an invalid name shows an error and keeps Save disabled", async () => {
+  it("shows the 64-character limit and counter", async () => {
     await render();
+    expect(container.textContent).toContain("/64");
     await type("a".repeat(65));
     expect(save().disabled).toBe(true);
     expect(container.textContent).toContain("64 characters or fewer");
+    await type("a".repeat(64));
+    expect(save().disabled).toBe(false);
+  });
+
+  it("an invalid name shows an error and keeps Save disabled", async () => {
+    await render();
     await type("<b>x</b>");
     expect(save().disabled).toBe(true);
+    expect(nameInput().getAttribute("aria-invalid")).toBe("true");
   });
 
   it("clearing a custom name sends '' (revert to the Telegram name)", async () => {
     currentUser = { ...base, displayName: "Mine", displayNameCustom: "Mine" };
     await render();
     await type("");
+    expect(save().disabled).toBe(false);
     await act(async () => save().click());
     expect(api.saveDisplayName).toHaveBeenCalledWith("");
   });
@@ -137,140 +149,26 @@ describe("Edit Profile", () => {
     expect(save().disabled).toBe(true);
   });
 
-  const crop = (id: string) => act(async () => void (document.querySelector(`[data-testid="${id}"]`) as HTMLButtonElement).click());
-  const cropper = () => document.querySelector('[data-testid="avatar-cropper"]');
-
-  it("choosing a picture opens the crop editor; nothing is staged or uploaded yet", async () => {
-    await render();
-    await pick(new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" }));
-    expect(img.loadCropImage).toHaveBeenCalledTimes(1);
-    expect(cropper()).not.toBeNull();
-    expect(save().disabled).toBe(true); // no crop applied yet
-    expect(api.uploadAvatar).not.toHaveBeenCalled();
-  });
-
-  it("Apply Crop stages the cropped preview and enables Save — the upload happens only on Save", async () => {
-    await render();
-    await pick(new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" }));
-    await crop("crop-apply");
-    expect(cropper()).toBeNull();
-    expect(img.exportCrop).toHaveBeenCalledTimes(1);
-    expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:test/1");
-    expect(save().disabled).toBe(false);
-    expect(api.uploadAvatar).not.toHaveBeenCalled(); // nothing is written before Save
-    await act(async () => save().click());
-    expect(api.uploadAvatar).toHaveBeenCalledTimes(1);
-    expect((api.uploadAvatar.mock.calls[0] as unknown as [File])[0].type).toBe("image/webp");
-    expect(api.saveDisplayName).not.toHaveBeenCalled();
-    expect(onDone).toHaveBeenCalled();
-  });
-
-  it("Cancel in the crop editor discards it: no preview, Save stays disabled, working canvas released", async () => {
-    await render();
-    const released = fakeCropImage();
-    img.loadCropImage.mockResolvedValueOnce(released);
-    await pick(new File([new Uint8Array([1, 2, 3])], "me.png", { type: "image/png" }));
-    await crop("crop-cancel");
-    expect(cropper()).toBeNull();
-    expect(released.release).toHaveBeenCalled();
-    expect(container.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl);
-    expect(save().disabled).toBe(true);
-    expect(api.uploadAvatar).not.toHaveBeenCalled();
-  });
-
-  it("replacing an existing custom picture uploads the new crop (no separate delete call)", async () => {
-    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-old.webp" };
-    await render();
-    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
-    await crop("crop-apply");
-    await act(async () => save().click());
-    expect(api.uploadAvatar).toHaveBeenCalledTimes(1);
-    expect(api.removeAvatar).not.toHaveBeenCalled();
-  });
-
-  it("an unsupported / unreadable photo shows its specific reason and never opens the editor", async () => {
-    img.loadCropImage.mockRejectedValueOnce(new AvatarError("heic_unsupported"));
-    await render();
-    await pick(new File([new Uint8Array([1])], "IMG_1.jpg", { type: "image/jpeg" }));
-    expect(cropper()).toBeNull();
-    expect(q("edit-profile-error").textContent).toMatch(/HEIC/);
-    expect(q("edit-profile-error").textContent).not.toMatch(/corrupt/i);
-
-    img.loadCropImage.mockRejectedValueOnce(new AvatarError("decode_failed"));
-    await pick(new File([new Uint8Array([1])], "big.jpg", { type: "image/jpeg" }));
-    expect(q("edit-profile-error").textContent).toMatch(/too large to process|couldn't open/i);
-  });
-
-  it("a failed upload keeps the staged crop + the saved picture, explains the cause, and Save can be retried", async () => {
-    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-old.webp" };
-    api.uploadAvatar.mockRejectedValueOnce(new AvatarError("storage_failed"));
-    await render();
-    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
-    await crop("crop-apply");
-    await act(async () => save().click());
-    expect(q("edit-profile-error").textContent).toMatch(/storage.*unchanged/i);
-    expect(onDone).not.toHaveBeenCalled();
-    expect(save().disabled).toBe(false); // can retry
-    await act(async () => btn("Discard")!.click()); // discarding falls back to the SAVED picture
-    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://cdn.example.com/b/avatar-1-old.webp");
-    // retry path
-    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
-    await crop("crop-apply");
-    await act(async () => save().click());
-    expect(api.uploadAvatar).toHaveBeenCalledTimes(2);
-    expect(onDone).toHaveBeenCalled();
-  });
-
-  it("network failure while saving shows the connection message", async () => {
-    api.uploadAvatar.mockRejectedValueOnce(new AvatarError("network"));
-    await render();
-    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
-    await crop("crop-apply");
-    await act(async () => save().click());
-    expect(q("edit-profile-error").textContent).toMatch(/connection/i);
-  });
-
-  it("double-tapping Save uploads once", async () => {
+  it("loading state: Save shows 'Saving…', is disabled and submits once on a double tap", async () => {
     let resolve!: () => void;
-    api.uploadAvatar.mockImplementationOnce(() => new Promise<null>((r) => { resolve = () => r(null); }));
+    api.saveDisplayName.mockImplementationOnce(() => new Promise((r) => { resolve = () => r(null); }));
     await render();
-    await pick(new File([new Uint8Array([1])], "new.jpg", { type: "image/jpeg" }));
-    await crop("crop-apply");
+    await type("Another");
     await act(async () => { save().click(); save().click(); });
-    expect(api.uploadAvatar).toHaveBeenCalledTimes(1);
-    expect(save().textContent).toContain("Saving");
-    await act(async () => resolve());
-  });
-
-  it("rejects non-image files before doing anything", async () => {
-    await render();
-    await pick(new File(["x"], "evil.pdf", { type: "application/pdf" }));
-    expect(q("edit-profile-error").textContent).toContain("isn't supported");
-    expect(img.loadCropImage).not.toHaveBeenCalled();
-    expect(cropper()).toBeNull();
     expect(save().disabled).toBe(true);
+    expect(save().textContent).toContain("Saving");
+    expect(nameInput().disabled).toBe(true);
+    expect(api.saveDisplayName).toHaveBeenCalledTimes(1);
+    await act(async () => resolve());
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("removing an existing custom picture shows the Telegram photo and calls DELETE on save", async () => {
-    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-x.webp" };
-    await render();
-    expect(container.querySelector("img")?.getAttribute("src")).toBe("https://cdn.example.com/b/avatar-1-x.webp");
-    await act(async () => btn("Remove")!.click());
-    expect(container.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl); // fallback preview
-    expect(save().disabled).toBe(false);
-    await act(async () => save().click());
-    expect(api.removeAvatar).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows an error and stays on the page when saving fails; no duplicate submissions", async () => {
+  it("error state: shows the server message, stays on the page and Save can be retried", async () => {
     let reject!: (e: Error) => void;
     api.saveDisplayName.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
     await render();
     await type("Another");
-    await act(async () => { save().click(); save().click(); }); // double tap
-    expect(save().disabled).toBe(true);
-    expect(save().textContent).toContain("Saving");
-    expect(api.saveDisplayName).toHaveBeenCalledTimes(1);
+    await act(async () => save().click());
     await act(async () => reject(new Error("Server said no")));
     expect(q("edit-profile-error").textContent).toBe("Server said no");
     expect(onDone).not.toHaveBeenCalled();
