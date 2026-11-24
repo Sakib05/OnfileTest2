@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { userColumns } from "@/db/userColumns";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
@@ -61,7 +60,7 @@ export async function POST(req: NextRequest) {
   const telegramId = String(tgUser.id);
 
   try {
-    const [existing] = await db.select(userColumns).from(users).where(eq(users.telegramId, telegramId));
+    const [existing] = await db.select().from(users).where(eq(users.telegramId, telegramId));
 
     if (existing) {
       // Returning creator: refresh their profile fields and issue a new

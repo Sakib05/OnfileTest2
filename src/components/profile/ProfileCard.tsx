@@ -20,8 +20,7 @@ interface ProfileCardProps {
  * (+ copy) and an Edit Profile pencil. Deliberately NO statistics.
  *
  * - The ID shown/copied is `user.telegramId` (the real Telegram id from the server session) — never `user.id`.
- * - Avatar priority is handled by <TelegramAvatar/>: Telegram photo → initials (a custom picture would come first,
- *   but custom pictures are temporarily disabled — see src/lib/profile/featureFlags.ts).
+ * - Avatar priority is handled by <TelegramAvatar/>: custom picture → Telegram photo → initials.
  * - Fixed avatar size + a skeleton while `user` is null keep the card height stable during load.
  */
 export default function ProfileCard({ user, isCreator, onEdit }: ProfileCardProps) {
@@ -60,7 +59,6 @@ export default function ProfileCard({ user, isCreator, onEdit }: ProfileCardProp
           style={{ boxShadow: "0 0 0 3px var(--color-bg-card), 0 0 0 4.5px rgba(255, 97, 21, 0.35)" }}
         >
           <TelegramAvatar
-            customUrl={user?.customAvatarUrl}
             photoUrl={user?.avatarUrl}
             firstName={user?.displayName || user?.firstName}
             username={user?.username}

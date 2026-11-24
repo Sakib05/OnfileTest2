@@ -10,10 +10,6 @@ const env = vi.hoisted(() => {
   process.env.TELEGRAM_BOT_TOKEN = "123456:TEST_TOKEN_FOR_PROFILE_E2E";
   return { objects: new Map<string, number>() };
 });
-// This suite exercises the custom-picture feature AS IT BEHAVES WHEN RESTORED. The picture feature is currently
-// disabled in production code, so the flag is forced on here. The CURRENT behaviour is covered by
-// profile.disabled.e2e.test.ts.
-vi.mock("@/lib/profile/featureFlags", () => ({ CUSTOM_PROFILE_PICTURE_ENABLED: true }));
 // In-memory storage provider (no network). Everything else — routes, DB, sessions, sharp — is real.
 vi.mock("@/lib/thumbnails/storage", () => ({
   getThumbnailStorage: () => ({

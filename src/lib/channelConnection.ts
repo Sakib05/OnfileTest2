@@ -197,7 +197,7 @@ export async function finalizeVerifiedChannelConnection(
           target: users.telegramId,
           set: { updatedAt: new Date() },
         })
-        .returning({ id: users.id });
+        .returning();
       userId = created.id;
       isNewAccount = true;
       if (createSessionForNewAccount) {

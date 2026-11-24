@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { files, users } from "@/db/schema";
-import { publicCreatorColumns } from "@/db/userColumns";
 import { eq } from "drizzle-orm";
 import { toPublicCreator } from "@/lib/profile/serialize";
 import { verifyAccessPassword } from "@/lib/password";
 import { getClientIp, rateLimit } from "@/lib/rateLimit";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
+import { getSessionUser } from "@/lib/auth";
+import { evaluateGate, findActiveGate } from "@/lib/ads/gate";
+import { getMembership } from "@/lib/ads/telegram";
 
 export async function GET(
   req: NextRequest,
@@ -27,7 +29,13 @@ export async function GET(
     // Public creator display info only (name, @username, Telegram photo).
     // Never expose the internal user id, Telegram id, balances, or email.
     const [creator] = await db
-      .select(publicCreatorColumns)
+      .select({
+        firstName: users.firstName,
+        displayNameCustom: users.displayNameCustom,
+        username: users.username,
+        avatarUrl: users.avatarUrl,
+        profileImageKey: users.profileImageKey,
+      })
       .from(users)
       .where(eq(users.id, file.userId));
 
@@ -83,6 +91,24 @@ export async function POST(
 
     if (!file || !file.isPublished) {
       return NextResponse.json({ error: "File not found" }, { status: 404 });
+    }
+
+    // Force Join: if a live force-join campaign gates THIS file, the viewer must be a verified channel member before
+    // anything is released. Decided server-side from getChatMember; fails closed if Telegram can't answer.
+    const gate = await findActiveGate(file.id);
+    if (gate) {
+      const viewer = await getSessionUser(req).catch(() => null);
+      const verdict = await evaluateGate(file, gate, viewer, getMembership);
+      if (verdict.gated && verdict.state !== "passed") {
+        const message =
+          verdict.state === "unavailable" ? "We couldn't check your channel membership right now. Please try again in a moment."
+          : verdict.state === "login_required" ? "Open this file in Telegram to confirm your channel membership."
+          : "Join the channel to unlock this file.";
+        return NextResponse.json(
+          { error: message, code: verdict.state === "join_required" ? "join_required" : verdict.state, gate: verdict.info },
+          { status: verdict.state === "unavailable" ? 503 : 403 }
+        );
+      }
     }
 
     if (file.password && !verifyAccessPassword(typeof password === "string" ? password : "", file.password)) {

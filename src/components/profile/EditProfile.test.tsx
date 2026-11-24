@@ -10,8 +10,13 @@ const refreshUser = vi.fn(async () => {});
 let currentUser: UserProfile;
 vi.mock("@/contexts/AppContext", () => ({ useApp: () => ({ user: currentUser, refreshUser }) }));
 
-const api = vi.hoisted(() => ({ saveDisplayName: vi.fn(async (_name: string) => null as unknown) }));
-vi.mock("@/lib/profile/displayNameClient", () => ({ saveDisplayName: api.saveDisplayName }));
+const api = vi.hoisted(() => ({
+  saveDisplayName: vi.fn(async () => null),
+}));
+vi.mock("@/lib/profile/avatarClient", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/profile/avatarClient")>("@/lib/profile/avatarClient");
+  return { ...actual, ...api };
+});
 
 import EditProfile from "./EditProfile";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -26,7 +31,7 @@ let container: HTMLDivElement;
 let root: Root;
 const onDone = vi.fn();
 beforeEach(() => {
-  api.saveDisplayName.mockReset().mockResolvedValue(null);
+  api.saveDisplayName.mockReset().mockImplementation(async () => null);
   refreshUser.mockClear();
   onDone.mockClear();
   currentUser = base;
@@ -50,64 +55,40 @@ const type = (value: string) =>
     nameInput().dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-describe("Edit Profile (custom profile picture temporarily disabled)", () => {
-  it("opens with the Display name and Username fields and a disabled Save", async () => {
+describe("Edit Profile (display name only)", () => {
+  it("Save is disabled when nothing changed", async () => {
     await render();
-    expect(q("edit-profile-page")).not.toBeNull();
-    expect(nameInput().value).toBe("Tg");
     expect(save().disabled).toBe(true);
   });
 
-  it("has NO upload / change / remove picture UI, file picker, cropper or crop controls", async () => {
-    await render();
-    expect(container.querySelector('input[type="file"]')).toBeNull();
-    expect(q("avatar-input")).toBeNull();
-    expect(document.querySelector('[data-testid="avatar-cropper"]')).toBeNull();
-    const buttons = Array.from(container.querySelectorAll("button")).map((b) => b.textContent ?? "");
-    expect(buttons).toEqual(["Save Changes"]); // the only button
-    const text = container.textContent ?? "";
-    for (const word of ["Upload", "Change photo", "Remove", "Apply Crop", "Zoom", "JPEG, PNG or WebP"]) {
-      expect(text).not.toContain(word);
-    }
-  });
-
-  it("the username is read-only text with ONLY a lock icon — no 'Managed by Telegram' anywhere", async () => {
+  it("username is read-only text with a lock icon and no 'Managed by Telegram' label", async () => {
     await render();
     const box = q("username-readonly");
-    expect(box.textContent).toBe("@tg_user");
-    expect(box.querySelector("svg")).not.toBeNull(); // lock icon
+    expect(box.textContent).toContain("@tg_user");
+    expect(box.textContent).not.toContain("Managed by Telegram");
+    expect(box.querySelector("[data-testid='username-lock']")).toBeTruthy();
     expect(box.querySelector("input")).toBeNull();
-    expect(container.textContent).not.toContain("Managed by Telegram");
-    expect(container.querySelectorAll("input").length).toBe(1); // only Display name is editable
+    expect(container.querySelectorAll("input[type=text], input:not([type])").length).toBe(1); // only Display name
   });
 
-  it("shows the Telegram photo in the avatar (display only, not a button)", async () => {
+  it("exposes no picture upload / change / remove / crop controls", async () => {
     await render();
-    const avatar = q("edit-profile-avatar");
-    expect(avatar.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl);
-    expect(avatar.closest("button")).toBeNull();
+    expect(container.querySelector("input[type=file]")).toBeNull();
+    expect(container.textContent).not.toMatch(/upload photo|change photo|remove|discard|crop/i);
+    expect(document.querySelector('[data-testid="avatar-cropper"]')).toBeNull();
   });
 
-  it("falls back to the initials avatar when there is no Telegram photo, or when it fails to load", async () => {
-    currentUser = { ...base, avatarUrl: undefined };
-    await render();
-    expect(q("edit-profile-avatar").querySelector("img")).toBeNull();
-    expect(q("edit-profile-avatar").textContent).toBe("T");
-
-    currentUser = base;
-    await act(async () => root.render(<ToastProvider><EditProfile key="again" onDone={onDone} /></ToastProvider>));
-    await act(async () => void q("edit-profile-avatar").querySelector("img")!.dispatchEvent(new Event("error")));
-    expect(q("edit-profile-avatar").querySelector("img")).toBeNull();
-    expect(q("edit-profile-avatar").textContent).toBe("T");
-  });
-
-  it("a custom picture URL on the profile is ignored while the feature is disabled", async () => {
-    currentUser = { ...base, customAvatarUrl: "https://cdn.example.com/b/avatar-1-x.webp" };
+  it("shows the Telegram photo, and initials when there is none", async () => {
     await render();
     expect(container.querySelector("img")?.getAttribute("src")).toBe(base.avatarUrl);
+    currentUser = { ...base, avatarUrl: undefined };
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector("img")).toBeNull();
   });
 
-  it("editing the name enables Save and saves only the (normalised) display name", async () => {
+  it("editing the name enables Save and PATCHes only the display name", async () => {
     await render();
     await type("  New   Name ");
     expect(save().disabled).toBe(false);
@@ -117,28 +98,19 @@ describe("Edit Profile (custom profile picture temporarily disabled)", () => {
     expect(onDone).toHaveBeenCalled();
   });
 
-  it("shows the 64-character limit and counter", async () => {
+  it("an invalid name shows an error and keeps Save disabled", async () => {
     await render();
-    expect(container.textContent).toContain("/64");
     await type("a".repeat(65));
     expect(save().disabled).toBe(true);
     expect(container.textContent).toContain("64 characters or fewer");
-    await type("a".repeat(64));
-    expect(save().disabled).toBe(false);
-  });
-
-  it("an invalid name shows an error and keeps Save disabled", async () => {
-    await render();
     await type("<b>x</b>");
     expect(save().disabled).toBe(true);
-    expect(nameInput().getAttribute("aria-invalid")).toBe("true");
   });
 
   it("clearing a custom name sends '' (revert to the Telegram name)", async () => {
     currentUser = { ...base, displayName: "Mine", displayNameCustom: "Mine" };
     await render();
     await type("");
-    expect(save().disabled).toBe(false);
     await act(async () => save().click());
     expect(api.saveDisplayName).toHaveBeenCalledWith("");
   });
@@ -149,29 +121,26 @@ describe("Edit Profile (custom profile picture temporarily disabled)", () => {
     expect(save().disabled).toBe(true);
   });
 
-  it("loading state: Save shows 'Saving…', is disabled and submits once on a double tap", async () => {
-    let resolve!: () => void;
-    api.saveDisplayName.mockImplementationOnce(() => new Promise((r) => { resolve = () => r(null); }));
-    await render();
-    await type("Another");
-    await act(async () => { save().click(); save().click(); });
-    expect(save().disabled).toBe(true);
-    expect(save().textContent).toContain("Saving");
-    expect(nameInput().disabled).toBe(true);
-    expect(api.saveDisplayName).toHaveBeenCalledTimes(1);
-    await act(async () => resolve());
-    expect(onDone).toHaveBeenCalledTimes(1);
-  });
-
-  it("error state: shows the server message, stays on the page and Save can be retried", async () => {
-    let reject!: (e: Error) => void;
-    api.saveDisplayName.mockImplementationOnce(() => new Promise((_, r) => { reject = r; }));
+  it("a failed save shows the server error and can be retried", async () => {
+    api.saveDisplayName.mockRejectedValueOnce(new Error("Server said no"));
     await render();
     await type("Another");
     await act(async () => save().click());
-    await act(async () => reject(new Error("Server said no")));
-    expect(q("edit-profile-error").textContent).toBe("Server said no");
+    expect(q("edit-profile-error").textContent).toContain("Server said no");
     expect(onDone).not.toHaveBeenCalled();
     expect(save().disabled).toBe(false);
+    await act(async () => save().click());
+    expect(onDone).toHaveBeenCalled();
+  });
+
+  it("double-tapping Save submits once", async () => {
+    let resolve!: () => void;
+    api.saveDisplayName.mockImplementationOnce(() => new Promise<null>((r) => { resolve = () => r(null); }));
+    await render();
+    await type("Double");
+    await act(async () => { save().click(); save().click(); });
+    expect(api.saveDisplayName).toHaveBeenCalledTimes(1);
+    expect(save().textContent).toContain("Saving");
+    await act(async () => resolve());
   });
 });

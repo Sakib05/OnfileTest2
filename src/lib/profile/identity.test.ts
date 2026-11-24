@@ -49,25 +49,13 @@ describe("resolveIdentity", () => {
   const base = { firstName: "Tg", displayNameCustom: null, username: "u", avatarUrl: "https://t.me/i/userpic/a.jpg", profileImageKey: null };
   const urlFor = (k: string) => `https://cdn.example/${k}`;
 
-  it("custom picture URL is present only when the feature is enabled AND a key exists", () => {
-    expect(resolveIdentity(base, urlFor, true).customAvatarUrl).toBeNull();
-    expect(resolveIdentity({ ...base, profileImageKey: "avatar-1-x.webp" }, urlFor, true).customAvatarUrl).toBe("https://cdn.example/avatar-1-x.webp");
-  });
-
-  it("while the custom picture feature is DISABLED (default) no custom URL is ever produced, even with a stored key", () => {
-    expect(resolveIdentity({ ...base, profileImageKey: "avatar-1-x.webp" }, urlFor).customAvatarUrl).toBeNull();
-  });
-
-  it("does not need profileImageKey at all (row loaded without that column)", () => {
-    const { profileImageKey: _unused, ...withoutKey } = base;
-    void _unused;
-    expect(resolveIdentity(withoutKey, urlFor).customAvatarUrl).toBeNull();
-    expect(resolveIdentity(withoutKey, urlFor, true).customAvatarUrl).toBeNull();
-    expect(resolveIdentity({ ...withoutKey, displayNameCustom: "Mine" }, urlFor).displayName).toBe("Mine");
+  it("custom picture URL is present only when a key exists", () => {
+    expect(resolveIdentity(base, urlFor).customAvatarUrl).toBeNull();
+    expect(resolveIdentity({ ...base, profileImageKey: "avatar-1-x.webp" }, urlFor).customAvatarUrl).toBe("https://cdn.example/avatar-1-x.webp");
   });
 
   it("a key with unconfigured storage degrades to 'no custom picture' (Telegram photo / initials still show)", () => {
-    expect(resolveIdentity({ ...base, profileImageKey: "avatar-1-x.webp" }, () => null, true).customAvatarUrl).toBeNull();
+    expect(resolveIdentity({ ...base, profileImageKey: "avatar-1-x.webp" }, () => null).customAvatarUrl).toBeNull();
   });
 
   it("name falls back to Telegram when the custom name is cleared", () => {

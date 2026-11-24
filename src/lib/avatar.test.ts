@@ -41,7 +41,7 @@ describe("getAvatarInitial", () => {
   });
 });
 
-import { avatarCandidates, sanitizeCustomAvatarUrl } from "./avatar";
+import { sanitizeCustomAvatarUrl } from "./avatar";
 
 describe("sanitizeCustomAvatarUrl", () => {
   it("accepts https storage URLs and local blob previews", () => {
@@ -56,25 +56,5 @@ describe("sanitizeCustomAvatarUrl", () => {
     expect(sanitizeCustomAvatarUrl("http://cdn.example/a.webp")).toBeNull();
     expect(sanitizeCustomAvatarUrl("javascript:alert(1)")).toBeNull();
     expect(sanitizeCustomAvatarUrl("data:image/png;base64,AAAA")).toBeNull();
-  });
-});
-
-describe("avatarCandidates", () => {
-  const TG = "https://t.me/i/userpic/320/abc.jpg";
-  const CUSTOM = "https://cdn.example.com/tok/bucket/avatar-1-ab.webp";
-
-  it("custom picture feature DISABLED (default): only the Telegram photo is ever a candidate", () => {
-    expect(avatarCandidates(CUSTOM, TG)).toEqual([TG]);
-    expect(avatarCandidates(CUSTOM, null)).toEqual([]);
-    expect(avatarCandidates(null, null)).toEqual([]);
-  });
-
-  it("custom picture feature ENABLED: custom first, then the Telegram photo", () => {
-    expect(avatarCandidates(CUSTOM, TG, true)).toEqual([CUSTOM, TG]);
-    expect(avatarCandidates(null, TG, true)).toEqual([TG]);
-  });
-
-  it("drops unsafe URLs", () => {
-    expect(avatarCandidates("javascript:alert(1)", "http://t.me/a.jpg", true)).toEqual([]);
   });
 });

@@ -35,6 +35,8 @@ function mockServer(file: Record<string, unknown>, post: Post, getStatus = 200) 
   calls = [];
   playlistResponse = () => new Response("{}", { status: 404 });
   vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+    // Force Join gate probe (separate from the unlock request): this file isn't gated. Not part of `calls`/`posts`.
+    if (String(url).endsWith("/gate")) return Promise.resolve(new Response(JSON.stringify({ gated: false }), { status: 200 }));
     calls.push(`${init?.method ?? "GET"} ${url}`);
     if (String(url).startsWith("/api/p/")) return Promise.resolve(playlistResponse());
     if (url === "/api/reports") return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 201 }));

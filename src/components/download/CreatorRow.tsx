@@ -14,7 +14,7 @@ export default function CreatorRow({ creator, className }: { creator: DownloadCr
   const name = creator.firstName?.trim() || "Creator";
   return (
     <div className={cn("flex items-center gap-2.5 min-w-0 w-full", className)} data-testid="uploader">
-      <TelegramAvatar customUrl={creator.customAvatarUrl} photoUrl={creator.avatarUrl} firstName={creator.firstName} size="sm" />
+      <TelegramAvatar photoUrl={creator.avatarUrl} firstName={creator.firstName} size="sm" />
       <p className="min-w-0 flex-1 text-sm font-semibold text-primary leading-tight truncate">{name}</p>
     </div>
   );

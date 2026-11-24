@@ -1,5 +1,3 @@
-> ⚠️ **TEMPORARILY DISABLED.** Custom profile pictures (upload / crop / remove) are switched off in the UI and API. The code described below is kept for a future restore — see [`PROFILE_PICTURE_TEMPORARILY_DISABLED.md`](./PROFILE_PICTURE_TEMPORARILY_DISABLED.md). Edit Profile currently offers Display name + a lock-icon-only Username.
-
 # Profile Card redesign + Edit Profile (custom picture & display name)
 
 **Migration required: YES (additive, 2 nullable columns) — `migrations/profile_customization/`. NOT executed against Production by this change.**
@@ -7,7 +5,7 @@
 ## What changed
 * **Me › Profile Card** is now an identity card: picture, display name, **Creator** badge, `ID: <Telegram ID>` + copy button, and a **pencil** (Edit Profile). The Files / Downloads / Earned statistics (and their layout) were removed from the card. The underlying data (`total_downloads`, `total_earnings`, wallet, APIs) is untouched.
 * The old gear → "Account Settings" sub-page (which let users edit username/first name) is replaced by **Edit Profile**.
-* The **@username** is no longer shown on the card. It is still stored, still synced from Telegram, and shown **read-only** on Edit Profile (lock icon only; the "Managed by Telegram" label was removed). The server rejects any attempt to PATCH it.
+* The **@username** is no longer shown on the card. It is still stored, still synced from Telegram, and shown **read-only** ("Managed by Telegram") on Edit Profile. The server rejects any attempt to PATCH it.
 
 ## Telegram User ID
 * Source: `users.telegram_id`, returned by `GET /api/user/me` from the **server-side session user** (`serializeSessionUser`, `src/lib/profile/serialize.ts`). `users.id` is never shown; nothing is generated; the client never supplies an id.

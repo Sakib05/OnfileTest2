@@ -5,14 +5,11 @@
  * the session endpoint, the public creator payloads and the Edit Profile form.
  *
  * Avatar priority (everywhere):
- *   1. custom uploaded picture   (`users.profile_image_key` → storage URL) — TEMPORARILY DISABLED
- *                                 (CUSTOM_PROFILE_PICTURE_ENABLED = false → always null, column never needed)
+ *   1. custom uploaded picture   (`users.profile_image_key` → storage URL)
  *   2. Telegram profile picture  (`users.avatar_url`, synced from verified initData)
  *   3. initial-letter avatar     (rendered by <TelegramAvatar/> when neither image exists / loads)
  * Display name: custom name (`users.display_name_custom`) → Telegram first name → "Creator".
  */
-
-import { CUSTOM_PROFILE_PICTURE_ENABLED } from "./featureFlags";
 
 export const DISPLAY_NAME_MAX = 64;
 export const DISPLAY_NAME_FALLBACK = "Creator";
@@ -56,8 +53,7 @@ export interface IdentityRow {
   displayNameCustom: string | null;
   username: string | null;
   avatarUrl: string | null;
-  /** Optional: only read while CUSTOM_PROFILE_PICTURE_ENABLED. Rows loaded without that column are fine. */
-  profileImageKey?: string | null;
+  profileImageKey: string | null;
 }
 
 export interface EffectiveIdentity {
@@ -71,13 +67,9 @@ export interface EffectiveIdentity {
  * `urlFor` maps a stored object key to its public URL (production: `buildThumbnailUrl`). When it returns null
  * (storage not configured) the custom picture is treated as absent so the Telegram photo / initials still show.
  */
-export function resolveIdentity(
-  row: IdentityRow,
-  urlFor: (key: string) => string | null,
-  customPictureEnabled: boolean = CUSTOM_PROFILE_PICTURE_ENABLED
-): EffectiveIdentity {
+export function resolveIdentity(row: IdentityRow, urlFor: (key: string) => string | null): EffectiveIdentity {
   return {
     displayName: resolveDisplayName(row.displayNameCustom, row.firstName),
-    customAvatarUrl: customPictureEnabled && row.profileImageKey ? urlFor(row.profileImageKey) : null,
+    customAvatarUrl: row.profileImageKey ? urlFor(row.profileImageKey) : null,
   };
 }

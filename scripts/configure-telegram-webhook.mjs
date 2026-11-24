@@ -55,7 +55,7 @@ if (!secretToken) {
   process.exit(1);
 }
 
-const ALLOWED_UPDATES = ["message", "my_chat_member"];
+const ALLOWED_UPDATES = ["message", "my_chat_member", "chat_member"];
 
 async function main() {
   const res = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {

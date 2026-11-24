@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { confirmJoinFromUpdate } from "@/lib/ads/join";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { channels, telegramUpdateLog } from "@/db/schema";
@@ -40,6 +41,7 @@ interface TelegramChatRef {
 
 interface TelegramChatMemberRef {
   status: string;
+  is_member?: boolean;
   user: { id: number };
   can_post_messages?: boolean;
 }
@@ -61,6 +63,8 @@ interface TelegramUpdate {
     chat_shared?: TelegramChatShared;
   };
   my_chat_member?: TelegramChatMemberUpdated;
+  /** Membership changes of OTHER users in chats where the bot is an administrator (Force Join / verified joins). */
+  chat_member?: TelegramChatMemberUpdated;
 }
 
 /**
@@ -137,11 +141,21 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const updateType = update.my_chat_member ? "my_chat_member" : update.message?.chat_shared ? "chat_shared" : "unhandled";
+    const updateType = update.my_chat_member ? "my_chat_member" : update.chat_member ? "chat_member" : update.message?.chat_shared ? "chat_shared" : "unhandled";
     console.log("telegram_webhook_received", { updateId: update.update_id, updateType });
 
     if (update.my_chat_member) {
       await handleMyChatMember(update.my_chat_member);
+      return NextResponse.json({ ok: true });
+    }
+
+    // A user joined/left a channel the bot administers: confirm a pending verified-join (see lib/ads/join.ts). Only
+    // a not-a-member → member change for a user with an awaiting_join baseline can count; everything else is a no-op.
+    if (update.chat_member) {
+      const cm = update.chat_member;
+      await confirmJoinFromUpdate(String(cm.chat.id), cm.new_chat_member.user.id, cm.old_chat_member, cm.new_chat_member).catch((e) =>
+        console.error("telegram_webhook_chat_member_failed", e instanceof Error ? e.message : "unknown_error")
+      );
       return NextResponse.json({ ok: true });
     }
 

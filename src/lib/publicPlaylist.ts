@@ -17,7 +17,6 @@ import crypto from "crypto";
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { files, playlistFiles, playlists, users } from "@/db/schema";
-import { publicCreatorColumns } from "@/db/userColumns";
 import { toPublicCreator } from "@/lib/profile/serialize";
 import { buildThumbnailUrl } from "@/lib/thumbnails/config";
 import { getThumbnailsForFiles } from "@/lib/thumbnails/repo";
@@ -103,7 +102,13 @@ export async function listPublicItems(row: Pick<PlaylistRow, "id" | "userId">): 
 /** Everything the public page may know. No ids, no owner id, no hashes, no Telegram links/channels. */
 export async function buildPublicPayload(row: PlaylistRow, lock: PlaylistLock): Promise<PublicPlaylistPayload> {
   const [creator] = await db
-    .select(publicCreatorColumns)
+    .select({
+      firstName: users.firstName,
+      displayNameCustom: users.displayNameCustom,
+      username: users.username,
+      avatarUrl: users.avatarUrl,
+      profileImageKey: users.profileImageKey,
+    })
     .from(users)
     .where(eq(users.id, row.userId));
 

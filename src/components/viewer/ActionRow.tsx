@@ -5,6 +5,8 @@ import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import SuccessPanel from "@/components/download/SuccessPanel";
 import ReportDialog from "@/components/viewer/ReportDialog";
+import ForceJoinGate from "@/components/viewer/ForceJoinGate";
+import { callGate, type GateResponse } from "@/lib/forceJoinClient";
 import { AD_SECONDS, getUnlockMethods, requestUnlock, type DownloadFileInfo } from "@/lib/download";
 import { buildShareUrl } from "@/lib/playlistSharing";
 import { canNativeShare, copyText, nativeShare } from "@/lib/playlistShareClient";
@@ -48,6 +50,7 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [gate, setGate] = useState<GateResponse | null>(null); // Force Join gate dialog (only when the server gates this file)
 
   useEffect(() => {
     if (remaining === null || remaining <= 0) return;
@@ -67,8 +70,37 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
       setUnlocked({ link: result.telegramMessageLink });
       return true;
     }
+    if (result.gateCode === "join_required" || result.gateCode === "login_required") {
+      // The server gated the file (e.g. membership changed): show the gate instead of an error.
+      setGate({ gated: true, state: result.gateCode });
+      void callGate(file.slug, "start").then((r) => { if (r.ok && r.gate.gated) setGate(r.gate); });
+      return false;
+    }
     setError(result.message);
     return false;
+  };
+
+  /** Continues the normal Get File flow (password dialog / advertisement countdown / unlock request). */
+  const proceed = () => {
+    if (needsPassword) return setPasswordOpen(true);
+    if (remaining === null) return setRemaining(AD_SECONDS);
+    if (adDone) void submit();
+  };
+
+  /**
+   * Force Join: before anything starts, ask the server whether a membership gate covers THIS file for this viewer
+   * (it also records the "already a member?" baseline for verified-join attribution). If nothing gates the file — or the
+   * check can't run — the normal flow continues; the server enforces the gate again when releasing the file.
+   */
+  const checkGateThen = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    const r = await callGate(file.slug, "start");
+    busyRef.current = false;
+    setBusy(false);
+    if (r.ok && r.gate.gated && r.gate.state !== "passed") return setGate(r.gate);
+    proceed();
   };
 
   const adPlaying = remaining !== null && remaining > 0;
@@ -78,9 +110,9 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
   const onGetFile = () => {
     if (busy || adPlaying || unlocked) return;
     setError("");
-    if (needsPassword) return setPasswordOpen(true);
-    if (remaining === null) return setRemaining(AD_SECONDS);
-    if (adDone) void submit();
+    // Only the first tap (before the advertisement / password step) probes the gate; later taps just continue.
+    if (remaining === null && !passwordOpen) return void checkGateThen();
+    proceed();
   };
 
   const onPasswordSubmit = async (e: React.FormEvent) => {
@@ -221,6 +253,15 @@ export default function ActionRow({ file, playlist }: { file: DownloadFileInfo; 
             </button>
           </form>
         </Modal>
+      )}
+
+      {gate && (
+        <ForceJoinGate
+          slug={file.slug}
+          gate={gate}
+          onClose={() => setGate(null)}
+          onPassed={() => { setGate(null); proceed(); }}
+        />
       )}
 
       {reportOpen && (

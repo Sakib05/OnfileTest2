@@ -5,18 +5,18 @@ import TelegramAvatar from "@/components/ui/TelegramAvatar";
 import { useToast } from "@/components/ui/Toast";
 import { useApp } from "@/contexts/AppContext";
 import { DISPLAY_NAME_MAX, validateDisplayName } from "@/lib/profile/identity";
-import { saveDisplayName } from "@/lib/profile/displayNameClient";
+import { saveDisplayName } from "@/lib/profile/avatarClient";
 
 /**
  * Edit Profile (opened from the pencil on the Profile Card).
  *
- * Custom profile pictures are TEMPORARILY DISABLED (src/lib/profile/featureFlags.ts), so this screen only offers:
- *   • Display name — custom name (empty → the Telegram name is used again); staged locally, written on "Save Changes"
- *   • Username     — the Telegram @username, read-only, shown with a lock icon only
- * The avatar shown here is display-only (Telegram photo → initials). There is no upload, crop or remove UI.
- * The previous picture-capable screen is kept, unused, in ./EditProfileWithPicture.tsx for a future restore
- * (docs/PROFILE_PICTURE_TEMPORARILY_DISABLED.md).
- * Back navigation is handled by Telegram's native BackButton registered in ProfileTab.
+ *   • name     — custom display name (empty → the Telegram name again). The ONLY editable field.
+ *   • username — read-only (managed by Telegram), shown with a small lock icon.
+ *   • picture  — display only: Telegram photo → initial-letter avatar. Custom picture upload is intentionally
+ *                not offered for now (the backend avatar endpoints/columns are kept, but have no UI entry point).
+ *
+ * Saving goes through the existing authenticated PATCH /api/user/me. Back navigation is handled by Telegram's
+ * native BackButton registered in ProfileTab.
  */
 export default function EditProfile({ onDone }: { onDone: () => void }) {
   const { user, refreshUser } = useApp();
@@ -34,8 +34,8 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
   const nameError = nameCheck.ok ? null : nameCheck.error;
   // A custom name equal to the Telegram name is pointless → treated as "no custom name".
   const desiredCustom = nameCheck.ok ? (nameCheck.value && nameCheck.value === telegramName ? null : nameCheck.value) : customNow;
-  const nameDirty = nameCheck.ok && desiredCustom !== customNow;
-  const canSave = nameDirty && !nameError && !saving;
+  const dirty = nameCheck.ok && desiredCustom !== customNow;
+  const canSave = dirty && !nameError && !saving;
 
   const onSave = async () => {
     if (!canSave || savingRef.current) return;
@@ -51,7 +51,6 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
       const message = err instanceof Error ? err.message : "Couldn't save your changes. Please try again.";
       setError(message);
       toast(message, "error");
-      await refreshUser(); // reflect the actual saved state
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -62,20 +61,21 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
     <div className="flex flex-col gap-5 animate-fade-in" data-testid="edit-profile-page">
       <h1 className="text-lg font-bold text-primary">Edit Profile</h1>
 
-      <section className="bg-card rounded-3xl border border-app shadow-app-sm p-4 flex flex-col gap-4">
-        {/* Display-only avatar: Telegram photo → initials. Not interactive. */}
-        <div className="flex justify-center" data-testid="edit-profile-avatar">
-          <div style={{ boxShadow: "0 0 0 4px var(--color-bg-card), 0 0 0 5.5px rgba(255, 97, 21, 0.35)" }} className="rounded-full">
-            <TelegramAvatar
-              photoUrl={user?.avatarUrl}
-              firstName={name.trim() || user?.displayName || user?.firstName}
-              username={user?.username}
-              size={80}
-              className="border-0"
-            />
-          </div>
+      {/* Avatar (display only): Telegram photo → initials */}
+      <section className="bg-card rounded-3xl border border-app shadow-app-sm p-5 flex flex-col items-center gap-3">
+        <div style={{ boxShadow: "0 0 0 4px var(--color-bg-card), 0 0 0 5.5px rgba(255, 97, 21, 0.35)" }} className="rounded-full">
+          <TelegramAvatar
+            photoUrl={user?.avatarUrl}
+            firstName={name.trim() || user?.displayName || user?.firstName}
+            username={user?.username}
+            size={104}
+            className="border-0"
+          />
         </div>
+      </section>
 
+      {/* Name + username */}
+      <section className="bg-card rounded-3xl border border-app shadow-app-sm p-4 flex flex-col gap-4">
         <div>
           <label htmlFor="display-name" className="mb-1.5 block text-xs font-medium text-secondary">
             Display name
@@ -105,11 +105,11 @@ export default function EditProfile({ onDone }: { onDone: () => void }) {
         <div>
           <p className="mb-1.5 text-xs font-medium text-secondary">Username</p>
           <div
-            className="flex min-h-11 items-center justify-between gap-3 rounded-xl border border-app bg-secondary px-3.5 text-sm"
+            className="flex min-h-11 items-center gap-1.5 rounded-xl border border-app bg-secondary px-3.5 text-sm"
             data-testid="username-readonly"
           >
             <span className="truncate text-secondary">{user?.username ? `@${user.username}` : "Not set on Telegram"}</span>
-            <Lock size={14} className="flex-shrink-0 text-muted" role="img" aria-label="Username can't be changed" />
+            <Lock size={13} strokeWidth={2} className="flex-shrink-0 text-muted" aria-label="Read-only" data-testid="username-lock" />
           </div>
         </div>
       </section>

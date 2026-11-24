@@ -56,7 +56,7 @@ export function getUnlockMethods(file: Pick<DownloadFileInfo, "hasPassword" | "s
 
 export type UnlockResult =
   | { ok: true; telegramMessageLink: string | null }
-  | { ok: false; status: number; message: string };
+  | { ok: false; status: number; message: string; /** "join_required" | "login_required" | "unavailable" when a Force Join gate answered. */ gateCode?: string };
 
 export function unlockErrorMessage(status: number, serverMessage?: string): string {
   if (status === 403) return "Incorrect password. Please try again.";
@@ -73,8 +73,11 @@ export async function requestUnlock(slug: string, password?: string, fetchImpl: 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password: password || "" }),
     });
-    const data = (await res.json().catch(() => ({}))) as { telegramMessageLink?: string | null; error?: string };
+    const data = (await res.json().catch(() => ({}))) as { telegramMessageLink?: string | null; error?: string; code?: string };
     if (res.ok) return { ok: true, telegramMessageLink: data.telegramMessageLink ?? null };
+    const gateCode = data.code === "join_required" || data.code === "login_required" || data.code === "unavailable" ? data.code : undefined;
+    // A gate answer carries its own message (a 403 here is NOT a wrong password).
+    if (gateCode) return { ok: false, status: res.status, message: data.error || "Join the channel to unlock this file.", gateCode };
     return { ok: false, status: res.status, message: unlockErrorMessage(res.status, data.error) };
   } catch {
     return { ok: false, status: 0, message: unlockErrorMessage(0) };

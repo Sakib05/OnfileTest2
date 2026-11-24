@@ -60,6 +60,8 @@ beforeEach(() => {
   window.history.replaceState(null, "", `/p/${SLUG}`);
   respond = defaultRespond;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    // Force Join gate probe: the file isn't gated. Not part of `calls`.
+    if (String(url).endsWith("/gate")) return json({ gated: false });
     calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
     return respond(url, init);
   }));
